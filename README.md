@@ -4,7 +4,7 @@
 
 
 
-# Linux:
+# On Linux Host:
 
 ```
 sudo apt-get --no-install-recommends -y install \
@@ -24,7 +24,7 @@ python anyvm.py  --os freebsd
 ```
 
 
-# MacOS:
+# On MacOS Host:
 
 ```
 brew install qemu
@@ -35,7 +35,7 @@ python anyvm.py  --os freebsd
 ```
 
 
-# Windows:
+# On Windows Host:
 
 Install qemu For Windows:
 
