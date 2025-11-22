@@ -18,13 +18,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  testsshfs:
+  testsync:
     strategy:
       fail-fast: false
       matrix:
         os: ["freebsd", "netbsd", "openbsd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
+        runs: ["sshfs", "scp", "rsync"]
 
     uses: ./.github/workflows/testrun.yml
     with:
@@ -32,6 +33,7 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: sshfs
+
 
   testnfs:
     strategy:
