@@ -31,7 +31,7 @@ jobs:
     uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
-      os: freebsd
+      os: openindiana
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
       sync: "sshfs"
