@@ -23,7 +23,7 @@
 | Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
 |---------|---------|---------|-----------------|
 | x86_64 Linux    |  ✅     |  ✅    |           ✅    |
-| aarch64(arm64) Linux    |  ✅     |  ✅    |           ✅    |
+| aarch64(arm64) Linux    |  ❌     |  ✅    |           ❌    |
 
 
 
