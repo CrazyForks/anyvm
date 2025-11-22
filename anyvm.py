@@ -152,30 +152,45 @@ Examples:
 """)
 
 def get_free_port(start=10022, end=20000):
+    """Return an available TCP port that works for both 0.0.0.0 and 127.0.0.1 binds."""
+    probe_addrs = ("0.0.0.0", "127.0.0.1")
     for port in range(start, end):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        try:
-            s.bind(('0.0.0.0', port))
-            s.close()
+        for addr in probe_addrs:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                s.bind((addr, port))
+            except Exception:
+                break
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        else:
             return port
-        except socket.error:
-            continue
     return None
 
 
-def get_free_vnc_display(bind_addr, start=0, end=100):
-    addr = bind_addr or "0.0.0.0"
+def get_free_vnc_display(start=0, end=100):
+    """Return an available VNC display whose port binds on both loopback and wildcard."""
+    probe_addrs = ("0.0.0.0", "127.0.0.1")
     for disp in range(start, end):
         port = 5900 + disp
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        try:
-            s.bind((addr, port))
-            s.close()
+        for addr in probe_addrs:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                s.bind((addr, port))
+            except Exception:
+                break
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        else:
             return disp
-        except socket.error:
-            continue
     return None
 
 def fetch_url_content(url):
@@ -1176,8 +1191,7 @@ def main():
             start_disp = int(config['vnc']) if config['vnc'] else 0
         except ValueError:
             start_disp = 0
-        vnc_bind_addr = addr if addr else "0.0.0.0"
-        disp = get_free_vnc_display(vnc_bind_addr, start=start_disp)
+        disp = get_free_vnc_display(start=start_disp)
         if disp is None:
             fatal("No available VNC display ports")
         args_qemu.append("-display")
