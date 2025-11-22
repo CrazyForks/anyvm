@@ -11,6 +11,8 @@ import socket
 import json
 import getpass
 import shutil
+import shlex
+import re
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -22,15 +24,26 @@ except ImportError:
     # Python 2
     from urllib2 import urlopen, Request, HTTPError, URLError
     
-    def urlretrieve(url, filename):
+    def urlretrieve(url, filename, reporthook=None):
         try:
             u = urlopen(url)
+            total_size = 0
+            try:
+                total_size = int(u.headers.get('Content-Length'))
+            except Exception:
+                total_size = 0
+            block_num = 0
             with open(filename, 'wb') as f:
                 while True:
                     chunk = u.read(8192)
                     if not chunk:
+                        if reporthook:
+                            reporthook(block_num, 8192, total_size)
                         break
                     f.write(chunk)
+                    if reporthook:
+                        reporthook(block_num, len(chunk), total_size)
+                    block_num += 1
         except Exception as e:
             raise e
     
@@ -40,6 +53,25 @@ except ImportError:
         input_func = input
 
 IS_WINDOWS = (os.name == 'nt')
+
+try:
+    DEVNULL = subprocess.DEVNULL  # Python 3.3+
+except AttributeError:
+    DEVNULL = open(os.devnull, 'wb')
+
+OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
+VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
+
+
+def removesuffix(text, suffix):
+    """Compatibility helper mirroring str.removesuffix."""
+    if not suffix:
+        return text
+    if hasattr(text, "removesuffix"):
+        return text.removesuffix(suffix)
+    if text.endswith(suffix):
+        return text[:-len(suffix)]
+    return text
 
 def log(msg):
     print(msg)
@@ -63,7 +95,7 @@ Options:
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64 or aarch64.
                          Default: Host architecture.
-  --mem <MB>             Memory size in MB (Default: 6144).
+  --mem <MB>             Memory size in MB (Default: 2048).
   --cpu <num>            Number of CPU cores (Default: 2).
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
   --nc <type>            Network card model (e.g., virtio-net-pci, e1000).
@@ -113,6 +145,21 @@ def get_free_port(start=10022, end=20000):
             continue
     return None
 
+
+def get_free_vnc_display(bind_addr, start=0, end=100):
+    addr = bind_addr or "0.0.0.0"
+    for disp in range(start, end):
+        port = 5900 + disp
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        try:
+            s.bind((addr, port))
+            s.close()
+            return disp
+        except socket.error:
+            continue
+    return None
+
 def fetch_url_content(url):
     req = Request(url)
     req.add_header('User-Agent', 'python-qemu-script')
@@ -124,13 +171,105 @@ def fetch_url_content(url):
 
 def download_file(url, dest):
     log("Downloading " + url)
+    show_progress = sys.stdout.isatty()
+
+    def make_progress_hook():
+        if not show_progress:
+            return None
+        last_msg = {'percent': -1}
+
+        def hook(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                percent = min(100, int(downloaded * 100 / total_size))
+                if percent == last_msg['percent']:
+                    return
+                last_msg['percent'] = percent
+                sys.stdout.write("\r  {:3d}% ({:.1f}/{:.1f} MB)".format(
+                    percent,
+                    downloaded / (1024 * 1024.0),
+                    total_size / (1024 * 1024.0)
+                ))
+            else:
+                sys.stdout.write("\r  {:.1f} MB".format(downloaded / (1024 * 1024.0)))
+            sys.stdout.flush()
+
+        return hook
+
     for i in range(5):
+        hook = make_progress_hook()
         try:
-            urlretrieve(url, dest)
+            if hook:
+                urlretrieve(url, dest, hook)
+                sys.stdout.write("\n")
+            else:
+                urlretrieve(url, dest)
             return True
         except Exception:
+            if hook:
+                sys.stdout.write("\n")
             time.sleep(2)
     return False
+
+
+def url_exists(url):
+    req = Request(url)
+    req.add_header('User-Agent', 'python-qemu-script')
+    if not hasattr(req, 'method'):
+        try:
+            req.get_method = lambda: 'HEAD'
+        except Exception:
+            pass
+    else:
+        req.method = 'HEAD'
+    try:
+        urlopen(req)
+        return True
+    except HTTPError as e:
+        if e.code == 404:
+            return False
+        return False
+    except URLError:
+        return False
+
+
+def download_optional_parts(base_url, base_path, max_parts=9):
+    for idx in range(1, max_parts + 1):
+        part_url = "{}.{}".format(base_url, idx)
+        if not url_exists(part_url):
+            break
+        log("Appending extra part: " + part_url)
+        if not append_url_to_file(part_url, base_path):
+            log("Warning: Failed to append optional part {}".format(part_url))
+            break
+
+
+def append_url_to_file(url, dest_path):
+    req = Request(url)
+    req.add_header('User-Agent', 'python-qemu-script')
+    try:
+        resp = urlopen(req)
+    except Exception:
+        return False
+
+    try:
+        with open(dest_path, 'ab') as f_main:
+            start_pos = f_main.tell()
+            try:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f_main.write(chunk)
+            except Exception:
+                f_main.truncate(start_pos)
+                return False
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return True
 
 def create_sized_file(path, size_mb):
     """Creates a zero-filled file of size_mb."""
@@ -345,10 +484,36 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
     if subprocess.call(cmd) != 0:
         log("Warning: SCP sync failed.")
 
+def version_tokens(text):
+    if not text:
+        return []
+    tokens = []
+    for token in VERSION_TOKEN_RE.findall(text):
+        if token.isdigit():
+            tokens.append((0, int(token)))
+        else:
+            tokens.append((1, token.lower()))
+    return tokens
+
+
+def cmp_version(a, b):
+    parts_a = version_tokens(a)
+    parts_b = version_tokens(b)
+    max_len = max(len(parts_a), len(parts_b))
+    parts_a += [(0, 0)] * (max_len - len(parts_a))
+    parts_b += [(0, 0)] * (max_len - len(parts_b))
+    if parts_a > parts_b:
+        return 1
+    if parts_a < parts_b:
+        return -1
+    return 0
+
+
+
 def main():
     # Default configuration
     config = {
-        'mem': "6144",
+        'mem': "2048",
         'cpu': "2",
         'cputype': "",
         'nc': "",
@@ -508,25 +673,35 @@ def main():
 
     releases_data = get_releases()
     zst_link = ""
-
+    published_at = ""
     # Find release version if not provided
     if not config['release']:
         for r in releases_data:
+            #log(r)
             for asset in r.get('assets', []):
                 u = asset.get('browser_download_url', '')
-                if 'qcow2.zst' in u or 'qcow2.xz' in u:
+                #log(u)
+                if u.endswith("qcow2.zst") or u.endswith("qcow2.xz"):
                     if config['arch'] and config['arch'] not in u:
                         continue
                     # Extract version roughly
-                    parts = u.split('/')[-1].split('-')
+                    filename=u.split('/')[-1]
+                    filename= removesuffix(filename, ".qcow2.zst")
+                    filename= removesuffix(filename, ".qcow2.xz")
+                    parts = filename.split('-')
                     if len(parts) > 1:
-                        config['release'] = parts[1]
-                        break
-            if config['release']:
-                break
+                        if published_at and published_at > r.get('published_at', ''):
+                            continue
+                        if not published_at:
+                            published_at = r.get('published_at', '')
+                            config['release'] = parts[1]
+                        elif cmp_version(parts[1], config['release']) > 0:
+                          published_at = r.get('published_at', '')
+                          config['release'] = parts[1]
+                          log("Found release: " + config['release'])
+
 
     log("Using release: " + config['release'])
-
     # Find download link
     if not zst_link:
         target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
@@ -569,8 +744,8 @@ def main():
     # Download and Extract
     if not os.path.exists(qcow_name):
         if not os.path.exists(ova_file):
-            if not download_file(zst_link, ova_file):
-                fatal("Download failed")
+            if download_file(zst_link, ova_file):
+                download_optional_parts(zst_link, ova_file)
         
         log("Extracting " + ova_file)
         if ova_file.endswith('.zst'):
@@ -583,6 +758,10 @@ def main():
         
         if not os.path.exists(qcow_name):
             fatal("Extraction failed")
+        try:
+            os.remove(ova_file)
+        except OSError:
+            pass
 
     # Key files
     vm_name = "{}-{}".format(config['os'], config['release'])
@@ -659,6 +838,12 @@ def main():
         net_card = config['nc']
     else:
         net_card = "e1000"
+        if config['os'] == "openbsd" and config['release']:
+            release_base = config['release'].split('-')[0]
+            if release_base in OPENBSD_E1000_RELEASES:
+                net_card = "e1000"
+            else:
+                net_card = "virtio-net-pci"
 
     # Platform specific args
     if config['arch'] == "aarch64":
@@ -738,10 +923,14 @@ def main():
 
     # VNC and Monitor
     if config['vnc'] != "off":
-        if config['vnc']:
-            disp = config['vnc']
-        else:
-            disp = "0"
+        try:
+            start_disp = int(config['vnc']) if config['vnc'] else 0
+        except ValueError:
+            start_disp = 0
+        vnc_bind_addr = addr if addr else "0.0.0.0"
+        disp = get_free_vnc_display(vnc_bind_addr, start=start_disp)
+        if disp is None:
+            fatal("No available VNC display ports")
         args_qemu.append("-display")
         args_qemu.append("vnc={}:{}".format(addr, disp))
     
@@ -750,7 +939,8 @@ def main():
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
-    log("CMD: " + " ".join(cmd_list))
+    cmd_text = " \\\n  ".join(shlex.quote(arg) for arg in cmd_list)
+    log("CMD:\n  " + cmd_text)
 
     if config['console']:
         subprocess.call(cmd_list)
@@ -791,15 +981,23 @@ def main():
         # Write config for VM name
         with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
             f.write(ssh_config_content)
-        
+
+        if not IS_WINDOWS:
+            os.chmod(os.path.join(conf_path, "{}.conf".format(vm_name)), 0o600)
+
         # Write config for Port
         port_conf_content = ssh_config_content.replace("Host " + vm_name, "Host " + str(config['sshport']))
         with open(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 'w') as f: 
              f.write(port_conf_content)
+        
+        if not IS_WINDOWS:
+            os.chmod(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 0o600)
 
         main_conf = os.path.join(ssh_dir, "config")
         if not os.path.exists(main_conf):
             open(main_conf, 'w').close()
+            if not IS_WINDOWS:
+              os.chmod(main_conf, 0o600)
         
         with open(main_conf, 'r') as f:
             content = f.read()
@@ -813,7 +1011,7 @@ def main():
         
         ssh_base_cmd = [
             "ssh",
-            "-o", "ConnectTimeout=2",
+            "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR",
@@ -823,7 +1021,11 @@ def main():
         ]
         
         for i in range(300):
-            ret = subprocess.call(ssh_base_cmd + ["exit"])
+            ret = subprocess.call(
+                ssh_base_cmd + ["exit"],
+                stdout=DEVNULL,
+                stderr=DEVNULL
+            )
             if ret == 0:
                 success = True
                 break
