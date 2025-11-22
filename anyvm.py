@@ -14,7 +14,6 @@ import shutil
 import shlex
 import re
 import threading
-import atexit
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -1145,11 +1144,6 @@ def main():
         except OSError as e:
             fatal("Failed to start QEMU: {}".format(e))
 
-        if not config['detach']:
-            def cleanup_qemu():
-                terminate_process(proc, "QEMU")
-            atexit.register(cleanup_qemu)
-
         def fail_with_output(reason):
             stdout_data = proc.stdout.read() or b""
             stderr_data = proc.stderr.read() or b""
@@ -1158,100 +1152,101 @@ def main():
             combined = err_msg or out_msg or "(no output)"
             fatal("{} (code {}). Output:\n{}".format(reason, proc.returncode, combined))
 
-        time.sleep(1)
-        if proc.poll() is not None:
-            fail_with_output("QEMU exited immediately")
-
-
-        log("Started QEMU (PID: {})".format(proc.pid))
-
-        
-        # Config SSH
-        ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
-        if not os.path.exists(ssh_dir):
-            os.makedirs(ssh_dir)
-            if not IS_WINDOWS:
-                os.chmod(ssh_dir, 0o700)
-        
-        with open(vmpub_file, 'r') as f:
-            pub = f.read()
-        with open(os.path.join(ssh_dir, "authorized_keys"), 'a') as f:
-            f.write(pub)
-
-        conf_path = os.path.join(ssh_dir, "config.d")
-        if not os.path.exists(conf_path):
-            os.makedirs(conf_path)
-        
-        ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n  IdentityFile {}\n".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], hostid_file)
-        
-        os.unlink(os.path.join(conf_path, "{}.conf".format(vm_name))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(vm_name))) else None
-        
-        # Write config for VM name
-        with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
-            f.write(ssh_config_content)
-
-        if not IS_WINDOWS:
-            os.chmod(os.path.join(conf_path, "{}.conf".format(vm_name)), 0o600)
-
-        # Write config for Port
-        port_conf_content = ssh_config_content.replace("Host " + vm_name, "Host " + str(config['sshport']))
-        
-        os.unlink(os.path.join(conf_path, "{}.conf".format(config['sshport']))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(config['sshport']))) else None
-        
-        with open(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 'w') as f: 
-             f.write(port_conf_content)
-        
-        if not IS_WINDOWS:
-            os.chmod(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 0o600)
-
-        main_conf = os.path.join(ssh_dir, "config")
-        if not os.path.exists(main_conf):
-            open(main_conf, 'w').close()
-            if not IS_WINDOWS:
-              os.chmod(main_conf, 0o600)
-        
-        with open(main_conf, 'r') as f:
-            content = f.read()
-            if "Include config.d" not in content:
-                with open(main_conf, 'a') as fa:
-                    fa.write("\nInclude config.d/*.conf\n")
-
-        # Wait for boot
-        log("Waiting for VM to boot (port {})...".format(config['sshport']))
-        success = False
-        
-        ssh_base_cmd = [
-            "ssh",
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
-            "-o", "LogLevel=ERROR",
-            "-i", hostid_file,
-            "-p", str(config['sshport']),
-            "root@localhost"
-        ]
-        
-        for i in range(300):
+        try:
+            time.sleep(1)
             if proc.poll() is not None:
-                fail_with_output("QEMU terminated during boot")
-            ret = subprocess.call(
-                ssh_base_cmd + ["exit"],
-                stdout=DEVNULL,
-                stderr=DEVNULL
-            )
-            if ret == 0:
-                success = True
-                break
-            time.sleep(2)
-        
-        if not success:
-            fatal("Boot timed out.")
-        
-        log("VM Ready! Connect with: ssh {}".format(vm_name))
+                fail_with_output("QEMU exited immediately")
 
-        # Post-boot config: Setup reverse SSH config inside VM
-        current_user = getpass.getuser()
-        vm_ssh_config = """
+
+            log("Started QEMU (PID: {})".format(proc.pid))
+
+            
+            # Config SSH
+            ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+            if not os.path.exists(ssh_dir):
+                os.makedirs(ssh_dir)
+                if not IS_WINDOWS:
+                    os.chmod(ssh_dir, 0o700)
+            
+            with open(vmpub_file, 'r') as f:
+                pub = f.read()
+            with open(os.path.join(ssh_dir, "authorized_keys"), 'a') as f:
+                f.write(pub)
+
+            conf_path = os.path.join(ssh_dir, "config.d")
+            if not os.path.exists(conf_path):
+                os.makedirs(conf_path)
+            
+            ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n  IdentityFile {}\n".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], hostid_file)
+            
+            os.unlink(os.path.join(conf_path, "{}.conf".format(vm_name))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(vm_name))) else None
+            
+            # Write config for VM name
+            with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
+                f.write(ssh_config_content)
+
+            if not IS_WINDOWS:
+                os.chmod(os.path.join(conf_path, "{}.conf".format(vm_name)), 0o600)
+
+            # Write config for Port
+            port_conf_content = ssh_config_content.replace("Host " + vm_name, "Host " + str(config['sshport']))
+            
+            os.unlink(os.path.join(conf_path, "{}.conf".format(config['sshport']))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(config['sshport']))) else None
+            
+            with open(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 'w') as f: 
+                 f.write(port_conf_content)
+            
+            if not IS_WINDOWS:
+                os.chmod(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 0o600)
+
+            main_conf = os.path.join(ssh_dir, "config")
+            if not os.path.exists(main_conf):
+                open(main_conf, 'w').close()
+                if not IS_WINDOWS:
+                  os.chmod(main_conf, 0o600)
+            
+            with open(main_conf, 'r') as f:
+                content = f.read()
+                if "Include config.d" not in content:
+                    with open(main_conf, 'a') as fa:
+                        fa.write("\nInclude config.d/*.conf\n")
+
+            # Wait for boot
+            log("Waiting for VM to boot (port {})...".format(config['sshport']))
+            success = False
+            
+            ssh_base_cmd = [
+                "ssh",
+                "-o", "ConnectTimeout=5",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
+                "-o", "LogLevel=ERROR",
+                "-i", hostid_file,
+                "-p", str(config['sshport']),
+                "root@localhost"
+            ]
+            
+            for i in range(300):
+                if proc.poll() is not None:
+                    fail_with_output("QEMU terminated during boot")
+                ret = subprocess.call(
+                    ssh_base_cmd + ["exit"],
+                    stdout=DEVNULL,
+                    stderr=DEVNULL
+                )
+                if ret == 0:
+                    success = True
+                    break
+                time.sleep(2)
+            
+            if not success:
+                fatal("Boot timed out.")
+            
+            log("VM Ready! Connect with: ssh {}".format(vm_name))
+
+            # Post-boot config: Setup reverse SSH config inside VM
+            current_user = getpass.getuser()
+            vm_ssh_config = """
 StrictHostKeyChecking=no
 
 Host host
@@ -1259,56 +1254,60 @@ Host host
   User {}
   ServerAliveInterval 1
 """.format(current_user)
-        
-        p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
-        p.communicate(input=vm_ssh_config.encode('utf-8'))
-        p.wait()
+            
+            p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
+            p.communicate(input=vm_ssh_config.encode('utf-8'))
+            p.wait()
 
-        # Mount Shared Folders
-        if config['vpaths']:
-            sudo_cmd = []
-            if config['sync'] == 'nfs':
-                # Check if sudo exists in path (unix only)
-                if not IS_WINDOWS:
+            # Mount Shared Folders
+            if config['vpaths']:
+                sudo_cmd = []
+                if config['sync'] == 'nfs':
+                    # Check if sudo exists in path (unix only)
+                    if not IS_WINDOWS:
+                        try:
+                            with open(os.devnull, 'w') as devnull:
+                                if subprocess.call("command -v sudo", shell=True, stdout=devnull, stderr=devnull) == 0:
+                                     sudo_cmd = ["sudo"]
+                        except:
+                            pass
+
+                for vpath_str in config['vpaths']:
                     try:
-                        with open(os.devnull, 'w') as devnull:
-                            if subprocess.call("command -v sudo", shell=True, stdout=devnull, stderr=devnull) == 0:
-                                 sudo_cmd = ["sudo"]
-                    except:
-                        pass
+                        vhost, vguest = vpath_str.split(':')
+                        log("Mounting host dir: {} to guest: {}".format(vhost, vguest))
+                        
+                        if config['sync'] == 'nfs':
+                            sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
+                        elif config['sync'] == 'rsync':
+                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'])
+                        elif config['sync'] == 'scp':
+                            sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file)
+                        else:
+                            sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'])
 
-            for vpath_str in config['vpaths']:
-                try:
-                    vhost, vguest = vpath_str.split(':')
-                    log("Mounting host dir: {} to guest: {}".format(vhost, vguest))
-                    
-                    if config['sync'] == 'nfs':
-                        sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
-                    elif config['sync'] == 'rsync':
-                        sync_rsync(ssh_base_cmd, vhost, vguest, config['os'])
-                    elif config['sync'] == 'scp':
-                        sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file)
-                    else:
-                        sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'])
+                    except ValueError:
+                        log("Invalid format for -v. Use host_path:guest_path")
 
-                except ValueError:
-                    log("Invalid format for -v. Use host_path:guest_path")
-
-        if config['console']:
-             log("======================================")
-             log("")
-             log("You can login the vm with: ssh " + vm_name)
-             log("Or just:  ssh " + str(config['sshport']))
-             log("======================================")
-        
-        if not config['detach']:
-            subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
-        else:
-            log("======================================")
-            log("The vm is still running.")
-            log("You can login the vm with:  ssh " + vm_name)
-            log("Or just:  ssh " + str(config['sshport']))
-            log("======================================")
+            if config['console']:
+                 log("======================================")
+                 log("")
+                 log("You can login the vm with: ssh " + vm_name)
+                 log("Or just:  ssh " + str(config['sshport']))
+                 log("======================================")
+            
+            if not config['detach']:
+                subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
+            else:
+                log("======================================")
+                log("The vm is still running.")
+                log("You can login the vm with:  ssh " + vm_name)
+                log("Or just:  ssh " + str(config['sshport']))
+                log("======================================")
+        except KeyboardInterrupt:
+            if not config['detach']:
+                terminate_process(proc, "QEMU")
+            raise
 
 if __name__ == '__main__':
     main()
