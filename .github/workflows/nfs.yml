@@ -37,8 +37,6 @@ jobs:
       run: |
         set -ex
         sudo apt-get update && sudo apt-get --no-install-recommends -y install \
-        curl axel screen \
-        jq \
         zstd \
         ovmf \
         xz-utils \
