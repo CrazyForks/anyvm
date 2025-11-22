@@ -19,6 +19,14 @@
 
 # On Linux Host:
 
+
+| Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
+|---------|---------|---------|-----------------|
+| x86_64 Linux    |  ✅     |  ✅    |           ✅    |
+| aarch64(arm64) Linux    |  ✅     |  ✅    |           ✅    |
+
+
+
 ```bash
 
 sudo apt-get --no-install-recommends -y install \
@@ -43,6 +51,12 @@ python anyvm.py  --os freebsd --release 14.3  --arch aarch64
 # On MacOS Host:
 
 Apple silicon:
+
+| Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
+|---------|---------|---------|-----------------|
+| aarch64(arm64) Apple silicon    |  ✅     |  ✅    |           ✅    |
+
+
 
 ```bash
 
