@@ -177,13 +177,21 @@ def get_free_vnc_display(bind_addr, start=0, end=100):
     return None
 
 def fetch_url_content(url):
-    req = Request(url)
-    req.add_header('User-Agent', 'python-qemu-script')
-    try:
-        resp = urlopen(req)
-        return resp.read().decode('utf-8')
-    except Exception:
-        return None
+    attempts = 5
+    for attempt in range(attempts):
+        req = Request(url)
+        req.add_header('User-Agent', 'python-qemu-script')
+        try:
+            resp = urlopen(req)
+            return resp.read().decode('utf-8')
+        except HTTPError as e:
+            if e.code == 404:
+                return None
+        except Exception:
+            pass
+        if attempt < attempts - 1:
+            time.sleep(3)
+    return None
 
 def download_file(url, dest):
     log("Downloading " + url)
