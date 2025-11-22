@@ -9,7 +9,7 @@ on:
     branches:
       - '*'
     paths:
-      - '**.sh'
+      - '**.py'
       - '.github/workflows/omnios.yml'
       - '.github/workflows/nfs.yml'
       - '.github/workflows/sshfs.yml'
