@@ -33,7 +33,7 @@ on:
 jobs:
   test:
     runs-on: ${{ inputs.runs }}
-    name: Test nfs ${{ inputs.os }} ${{ inputs.arch }}
+    name: Test ${{ inputs.release }} ${{ inputs.arch }} ${{ inputs.sync }}
     steps:
     - uses: actions/checkout@v4
     - name: Test 
