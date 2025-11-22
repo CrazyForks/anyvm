@@ -11,8 +11,8 @@ on:
     paths:
       - '**.py'
       - '.github/workflows/openbsd.yml'
-      - '.github/workflows/nfs.yml'
-      - '.github/workflows/sshfs.yml'
+      - '.github/workflows/testrun.yml'
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,12 +31,13 @@ jobs:
             arch: aarch64
 
 
-    uses: ./.github/workflows/sshfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "sshfs"
 
 
   testnfs-old:
@@ -50,12 +51,13 @@ jobs:
           - release: 7.3
             arch: aarch64
 
-    uses: ./.github/workflows/nfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "nfs"
 
 
   testsshfs:
@@ -66,12 +68,13 @@ jobs:
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
 
-    uses: ./.github/workflows/sshfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "sshfs"
 
   testnfs:
     strategy:
@@ -81,9 +84,11 @@ jobs:
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
 
-    uses: ./.github/workflows/nfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "nfs"
+      

@@ -11,8 +11,9 @@ on:
     paths:
       - '**.py'
       - '.github/workflows/netbsd.yml'
-      - '.github/workflows/nfs.yml'
-      - '.github/workflows/sshfs.yml'
+      - '.github/workflows/testrun.yml'
+
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,12 +39,13 @@ jobs:
           - release: "9.4"
             arch: aarch64
 
-    uses: ./.github/workflows/sshfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: netbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "sshfs"
 
 
   testnfs:
@@ -65,10 +67,11 @@ jobs:
           - release: "9.4"
             arch: aarch64
 
-    uses: ./.github/workflows/nfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: netbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "nfs"
    

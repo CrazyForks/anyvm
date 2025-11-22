@@ -11,14 +11,31 @@ on:
     paths:
       - '**.py'
       - '.github/workflows/openindiana.yml'
-      - '.github/workflows/nfs.yml'
-      - '.github/workflows/sshfs.yml'
+      - '.github/workflows/testrun.yml'
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  testsshfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["202510"]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: freebsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "sshfs"
+
   nfs:
     strategy:
       fail-fast: false
@@ -28,12 +45,13 @@ jobs:
         runs: ["ubuntu-24.04"]
 
 
-    uses: ./.github/workflows/nfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: openindiana
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: "nfs"
 
 
 

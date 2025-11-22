@@ -11,8 +11,8 @@ on:
     paths:
       - '**.py'
       - '.github/workflows/solaris.yml'
-      - '.github/workflows/nfs.yml'
-      - '.github/workflows/sshfs.yml'
+      - '.github/workflows/testrun.yml'
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,12 +28,13 @@ jobs:
         runs: ["ubuntu-24.04"]
 
 
-    uses: ./.github/workflows/nfs.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: solaris
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
+      sync: nfs
 
 
 
