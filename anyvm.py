@@ -179,7 +179,7 @@ def get_free_vnc_display(bind_addr, start=0, end=100):
     return None
 
 def fetch_url_content(url):
-    attempts = 5
+    attempts = 10
     for attempt in range(attempts):
         req = Request(url)
         req.add_header('User-Agent', 'python-qemu-script')
@@ -188,11 +188,12 @@ def fetch_url_content(url):
             return resp.read().decode('utf-8')
         except HTTPError as e:
             if e.code == 404:
+                log("404: " + url)
                 return None
         except Exception:
             pass
         if attempt < attempts - 1:
-            time.sleep(3)
+            time.sleep(5)
     return None
 
 def get_remote_file_info(url):
@@ -437,6 +438,43 @@ def terminate_process(proc, name="process", grace_seconds=10):
             proc.kill()
         except Exception:
             pass
+
+def tighten_windows_permissions(path):
+    """Removes inherited ACLs on Windows to mimic chmod 600 semantics."""
+    if not IS_WINDOWS:
+        return
+    try:
+        subprocess.check_call(["icacls", path, "/inheritance:r"], stdout=DEVNULL, stderr=DEVNULL)
+        user = os.environ.get("USERNAME")
+        if not user:
+            return
+        domain = os.environ.get("USERDOMAIN")
+        principal = "{}\\{}".format(domain, user) if domain else user
+        subprocess.check_call(["icacls", path, "/grant:r", "{}:F".format(principal)], stdout=DEVNULL, stderr=DEVNULL)
+    except Exception as exc:
+        log("Warning: Failed to adjust ACLs for {}: {}".format(path, exc))
+
+def call_with_timeout(cmd, timeout_seconds, **popen_kwargs):
+    """Runs a subprocess with a hard timeout, returning (returncode, timed_out)."""
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    deadline = time.time() + max(0, timeout_seconds)
+    while True:
+        ret = proc.poll()
+        if ret is not None:
+            return ret, False
+        if time.time() >= deadline:
+            break
+        time.sleep(0.1)
+
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(1)
+    except Exception:
+        pass
+    return None, True
 
 def create_sized_file(path, size_mb):
     """Creates a zero-filled file of size_mb."""
@@ -949,9 +987,12 @@ def main():
     hostid_url = "https://github.com/{}/releases/download/v{}/{}-host.id_rsa".format(builder_repo, config['builder'], vm_name)
     hostid_file = os.path.join(output_dir, hostid_url.split('/')[-1])
     
+    os.unlink(hostid_file) if os.path.exists(hostid_file) else None
     if not os.path.exists(hostid_file):
         download_file(hostid_url, hostid_file)
-        if not IS_WINDOWS:
+        if IS_WINDOWS:
+            tighten_windows_permissions(hostid_file)
+        else:
             os.chmod(hostid_file, 0o600)
 
     vmpub_url = "https://github.com/{}/releases/download/v{}/{}-id_rsa.pub".format(builder_repo, config['builder'], vm_name)
@@ -1165,7 +1206,9 @@ def main():
             ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
             if not os.path.exists(ssh_dir):
                 os.makedirs(ssh_dir)
-                if not IS_WINDOWS:
+                if IS_WINDOWS:
+                    tighten_windows_permissions(ssh_dir)
+                else:
                     os.chmod(ssh_dir, 0o700)
             
             with open(vmpub_file, 'r') as f:
@@ -1185,7 +1228,9 @@ def main():
             with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
                 f.write(ssh_config_content)
 
-            if not IS_WINDOWS:
+            if IS_WINDOWS:
+                tighten_windows_permissions(os.path.join(conf_path, "{}.conf".format(vm_name)))
+            else:
                 os.chmod(os.path.join(conf_path, "{}.conf".format(vm_name)), 0o600)
 
             # Write config for Port
@@ -1196,13 +1241,17 @@ def main():
             with open(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 'w') as f: 
                  f.write(port_conf_content)
             
-            if not IS_WINDOWS:
+            if IS_WINDOWS:
+                tighten_windows_permissions(os.path.join(conf_path, "{}.conf".format(config['sshport'])))
+            else:
                 os.chmod(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 0o600)
 
             main_conf = os.path.join(ssh_dir, "config")
             if not os.path.exists(main_conf):
                 open(main_conf, 'w').close()
-                if not IS_WINDOWS:
+                if IS_WINDOWS:
+                  tighten_windows_permissions(main_conf)
+                else:
                   os.chmod(main_conf, 0o600)
             
             with open(main_conf, 'r') as f:
@@ -1217,7 +1266,6 @@ def main():
             
             ssh_base_cmd = [
                 "ssh",
-                "-o", "ConnectTimeout=5",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
                 "-o", "LogLevel=ERROR",
@@ -1229,11 +1277,14 @@ def main():
             for i in range(300):
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
-                ret = subprocess.call(
+                ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
+                    timeout_seconds=5,
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
+                if timed_out:
+                    continue
                 if ret == 0:
                     success = True
                     break
