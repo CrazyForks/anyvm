@@ -59,6 +59,8 @@ try:
 except AttributeError:
     DEVNULL = open(os.devnull, 'wb')
 
+SSH_KNOWN_HOSTS_NULL = "NUL" if IS_WINDOWS else "/dev/null"
+
 OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
 
@@ -72,6 +74,19 @@ def removesuffix(text, suffix):
     if text.endswith(suffix):
         return text[:-len(suffix)]
     return text
+
+def format_command_for_display(cmd_list):
+    """Pretty-print the QEMU command with platform-appropriate quoting."""
+    if IS_WINDOWS:
+        def quote(arg):
+            if not arg:
+                return '""'
+            if any(ch in arg for ch in ' \t"'):
+                return '"' + arg.replace('"', '""') + '"'
+            return arg
+        joiner = " ^\n  "
+        return joiner.join(quote(arg) for arg in cmd_list)
+    return " \\\n  ".join(shlex.quote(arg) for arg in cmd_list)
 
 def log(msg):
     print(msg)
@@ -116,6 +131,7 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0).
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
+  --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
@@ -475,7 +491,7 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
         "-P", str(sshport),
         "-i", hostid_file,
         "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
         "-o", "LogLevel=ERROR",
         os.path.join(vhost, "."),
         "root@localhost:" + vguest + "/"
@@ -531,7 +547,8 @@ def main():
         'os': "",
         'release': "",
         'arch': "",
-        'builder': ""
+        'builder': "",
+        'whpx': False
     }
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -608,6 +625,8 @@ def main():
             i += 1
         elif arg == "--public":
             config['public'] = True
+        elif arg == "--whpx":
+            config['whpx'] = True
         i += 1
 
     if not config['os']:
@@ -616,6 +635,10 @@ def main():
 
     if config['os'] == "freebsd":
         config['useefi'] = True
+
+    if config['whpx'] and not IS_WINDOWS:
+        log("Warning: --whpx is only meaningful on Windows hosts; ignoring.")
+        config['whpx'] = False
 
     # Arch detection
     host_machine = platform.machine()
@@ -888,8 +911,8 @@ def main():
         accel = "tcg"
         if host_arch in ["x86_64", "amd64"]:
              if IS_WINDOWS:
-                 # Try whpx first, fall back to tcg if unavailable
-                 accel = "whpx:tcg"
+                 if config['whpx']:
+                     accel = "whpx:tcg"
              elif os.path.exists("/dev/kvm"):
                  accel = "kvm"
              elif platform.system() == "Darwin":
@@ -912,6 +935,9 @@ def main():
         # x86 UEFI handling
         if config['useefi']:
             efi_src = "/usr/share/qemu/OVMF.fd"
+            if IS_WINDOWS:
+                prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+                efi_src = os.path.join(prog_files, "qemu", "share", "edk2-x86_64-code.fd")
             vars_path = os.path.join(output_dir, vm_name + "-OVMF_VARS.fd")
             if not os.path.exists(vars_path):
                 create_sized_file(vars_path, 4)
@@ -939,26 +965,33 @@ def main():
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
-    cmd_text = " \\\n  ".join(shlex.quote(arg) for arg in cmd_list)
+    cmd_text = format_command_for_display(cmd_list)
     log("CMD:\n  " + cmd_text)
 
     if config['console']:
         subprocess.call(cmd_list)
     else:
         # Background run
-        proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
-        # Send enters to speed up
+        try:
+            proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as e:
+            fatal("Failed to start QEMU: {}".format(e))
+
+        def fail_with_output(reason):
+            stdout_data = proc.stdout.read() or b""
+            stderr_data = proc.stderr.read() or b""
+            err_msg = stderr_data.decode('utf-8', errors='replace').strip()
+            out_msg = stdout_data.decode('utf-8', errors='replace').strip()
+            combined = err_msg or out_msg or "(no output)"
+            fatal("{} (code {}). Output:\n{}".format(reason, proc.returncode, combined))
+
         time.sleep(1)
-        for _ in range(10):
-            try:
-                proc.stdin.write(b'\r')
-                proc.stdin.flush()
-                time.sleep(1)
-            except:
-                break
-        
+        if proc.poll() is not None:
+            fail_with_output("QEMU exited immediately")
+
+
         log("Started QEMU (PID: {})".format(proc.pid))
+
         
         # Config SSH
         ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
@@ -976,7 +1009,7 @@ def main():
         if not os.path.exists(conf_path):
             os.makedirs(conf_path)
         
-        ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile=/dev/null\n  User root\n  HostName localhost\n  Port {}\n  IdentityFile {}\n".format(vm_name, config['sshport'], hostid_file)
+        ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n  IdentityFile {}\n".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], hostid_file)
         
         # Write config for VM name
         with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
@@ -1013,7 +1046,7 @@ def main():
             "ssh",
             "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
             "-o", "LogLevel=ERROR",
             "-i", hostid_file,
             "-p", str(config['sshport']),
@@ -1021,6 +1054,8 @@ def main():
         ]
         
         for i in range(300):
+            if proc.poll() is not None:
+                fail_with_output("QEMU terminated during boot")
             ret = subprocess.call(
                 ssh_base_cmd + ["exit"],
                 stdout=DEVNULL,
@@ -1089,7 +1124,7 @@ Host host
              log("======================================")
         
         if not config['detach']:
-            subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
+            subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
         else:
             log("======================================")
             log("The vm is still running.")
