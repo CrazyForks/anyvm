@@ -33,10 +33,16 @@ sudo apt-get --no-install-recommends -y install \
         
 python anyvm.py  --os freebsd
 
+python anyvm.py  --os freebsd --release 14.3
+
+python anyvm.py  --os freebsd --release 14.3  --arch aarch64
+
 ```
 
 
 # On MacOS Host:
+
+Apple silicon:
 
 ```bash
 
@@ -44,6 +50,10 @@ brew install qemu
 
 
 python anyvm.py  --os freebsd
+
+python anyvm.py  --os freebsd --release 14.3
+
+python anyvm.py  --os freebsd --release 14.3  --arch aarch64
 
 ```
 
