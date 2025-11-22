@@ -116,6 +116,7 @@ Options:
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
   --nc <type>            Network card model (e.g., virtio-net-pci, e1000).
   --sshport <port>       Host port forwarding for SSH (Default: auto-detected free port).
+  --serial <port>        Expose the VM serial console on the given TCP port (auto-select starting 7000 if omitted).
   -p <mapping>           Custom port mapping. Can be used multiple times.
                          Formats: host:guest, tcp:host:guest, udp:host:guest.
                          Example: -p 8080:80 -p udp:3000:3000
@@ -676,7 +677,8 @@ def main():
         'release': "",
         'arch': "",
         'builder': "",
-        'whpx': False
+        'whpx': False,
+        'serialport': ""
     }
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -755,6 +757,9 @@ def main():
             config['public'] = True
         elif arg == "--whpx":
             config['whpx'] = True
+        elif arg == "--serial":
+            config['serialport'] = args[i+1]
+            i += 1
         i += 1
 
     if not config['os']:
@@ -943,6 +948,18 @@ def main():
     else:
         addr = "127.0.0.1"
 
+    serial_bind_addr = "0.0.0.0" if config['public'] else "127.0.0.1"
+    if config['console']:
+        serial_arg = "mon:stdio"
+    else:
+        if not config['serialport']:
+            serial_port = get_free_port(start=7000, end=9000)
+            if not serial_port:
+                fatal("No free serial ports available")
+            config['serialport'] = str(serial_port)
+        serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
+        log("Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
+
     # QEMU Construction
     bin_name = "qemu-system-aarch64" if config['arch'] == "aarch64" else "qemu-system-x86_64"
     qemu_bin = find_qemu(bin_name)
@@ -976,7 +993,7 @@ def main():
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], addr, parts[1], parts[2])
 
     args_qemu = [
-        "-serial", "mon:stdio",
+        "-serial", serial_arg,
         "-name", vm_name,
         "-smp", config['cpu'],
         "-m", config['mem'],
@@ -1139,6 +1156,8 @@ def main():
         
         ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n  IdentityFile {}\n".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], hostid_file)
         
+        os.unlink(os.path.join(conf_path, "{}.conf".format(vm_name))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(vm_name))) else None
+        
         # Write config for VM name
         with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
             f.write(ssh_config_content)
@@ -1148,6 +1167,9 @@ def main():
 
         # Write config for Port
         port_conf_content = ssh_config_content.replace("Host " + vm_name, "Host " + str(config['sshport']))
+        
+        os.unlink(os.path.join(conf_path, "{}.conf".format(config['sshport']))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(config['sshport']))) else None
+        
         with open(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 'w') as f: 
              f.write(port_conf_content)
         
