@@ -13,6 +13,7 @@ import getpass
 import shutil
 import shlex
 import re
+import threading
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -193,9 +194,128 @@ def fetch_url_content(url):
             time.sleep(3)
     return None
 
+def get_remote_file_info(url):
+    req = Request(url)
+    req.add_header('User-Agent', 'python-qemu-script')
+    if hasattr(req, 'method'):
+        req.method = 'HEAD'
+    else:
+        try:
+            req.get_method = lambda: 'HEAD'
+        except Exception:
+            pass
+    try:
+        resp = urlopen(req)
+        length = int(resp.headers.get('Content-Length', '0'))
+        accept_ranges = resp.headers.get('Accept-Ranges', '').lower() == 'bytes'
+        try:
+            resp.close()
+        except Exception:
+            pass
+        return length, accept_ranges
+    except Exception:
+        return 0, False
+
+def download_file_multithread(url, dest, total_size, show_progress):
+    tmp_dest = dest + ".part"
+    try:
+        with open(tmp_dest, 'wb') as f:
+            f.truncate(total_size)
+    except IOError:
+        return False
+
+    num_threads = min(4, max(1, total_size // (8 * 1024 * 1024)))
+    chunk_size = (total_size + num_threads - 1) // num_threads
+    progress_lock = threading.Lock()
+    downloaded = [0]
+    last_percent = [-1]
+    errors = []
+    stop_event = threading.Event()
+
+    def update_progress():
+        if not show_progress:
+            return
+        percent = int(downloaded[0] * 100 / total_size)
+        if percent != last_percent[0]:
+            last_percent[0] = percent
+            sys.stdout.write("\r  {:3d}% ({:.1f}/{:.1f} MB)".format(
+                percent,
+                downloaded[0] / (1024 * 1024.0),
+                total_size / (1024 * 1024.0)
+            ))
+            sys.stdout.flush()
+
+    def worker(start, end):
+        if stop_event.is_set():
+            return
+        req = Request(url)
+        req.add_header('User-Agent', 'python-qemu-script')
+        req.add_header('Range', 'bytes={}-{}'.format(start, end))
+        try:
+            resp = urlopen(req)
+            with open(tmp_dest, 'r+b') as f:
+                f.seek(start)
+                while not stop_event.is_set():
+                    chunk = resp.read(128 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    if show_progress:
+                        with progress_lock:
+                            downloaded[0] += len(chunk)
+                            update_progress()
+            try:
+                resp.close()
+            except Exception:
+                pass
+        except Exception as e:
+            stop_event.set()
+            with progress_lock:
+                errors.append(e)
+
+    threads = []
+    for index in range(num_threads):
+        start = index * chunk_size
+        end = min(total_size - 1, start + chunk_size - 1)
+        if start > end:
+            break
+        t = threading.Thread(target=worker, args=(start, end))
+        t.daemon = True
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join()
+
+    if show_progress:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    if errors or stop_event.is_set():
+        try:
+            os.remove(tmp_dest)
+        except OSError:
+            pass
+        return False
+
+    try:
+        if hasattr(os, 'replace'):
+            os.replace(tmp_dest, dest)
+        else:
+            shutil.move(tmp_dest, dest)
+    except Exception:
+        return False
+    return True
+
 def download_file(url, dest):
     log("Downloading " + url)
     show_progress = sys.stdout.isatty()
+
+    size, can_range = get_remote_file_info(url)
+    if can_range and size > 0:
+        if download_file_multithread(url, dest, size, show_progress):
+            return True
+        log("Falling back to single-thread download...")
 
     def make_progress_hook():
         if not show_progress:
