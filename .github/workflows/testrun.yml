@@ -23,6 +23,10 @@ on:
         description: "VM nic type"
         required: false
         type: string
+      sync:
+        description: "Sync type"
+        required: false
+        type: string
 
 
 
