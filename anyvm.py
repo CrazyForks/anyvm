@@ -14,6 +14,7 @@ import shutil
 import shlex
 import re
 import threading
+import atexit
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -415,6 +416,28 @@ def append_url_to_file(url, dest_path):
         except Exception:
             pass
     return True
+
+def terminate_process(proc, name="process", grace_seconds=10):
+    """Attempts to gracefully stop a subprocess before forcing termination."""
+    if not proc or proc.poll() is not None:
+        return
+    log("Terminating qemu")
+    log("Stopping {} (PID: {})".format(name, proc.pid))
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+
+    deadline = time.time() + max(0, grace_seconds)
+    while proc.poll() is None and time.time() < deadline:
+        time.sleep(0.2)
+
+    if proc.poll() is None:
+        log("{} did not exit gracefully; killing.".format(name))
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 def create_sized_file(path, size_mb):
     """Creates a zero-filled file of size_mb."""
@@ -1121,6 +1144,11 @@ def main():
             proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as e:
             fatal("Failed to start QEMU: {}".format(e))
+
+        if not config['detach']:
+            def cleanup_qemu():
+                terminate_process(proc, "QEMU")
+            atexit.register(cleanup_qemu)
 
         def fail_with_output(reason):
             stdout_data = proc.stdout.read() or b""
