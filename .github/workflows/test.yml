@@ -1,0 +1,58 @@
+
+name: Test
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.sh'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/nfs.yml'
+      - '.github/workflows/sshfs.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testsshfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["freebsd", "netbsd", "openbsd"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/sshfs.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+
+  testnfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+        exclude:
+          - os: solaris
+            arch: aarch64
+          - os: dragonflybsd
+            arch: aarch64
+          - os: omnios
+            arch: aarch64
+          - os: openindiana
+            arch: aarch64
+
+    uses: ./.github/workflows/nfs.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+   

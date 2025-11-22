@@ -1,0 +1,89 @@
+
+name: Test OpenBSD
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.sh'
+      - '.github/workflows/openbsd.yml'
+      - '.github/workflows/nfs.yml'
+      - '.github/workflows/sshfs.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testsshfs-old:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.3", "7.4", "7.5", "7.6"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+        exclude:
+          - release: 7.3
+            arch: aarch64
+
+
+    uses: ./.github/workflows/sshfs.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+
+
+  testnfs-old:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.3", "7.4", "7.5", "7.6"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+        exclude:
+          - release: 7.3
+            arch: aarch64
+
+    uses: ./.github/workflows/nfs.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+
+
+  testsshfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.7", "7.8"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/sshfs.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+
+  testnfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.7", "7.8"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/nfs.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
