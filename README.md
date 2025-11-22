@@ -19,7 +19,8 @@
 
 # On Linux Host:
 
-```
+```bash
+
 sudo apt-get --no-install-recommends -y install \
         zstd \
         ovmf \
@@ -30,8 +31,6 @@ sudo apt-get --no-install-recommends -y install \
         qemu-system-arm qemu-efi-aarch64
         
         
-
-
 python anyvm.py  --os freebsd
 
 ```
@@ -39,7 +38,8 @@ python anyvm.py  --os freebsd
 
 # On MacOS Host:
 
-```
+```bash
+
 brew install qemu
 
 
@@ -56,7 +56,7 @@ https://www.qemu.org/download/#windows
 
 https://qemu.weilnetz.de/w64/
 
-```
+```bash
 
 python anyvm.py  --os freebsd
 
