@@ -25,14 +25,14 @@ jobs:
         os: ["freebsd", "netbsd", "openbsd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
-        runs: ["sshfs", "scp", "rsync"]
+        sync: ["sshfs", "scp", "rsync"]
 
     uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
-      sync: sshfs
+      sync: ${{ matrix.sync }}
 
 
   testnfs:
