@@ -1261,8 +1261,27 @@ def main():
                         fa.write("\nInclude config.d/*.conf\n")
 
             # Wait for boot
-            log("Waiting for VM to boot (port {})...".format(config['sshport']))
+            wait_msg = "Waiting for VM to boot (port {})...".format(config['sshport'])
+            log(wait_msg)
             success = False
+            interactive_wait = sys.stdout.isatty()
+            wait_start = time.time()
+            last_wait_second = [-1]
+
+            def update_wait_timer():
+                if not interactive_wait:
+                    return
+                elapsed = int(time.time() - wait_start)
+                if elapsed == last_wait_second[0]:
+                    return
+                last_wait_second[0] = elapsed
+                sys.stdout.write("\r{} {}s".format(wait_msg, elapsed))
+                sys.stdout.flush()
+
+            def finish_wait_timer():
+                if interactive_wait and last_wait_second[0] >= 0:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
             
             ssh_base_cmd = [
                 "ssh",
@@ -1275,6 +1294,7 @@ def main():
             ]
             
             for i in range(300):
+                update_wait_timer()
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
                 ret, timed_out = call_with_timeout(
@@ -1289,7 +1309,9 @@ def main():
                     success = True
                     break
                 time.sleep(2)
+                update_wait_timer()
             
+            finish_wait_timer()
             if not success:
                 fatal("Boot timed out.")
             
@@ -1349,7 +1371,6 @@ Host host
             
             if not config['detach']:
                 subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
-            else:
                 log("======================================")
                 log("The vm is still running.")
                 log("You can login the vm with:  ssh " + vm_name)
