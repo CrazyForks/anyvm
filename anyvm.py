@@ -673,6 +673,23 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
     except Exception:
          pass
 
+    if not os.path.exists(vhost):
+        log("Warning: Host path {} does not exist; skipping.".format(vhost))
+        return
+
+    if os.path.isdir(vhost):
+        try:
+            entries = os.listdir(vhost)
+        except OSError as exc:
+            log("Warning: Failed to read {}: {}".format(vhost, exc))
+            return
+        if not entries:
+            log("Host dir {} is empty; nothing to sync.".format(vhost))
+            return
+        sources = [os.path.join(vhost, entry) for entry in entries]
+    else:
+        sources = [vhost]
+
     # SCP command to push files
     # Added -O option for legacy protocol support
     cmd = [
@@ -682,9 +699,7 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
         "-o", "LogLevel=ERROR",
-        os.path.join(vhost, "."),
-        "root@localhost:" + vguest + "/"
-    ]
+    ] + sources + ["root@localhost:" + vguest + "/"]
     
     if subprocess.call(cmd) != 0:
         log("Warning: SCP sync failed.")
@@ -1316,7 +1331,7 @@ def main():
                 fatal("Boot timed out.")
             
             log("VM Ready! Connect with: ssh {}".format(vm_name))
-
+            
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
             vm_ssh_config = """
@@ -1347,7 +1362,11 @@ Host host
 
                 for vpath_str in config['vpaths']:
                     try:
-                        vhost, vguest = vpath_str.split(':')
+                        if ':' not in vpath_str:
+                            raise ValueError
+                        vhost, vguest = vpath_str.rsplit(':', 1)
+                        if not vhost or not vguest:
+                            raise ValueError
                         log("Mounting host dir: {} to guest: {}".format(vhost, vguest))
                         
                         if config['sync'] == 'nfs':
@@ -1371,11 +1390,11 @@ Host host
             
             if not config['detach']:
                 subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
-                log("======================================")
-                log("The vm is still running.")
-                log("You can login the vm with:  ssh " + vm_name)
-                log("Or just:  ssh " + str(config['sshport']))
-                log("======================================")
+            log("======================================")
+            log("The vm is still running.")
+            log("You can login the vm with:  ssh " + vm_name)
+            log("Or just:  ssh " + str(config['sshport']))
+            log("======================================")
         except KeyboardInterrupt:
             if not config['detach']:
                 terminate_process(proc, "QEMU")
