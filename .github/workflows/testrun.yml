@@ -31,7 +31,7 @@ on:
 
 
 jobs:
-  testnfs:
+  test${{ inputs.sync }}:
     runs-on: ${{ inputs.runs }}
     name: Test nfs ${{ inputs.os }} ${{ inputs.arch }}
     steps:
