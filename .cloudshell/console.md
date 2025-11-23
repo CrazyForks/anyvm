@@ -21,7 +21,7 @@ sudo apt-get update && sudo apt-get --no-install-recommends -y install \
     qemu-system-arm \
     qemu-efi-aarch64 \
     nfs-kernel-server \
-    rsync
+    rsync qemu-efi-riscv64 qemu-system-riscv64 u-boot-qemu
     
     
 ```

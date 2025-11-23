@@ -1054,7 +1054,11 @@ def main():
         log("Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
 
     # QEMU Construction
-    bin_name = "qemu-system-aarch64" if config['arch'] == "aarch64" else "qemu-system-x86_64"
+    bin_name = "qemu-system-aarch64" 
+    if config['arch'] == "riscv64":
+        bin_name = "qemu-system-riscv64"
+    else:
+        bin_name = "qemu-system-x86_64"
     qemu_bin = find_qemu(bin_name)
     
     if not qemu_bin:
@@ -1105,6 +1109,8 @@ def main():
                 net_card = "e1000"
             else:
                 net_card = "virtio-net-pci"
+        elif config['arch'] == "riscv64":
+            net_card = "virtio-net-pci"
 
     # Platform specific args
     if config['arch'] == "aarch64":
@@ -1143,6 +1149,17 @@ def main():
             "-device", "{},netdev=net0".format(net_card),
             "-drive", "if=pflash,format=raw,readonly=on,file={}".format(efi_path),
             "-drive", "if=pflash,format=raw,file={},unit=1".format(vars_path)
+        ])
+    elif config['arch'] == "riscv64":
+        machine_opts = "virt,accel=tcg,graphics=off,usb=off,dump-guest-core=off,acpi=off"
+        cpu_opts = "rv64"
+        
+        args_qemu.extend([
+            "-machine", machine_opts,
+            "-cpu", cpu_opts,
+            "-device", "{},netdev=net0".format(net_card),
+            "-kernel", "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin",
+            "-device", "virtio-balloon-pci"
         ])
     else:
         # x86_64
