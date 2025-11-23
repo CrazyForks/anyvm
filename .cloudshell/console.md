@@ -26,3 +26,11 @@ sudo apt-get update && sudo apt-get --no-install-recommends -y install \
     
 ```
 
+
+Then, try:
+
+```bash
+
+python anyvm.py --os freebsd
+
+```
