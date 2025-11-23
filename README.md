@@ -1,6 +1,7 @@
 # Run any vm anywhere [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
 
 
+
 [![Test FreeBSD](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml)
 
 [![Test NetBSD](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml)
@@ -15,6 +16,29 @@
 
 [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml)
 
+
+
+# On Google Cloud Shell:
+
+[![Try it Now in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://console.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/anyvm-org/anyvm.git)
+
+Click the "Try it Now in Cloud Shell" button above to instantly launch this project in Google Cloud Shell.
+
+The environment is already configured with QEMU and all necessary dependencies. Simply run:
+
+```bash
+python anyvm.py --os freebsd
+```
+
+Or try other operating systems:
+
+```bash
+python anyvm.py --os openbsd
+python anyvm.py --os netbsd
+python anyvm.py --os solaris
+```
+
+Note: Google Cloud Shell provides a free Linux environment with nested virtualization support.
 
 
 # On Linux Host:
