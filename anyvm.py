@@ -1054,11 +1054,11 @@ def main():
         log("Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
 
     # QEMU Construction
-    bin_name = "qemu-system-aarch64" 
+    bin_name = "qemu-system-x86_64"
     if config['arch'] == "riscv64":
         bin_name = "qemu-system-riscv64"
-    else:
-        bin_name = "qemu-system-x86_64"
+    elif config['arch'] == "aarch64":
+        bin_name = "qemu-system-aarch64"
     qemu_bin = find_qemu(bin_name)
     
     if not qemu_bin:
