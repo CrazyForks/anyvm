@@ -78,7 +78,7 @@ Apple silicon:
 
 | Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
 |---------|---------|---------|-----------------|
-| aarch64(arm64) Apple silicon    |  ✅     |  ✅    |           ✅    |
+| aarch64(arm64) Apple silicon    |  ✅     |  ✅    |           ❌   |
 
 
 
