@@ -1172,10 +1172,13 @@ def main():
         
         # x86 UEFI handling
         if config['useefi']:
-            efi_src = "/usr/share/qemu/OVMF.fd"
             if IS_WINDOWS:
                 prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
                 efi_src = os.path.join(prog_files, "qemu", "share", "edk2-x86_64-code.fd")
+            elif platform.system() == "Darwin":
+                efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+            else:
+                efi_src = "/usr/share/qemu/OVMF.fd"
             vars_path = os.path.join(output_dir, vm_name + "-OVMF_VARS.fd")
             if not os.path.exists(vars_path):
                 create_sized_file(vars_path, 4)
