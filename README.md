@@ -20,7 +20,7 @@
 
 # Try it Now in Google Cloud Shell:
 
-[![Try it Now in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/anyvm-org/anyvm.git&cloudshell_git_branch=main&cloudshell_open_in_editor=.cloudshell/tutorial.md)
+[![Try it Now in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Fanyvm-org%2Fanyvm&cloudshell_tutorial=.cloudshell%2Ftutorial.md&show=terminal&ephemeral=true&cloudshell_print=.cloudshell%2Fconsole.md)
 
 Click the "Try it Now in Cloud Shell" button above to instantly launch this project in Google Cloud Shell.
 
