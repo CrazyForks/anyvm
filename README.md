@@ -18,13 +18,12 @@
 
 
 
-# On Google Cloud Shell:
+# Try it Now in Google Cloud Shell:
 
-[![Try it Now in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://console.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/anyvm-org/anyvm.git)
+[![Try it Now in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/anyvm-org/anyvm.git&cloudshell_git_branch=main&cloudshell_open_in_editor=.cloudshell/tutorial.md)
 
 Click the "Try it Now in Cloud Shell" button above to instantly launch this project in Google Cloud Shell.
 
-The environment is already configured with QEMU and all necessary dependencies. Simply run:
 
 ```bash
 python anyvm.py --os freebsd
@@ -37,8 +36,6 @@ python anyvm.py --os openbsd
 python anyvm.py --os netbsd
 python anyvm.py --os solaris
 ```
-
-Note: Google Cloud Shell provides a free Linux environment with nested virtualization support.
 
 
 # On Linux Host:
