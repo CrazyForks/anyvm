@@ -18,6 +18,17 @@
 
 
 
+# Try it Now in GitHub Codespaces:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/anyvm-org/anyvm)
+
+```bash
+#enable kvm for current user
+
+sudo chmod o+rw /dev/kvm
+
+```
+
 # Try it Now in Google Cloud Shell:
 
 <a href="https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Fanyvm-org%2Fanyvm&cloudshell_tutorial=.cloudshell%2Ftutorial.md&show=terminal&ephemeral=true&cloudshell_print=.cloudshell%2Fconsole.md" target="_blank" rel="noopener noreferrer">
@@ -25,7 +36,7 @@
 </a>
 
 
-Click the "Try it Now in Cloud Shell" button above to instantly launch this project in Google Cloud Shell.
+Click the "Try it Now in Cloud Shell" or "Open in GitHub Codespaces" button above to instantly launch this project.
 
 
 ```bash

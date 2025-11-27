@@ -1131,7 +1131,10 @@ def main():
         accel = "tcg"
         if host_arch == "aarch64":
             if os.path.exists("/dev/kvm"):
-                accel = "kvm"
+                if os.access("/dev/kvm", os.R_OK | os.W_OK):
+                    accel = "kvm"
+                else:
+                    log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
             elif platform.system() == "Darwin":
                 accel = "hvf"
         
@@ -1167,9 +1170,12 @@ def main():
         if host_arch in ["x86_64", "amd64"]:
              if IS_WINDOWS:
                  if config['whpx']:
-                     accel = "whpx:tcg"
+                     accel = "whpx"
              elif os.path.exists("/dev/kvm"):
-                 accel = "kvm"
+                 if os.access("/dev/kvm", os.R_OK | os.W_OK):
+                     accel = "kvm"
+                 else:
+                     log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
              elif platform.system() == "Darwin":
                  accel = "hvf"
         
