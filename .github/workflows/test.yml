@@ -59,3 +59,22 @@ jobs:
       arch: ${{ matrix.arch }}
       sync: nfs
    
+
+
+  testwindows:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["freebsd", "netbsd", "openbsd"]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+        sync: ["scp", "rsync"]
+
+    uses: ./.github/workflows/testrun.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}
+
+

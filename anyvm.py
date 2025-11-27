@@ -544,6 +544,12 @@ def find_qemu(binary_name):
         candidate_x86 = os.path.join(prog_files_x86, "qemu", binary_name + ".exe")
         if os.path.exists(candidate_x86):
             return candidate_x86
+
+        # Handle MSYS2 UCRT64 location
+        msys_path = r"C:\msys64\ucrt64\bin"
+        candidate_msys = os.path.join(msys_path, binary_name + ".exe")
+        if os.path.exists(candidate_msys):
+            return candidate_msys
             
     return None
 
@@ -1198,6 +1204,10 @@ def main():
             if IS_WINDOWS:
                 prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
                 efi_src = os.path.join(prog_files, "qemu", "share", "edk2-x86_64-code.fd")
+                if not os.path.exists(efi_src):
+                    msys_efi = r"C:\msys64\ucrt64\share\qemu\edk2-x86_64-code.fd"
+                    if os.path.exists(msys_efi):
+                        efi_src = msys_efi
             elif platform.system() == "Darwin":
                 efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
             else:
