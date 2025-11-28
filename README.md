@@ -52,7 +52,7 @@ python anyvm.py --os solaris
 ```
 
 
-# 1. On Linux Host:
+# 1. On Linux Host: [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
 
 
 | Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
@@ -83,7 +83,7 @@ python anyvm.py  --os freebsd --release 14.3  --arch aarch64
 ```
 
 
-# 2. On MacOS Host:
+# 2. On MacOS Host: [![MacOS](https://github.com/anyvm-org/anyvm/actions/workflows/testmacos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/testmacos.yml)
 
 Apple silicon:
 
@@ -107,7 +107,7 @@ python anyvm.py  --os freebsd --release 14.3  --arch aarch64
 ```
 
 
-# 3. On Windows Host:
+# 3. On Windows Host: [![Windows](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml)
 
 Windows x86_64 host:
 
