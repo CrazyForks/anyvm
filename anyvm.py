@@ -974,7 +974,7 @@ def main():
     if host_machine == "AMD64":
         host_machine = "x86_64"
         
-    if host_machine in ["arm64", "aarch64"]:
+    if host_machine in ["arm64", "aarch64", "ARM64"]:
         host_arch = "aarch64"
     else:
         host_arch = host_machine
