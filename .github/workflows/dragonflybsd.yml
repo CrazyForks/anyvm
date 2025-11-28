@@ -1,5 +1,5 @@
 
-name: Test DragonflyBSD
+name: DragonflyBSD
 
 on:
   workflow_dispatch:

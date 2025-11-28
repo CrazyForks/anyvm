@@ -1,5 +1,5 @@
 
-name: Test OmniOS
+name: OmniOS
 
 on:
   workflow_dispatch:

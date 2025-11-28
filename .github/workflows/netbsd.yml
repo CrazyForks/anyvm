@@ -1,5 +1,5 @@
 
-name: Test NetBSD
+name: NetBSD
 
 on:
   workflow_dispatch:

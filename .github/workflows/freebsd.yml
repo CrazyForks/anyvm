@@ -1,5 +1,5 @@
 
-name: Test FreeBSD
+name: FreeBSD
 
 on:
   workflow_dispatch:

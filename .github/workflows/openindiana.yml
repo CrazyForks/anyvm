@@ -1,5 +1,5 @@
 
-name: Test OpenIndiana
+name: OpenIndiana
 
 on:
   workflow_dispatch:

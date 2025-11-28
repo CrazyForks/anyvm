@@ -112,7 +112,7 @@ Options:
   --arch <arch>          Architecture: x86_64 or aarch64.
                          Default: Host architecture.
   --mem <MB>             Memory size in MB (Default: 2048).
-  --cpu <num>            Number of CPU cores (Default: 2).
+  --cpu <num>            Number of CPU cores (Default: all host cores).
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
   --nc <type>            Network card model (e.g., virtio-net-pci, e1000).
   --sshport <port>       Host port forwarding for SSH (Default: auto-detected free port).
@@ -763,9 +763,10 @@ def cmp_version(a, b):
 
 def main():
     # Default configuration
+    default_cpu = str(max(1, os.cpu_count() or 1))
     config = {
         'mem': "2048",
-        'cpu': "2",
+        'cpu': default_cpu,
         'cputype': "",
         'nc': "",
         'sshport': "",
@@ -791,7 +792,7 @@ def main():
     working_dir = os.path.join(script_home, "output")
     
     if os.environ.get("GOOGLE_CLOUD_SHELL") == "true":
-        working_dir = "/tmp/qemu.sh"
+        working_dir = "/tmp/anyvm.org"
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
 

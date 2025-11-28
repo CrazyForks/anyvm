@@ -1,5 +1,5 @@
 
-name: Test Solaris
+name: Solaris
 
 on:
   workflow_dispatch:

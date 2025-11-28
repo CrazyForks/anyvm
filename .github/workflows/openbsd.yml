@@ -1,5 +1,5 @@
 
-name: Test OpenBSD
+name: OpenBSD
 
 on:
   workflow_dispatch:
