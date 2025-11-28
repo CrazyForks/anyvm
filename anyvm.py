@@ -94,6 +94,11 @@ def format_command_for_display(cmd_list):
 def log(msg):
     print(msg)
 
+def debuglog(enabled, msg):
+    """Conditional debug logger."""
+    if enabled:
+        print("[DEBUG] {}".format(msg))
+
 def fatal(msg):
     print("Error: {}".format(msg), file=sys.stderr)
     sys.exit(1)
@@ -127,7 +132,7 @@ Options:
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
                          Supported: sshfs (default), nfs, rsync, scp.
-                         Note: sshfs/nfs/rsync not supported on Windows hosts.
+                         Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
   --workingdir <dir>     Directory to store images and metadata (Default: ./output).
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
@@ -136,6 +141,7 @@ Options:
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
+  --debug                Enable verbose debug logging.
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
@@ -195,11 +201,12 @@ def get_free_vnc_display(start=0, end=100):
             return disp
     return None
 
-def fetch_url_content(url):
+def fetch_url_content(url, debug=False):
     attempts = 10
     max_redirects = 5
     for attempt in range(attempts):
         current_url = url
+        debuglog(debug, "fetch attempt {} for {}".format(attempt + 1, current_url))
         for _ in range(max_redirects):
             req = Request(current_url)
             req.add_header('User-Agent', 'python-qemu-script')
@@ -213,25 +220,30 @@ def fetch_url_content(url):
                     except Exception:
                         pass
                 if data:
+                    debuglog(debug, "fetched {} bytes from {}".format(len(data), current_url))
                     return data.decode('utf-8')
+                debuglog(debug, "empty response from {}; retrying".format(current_url))
                 break  # empty body, retry outer loop
             except HTTPError as e:
                 if e.code in (301, 302, 303, 307, 308):
                     loc = e.headers.get('Location')
                     if loc:
+                        debuglog(debug, "redirect {} -> {}".format(current_url, loc))
                         current_url = urljoin(current_url, loc)
                         continue
                 if e.code == 404:
                     log("404: " + current_url)
                     return None
-            except Exception:
-                pass
+                debuglog(debug, "HTTPError {} on {}".format(e.code, current_url))
+            except Exception as exc:
+                debuglog(debug, "Exception on {}: {}".format(current_url, exc))
             break
         if attempt < attempts - 1:
             time.sleep(5)
+    debuglog(debug, "fetch failed for {}".format(url))
     return None
 
-def get_remote_file_info(url):
+def get_remote_file_info(url, debug=False):
     req = Request(url)
     req.add_header('User-Agent', 'python-qemu-script')
     if hasattr(req, 'method'):
@@ -245,15 +257,17 @@ def get_remote_file_info(url):
         resp = urlopen(req)
         length = int(resp.headers.get('Content-Length', '0'))
         accept_ranges = resp.headers.get('Accept-Ranges', '').lower() == 'bytes'
+        debuglog(debug, "HEAD {} -> length {}, accept_ranges {}".format(url, length, accept_ranges))
         try:
             resp.close()
         except Exception:
             pass
         return length, accept_ranges
-    except Exception:
+    except Exception as exc:
+        debuglog(debug, "HEAD failed for {}: {}".format(url, exc))
         return 0, False
 
-def download_file_multithread(url, dest, total_size, show_progress):
+def download_file_multithread(url, dest, total_size, show_progress, debug=False):
     tmp_dest = dest + ".part"
     try:
         with open(tmp_dest, 'wb') as f:
@@ -268,6 +282,7 @@ def download_file_multithread(url, dest, total_size, show_progress):
     last_percent = [-1]
     errors = []
     stop_event = threading.Event()
+    debuglog(debug, "multithread download: {} bytes, threads {}, chunk {}".format(total_size, num_threads, chunk_size))
 
     def update_progress():
         if not show_progress:
@@ -309,6 +324,7 @@ def download_file_multithread(url, dest, total_size, show_progress):
             stop_event.set()
             with progress_lock:
                 errors.append(e)
+            debuglog(debug, "worker range {}-{} failed: {}".format(start, end, e))
 
     threads = []
     for index in range(num_threads):
@@ -320,9 +336,11 @@ def download_file_multithread(url, dest, total_size, show_progress):
         t.daemon = True
         t.start()
         threads.append(t)
+        debuglog(debug, "started worker {} range {}-{}".format(index, start, end))
 
     for t in threads:
         t.join()
+    debuglog(debug, "all workers finished")
 
     if show_progress:
         sys.stdout.write("\n")
@@ -333,6 +351,7 @@ def download_file_multithread(url, dest, total_size, show_progress):
             os.remove(tmp_dest)
         except OSError:
             pass
+        debuglog(debug, "multithread download failed; errors: {}".format(errors))
         return False
 
     try:
@@ -342,17 +361,21 @@ def download_file_multithread(url, dest, total_size, show_progress):
             shutil.move(tmp_dest, dest)
     except Exception:
         return False
+    debuglog(debug, "multithread download succeeded: {}".format(dest))
     return True
 
-def download_file(url, dest):
+def download_file(url, dest, debug=False):
     log("Downloading " + url)
     show_progress = sys.stdout.isatty()
 
-    size, can_range = get_remote_file_info(url)
+    size, can_range = get_remote_file_info(url, debug)
     if can_range and size > 0:
-        if download_file_multithread(url, dest, size, show_progress):
+        debuglog(debug, "server supports range; size {}".format(size))
+        if download_file_multithread(url, dest, size, show_progress, debug):
             return True
         log("Falling back to single-thread download...")
+    else:
+        debuglog(debug, "range not supported or size unknown (size {}, can_range {})".format(size, can_range))
 
     def make_progress_hook():
         if not show_progress:
@@ -386,7 +409,8 @@ def download_file(url, dest):
             else:
                 urlretrieve(url, dest)
             return True
-        except Exception:
+        except Exception as exc:
+            debuglog(debug, "single-thread attempt {} failed: {}".format(i + 1, exc))
             if hook:
                 sys.stdout.write("\n")
             time.sleep(2)
@@ -414,23 +438,24 @@ def url_exists(url):
         return False
 
 
-def download_optional_parts(base_url, base_path, max_parts=9):
+def download_optional_parts(base_url, base_path, max_parts=9, debug=False):
     for idx in range(1, max_parts + 1):
         part_url = "{}.{}".format(base_url, idx)
         if not url_exists(part_url):
             break
         log("Appending extra part: " + part_url)
-        if not append_url_to_file(part_url, base_path):
+        if not append_url_to_file(part_url, base_path, debug):
             log("Warning: Failed to append optional part {}".format(part_url))
             break
 
 
-def append_url_to_file(url, dest_path):
+def append_url_to_file(url, dest_path, debug=False):
     req = Request(url)
     req.add_header('User-Agent', 'python-qemu-script')
     try:
         resp = urlopen(req)
-    except Exception:
+    except Exception as exc:
+        debuglog(debug, "failed to open {}: {}".format(url, exc))
         return False
 
     try:
@@ -442,7 +467,8 @@ def append_url_to_file(url, dest_path):
                     if not chunk:
                         break
                     f_main.write(chunk)
-            except Exception:
+            except Exception as exc:
+                debuglog(debug, "failed while appending {}: {}".format(url, exc))
                 f_main.truncate(start_pos)
                 return False
     finally:
@@ -450,6 +476,7 @@ def append_url_to_file(url, dest_path):
             resp.close()
         except Exception:
             pass
+    debuglog(debug, "appended {}".format(url))
     return True
 
 def terminate_process(proc, name="process", grace_seconds=10):
@@ -825,7 +852,8 @@ def main():
         'arch': "",
         'builder': "",
         'whpx': False,
-        'serialport': ""
+        'serialport': "",
+        'debug': False
     }
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -900,6 +928,8 @@ def main():
         elif arg == "--disktype":
             config['disktype'] = args[i+1]
             i += 1
+        elif arg == "--debug":
+            config['debug'] = True
         elif arg == "--public":
             config['public'] = True
         elif arg == "--whpx":
@@ -908,6 +938,9 @@ def main():
             config['serialport'] = args[i+1]
             i += 1
         i += 1
+
+    if config['debug']:
+        debuglog(True, "Debug logging enabled")
 
     if not config['os']:
         print_usage()
@@ -963,7 +996,7 @@ def main():
                 pass
         
         url = "https://api.github.com/repos/{}/releases".format(builder_repo)
-        content = fetch_url_content(url)
+        content = fetch_url_content(url, config['debug'])
         if content:
             try:
                 data = json.loads(content)
@@ -1047,8 +1080,8 @@ def main():
     # Download and Extract
     if not os.path.exists(qcow_name):
         if not os.path.exists(ova_file):
-            if download_file(zst_link, ova_file):
-                download_optional_parts(zst_link, ova_file)
+            if download_file(zst_link, ova_file, config['debug']):
+                download_optional_parts(zst_link, ova_file, debug=config['debug'])
         
         log("Extracting " + ova_file)
         if ova_file.endswith('.zst'):
@@ -1076,7 +1109,7 @@ def main():
     
     os.unlink(hostid_file) if os.path.exists(hostid_file) else None
     if not os.path.exists(hostid_file):
-        download_file(hostid_url, hostid_file)
+        download_file(hostid_url, hostid_file, config['debug'])
         if IS_WINDOWS:
             tighten_windows_permissions(hostid_file)
         else:
@@ -1085,7 +1118,7 @@ def main():
     vmpub_url = "https://github.com/{}/releases/download/v{}/{}-id_rsa.pub".format(builder_repo, config['builder'], vm_name)
     vmpub_file = os.path.join(output_dir, vmpub_url.split('/')[-1])
     if not os.path.exists(vmpub_file):
-        download_file(vmpub_url, vmpub_file)
+        download_file(vmpub_url, vmpub_file, config['debug'])
 
     # Ports
     if not config['sshport']:
