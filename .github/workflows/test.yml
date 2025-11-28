@@ -67,7 +67,7 @@ jobs:
       fail-fast: false
       matrix:
         os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
-        arch: ["aarch64", ""]
+        arch: [""]
         runs: ["windows-latest"]
         sync: ["scp"]
         exclude:
@@ -88,3 +88,33 @@ jobs:
       sync: ${{ matrix.sync }}
 
 
+
+
+  testmacos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        arch: ["aarch64", "x86_64"]
+        runs: ["macos-latest"]
+        sync: ["scp"]
+        exclude:
+          - os: solaris
+            arch: aarch64
+          - os: dragonflybsd
+            arch: aarch64
+          - os: omnios
+            arch: aarch64
+          - os: openindiana
+            arch: aarch64
+
+    uses: ./.github/workflows/testrun.yml
+    with:
+      runs: ${{ matrix.runs }}
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}
+      
+      
+      
+      

@@ -52,7 +52,7 @@ python anyvm.py --os solaris
 ```
 
 
-# On Linux Host:
+# 1. On Linux Host:
 
 
 | Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
@@ -83,7 +83,7 @@ python anyvm.py  --os freebsd --release 14.3  --arch aarch64
 ```
 
 
-# On MacOS Host:
+# 2. On MacOS Host:
 
 Apple silicon:
 
@@ -107,13 +107,33 @@ python anyvm.py  --os freebsd --release 14.3  --arch aarch64
 ```
 
 
-# On Windows Host:
+# 3. On Windows Host:
 
-Install qemu For Windows:
+Windows x86_64 host:
+
+| Host    | x86_64 VM | aarch64(arm64) VM | riscv64 VM |
+|---------|---------|---------|-----------------|
+| x86_64    |  ✅     |  ❌    |            ❌     |
+
+
+1. Install qemu For Windows:
 
 https://www.qemu.org/download/#windows
 
 https://qemu.weilnetz.de/w64/
+
+
+2. Or install qemu with `pacman`
+
+```
+pacman.exe  -S --noconfirm  mingw-w64-ucrt-x86_64-qemu
+```
+
+3. Or install qemu with `choco`
+
+```
+choco install qemu
+```
 
 ```bash
 
