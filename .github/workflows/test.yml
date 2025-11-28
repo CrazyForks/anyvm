@@ -66,10 +66,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "netbsd", "openbsd"]
-        arch: [""]
+        os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        arch: ["aarch64", ""]
         runs: ["windows-latest"]
-        sync: ["scp", "rsync"]
+        sync: ["scp"]
+        exclude:
+          - os: solaris
+            arch: aarch64
+          - os: dragonflybsd
+            arch: aarch64
+          - os: omnios
+            arch: aarch64
+          - os: openindiana
+            arch: aarch64
 
     uses: ./.github/workflows/testrunwindows.yml
     with:

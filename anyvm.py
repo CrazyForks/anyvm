@@ -814,7 +814,7 @@ def main():
             config['cputype'] = args[i+1]
             i += 1
         elif arg == "--workingdir":
-            working_dir = args[i+1]
+            working_dir = os.path.abspath(args[i+1])
             i += 1
         elif arg == "--nc":
             config['nc'] = args[i+1]
@@ -1415,6 +1415,7 @@ Host host
                         if ':' not in vpath_str:
                             raise ValueError
                         vhost, vguest = vpath_str.rsplit(':', 1)
+                        vhost = os.path.abspath(vhost)
                         if not vhost or not vguest:
                             raise ValueError
                         log("Mounting host dir: {} to guest: {}".format(vhost, vguest))
