@@ -62,9 +62,7 @@ jobs:
 
     - name: Test 
       id: test
-      shell: bash
       run: |
-        set -ex
         echo "anyvm" > justcheck.txt
         mkdir -p ../test_output
         python anyvm.py --workingdir ../test_output \
@@ -80,10 +78,13 @@ jobs:
         # We use the ssh port as an alias to the vm, so we can use 'ssh $port' to login
         ssh 10022 ls /mnt/host
         
-        if ! ssh 10022 ls /mnt/host | grep justcheck.txt; then
-          echo "file mount failed"
-          exit 1
-        fi
+        ssh 10022 ls /mnt/host | grep justcheck.txt
+    
+
+
+
+        
+
 
 
 
