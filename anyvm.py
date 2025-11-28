@@ -202,10 +202,11 @@ def get_free_vnc_display(start=0, end=100):
             return disp
     return None
 
-def fetch_url_content(url, debug=False):
+def fetch_url_content(url, debug=False, headers=None):
     attempts = 20
     max_redirects = 5
     chrome_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    headers = headers or {}
     for attempt in range(attempts):
         current_url = url
         debuglog(debug, "fetch attempt {} for {}".format(attempt + 1, current_url))
@@ -214,6 +215,8 @@ def fetch_url_content(url, debug=False):
             for ua in user_agents:
                 req = Request(current_url)
                 req.add_header('User-Agent', ua)
+                for hk, hv in headers.items():
+                    req.add_header(hk, hv)
                 try:
                     resp = urlopen(req)
                     try:
@@ -1007,8 +1010,16 @@ def main():
             except ValueError:
                 pass
         
+        gh_headers = {
+            "Accept": "application/vnd.github+json",
+        }
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            gh_headers["Authorization"] = "Bearer {}".format(token)
+            debuglog(config['debug'], "Using GitHub token auth for releases")
+
         url = "https://api.github.com/repos/{}/releases".format(builder_repo)
-        content = fetch_url_content(url, config['debug'])
+        content = fetch_url_content(url, config['debug'], headers=gh_headers)
         if content:
             try:
                 data = json.loads(content)
