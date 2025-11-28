@@ -40,7 +40,7 @@ jobs:
       id: test
       run: |
         C:\msys64\usr\bin\pacman  -S --noconfirm  mingw-w64-ucrt-x86_64-qemu
-        touch justcheck.txt
+        echo "" > justcheck.txt
         mkdir -p ..\test
         python anyvm.py --workingdir ..\test --os "${{ inputs.os }}" --release "${{ inputs.release }}" --arch "${{ inputs.arch }}" -d -v "$(pwd):/mnt/host" --sshport 10022 --nc "${{ inputs.nc }}" --sync "${{ inputs.sync }}"
         ssh 10022 ls /mnt/host

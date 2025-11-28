@@ -70,7 +70,7 @@ jobs:
         runs: ["ubuntu-24.04"]
         sync: ["scp", "rsync"]
 
-    uses: ./.github/workflows/testrun.yml
+    uses: ./.github/workflows/testrunwindows.yml
     with:
       runs: ${{ matrix.runs }}
       os: ${{ matrix.os }}
