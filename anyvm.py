@@ -20,10 +20,12 @@ try:
     # Python 3
     from urllib.request import urlopen, Request, urlretrieve
     from urllib.error import HTTPError, URLError
+    from urllib.parse import urljoin
     input_func = input
 except ImportError:
     # Python 2
     from urllib2 import urlopen, Request, HTTPError, URLError
+    from urlparse import urljoin
     
     def urlretrieve(url, filename, reporthook=None):
         try:
@@ -195,18 +197,36 @@ def get_free_vnc_display(start=0, end=100):
 
 def fetch_url_content(url):
     attempts = 10
+    max_redirects = 5
     for attempt in range(attempts):
-        req = Request(url)
-        req.add_header('User-Agent', 'python-qemu-script')
-        try:
-            resp = urlopen(req)
-            return resp.read().decode('utf-8')
-        except HTTPError as e:
-            if e.code == 404:
-                log("404: " + url)
-                return None
-        except Exception:
-            pass
+        current_url = url
+        for _ in range(max_redirects):
+            req = Request(current_url)
+            req.add_header('User-Agent', 'python-qemu-script')
+            try:
+                resp = urlopen(req)
+                try:
+                    data = resp.read()
+                finally:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                if data:
+                    return data.decode('utf-8')
+                break  # empty body, retry outer loop
+            except HTTPError as e:
+                if e.code in (301, 302, 303, 307, 308):
+                    loc = e.headers.get('Location')
+                    if loc:
+                        current_url = urljoin(current_url, loc)
+                        continue
+                if e.code == 404:
+                    log("404: " + current_url)
+                    return None
+            except Exception:
+                pass
+            break
         if attempt < attempts - 1:
             time.sleep(5)
     return None
