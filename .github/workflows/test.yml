@@ -68,7 +68,7 @@ jobs:
       matrix:
         os: ["freebsd", "netbsd", "openbsd"]
         arch: [""]
-        runs: ["ubuntu-24.04"]
+        runs: ["windows-latest"]
         sync: ["scp", "rsync"]
 
     uses: ./.github/workflows/testrunwindows.yml
