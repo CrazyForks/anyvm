@@ -204,40 +204,49 @@ def get_free_vnc_display(start=0, end=100):
 def fetch_url_content(url, debug=False):
     attempts = 10
     max_redirects = 5
+    chrome_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     for attempt in range(attempts):
         current_url = url
         debuglog(debug, "fetch attempt {} for {}".format(attempt + 1, current_url))
         for _ in range(max_redirects):
-            req = Request(current_url)
-            req.add_header('User-Agent', 'python-qemu-script')
-            try:
-                resp = urlopen(req)
+            user_agents = ["python-qemu-script", chrome_ua]
+            for ua in user_agents:
+                req = Request(current_url)
+                req.add_header('User-Agent', ua)
                 try:
-                    data = resp.read()
-                finally:
+                    resp = urlopen(req)
                     try:
-                        resp.close()
-                    except Exception:
-                        pass
-                if data:
-                    debuglog(debug, "fetched {} bytes from {}".format(len(data), current_url))
-                    return data.decode('utf-8')
-                debuglog(debug, "empty response from {}; retrying".format(current_url))
-                break  # empty body, retry outer loop
-            except HTTPError as e:
-                if e.code in (301, 302, 303, 307, 308):
-                    loc = e.headers.get('Location')
-                    if loc:
-                        debuglog(debug, "redirect {} -> {}".format(current_url, loc))
-                        current_url = urljoin(current_url, loc)
-                        continue
-                if e.code == 404:
-                    log("404: " + current_url)
-                    return None
-                debuglog(debug, "HTTPError {} on {}".format(e.code, current_url))
-            except Exception as exc:
-                debuglog(debug, "Exception on {}: {}".format(current_url, exc))
-            break
+                        data = resp.read()
+                    finally:
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                    if data:
+                        debuglog(debug, "fetched {} bytes from {} with UA {}".format(len(data), current_url, ua))
+                        return data.decode('utf-8')
+                    debuglog(debug, "empty response from {} with UA {}; retrying".format(current_url, ua))
+                    break  # empty body, retry outer loop
+                except HTTPError as e:
+                    if e.code in (301, 302, 303, 307, 308):
+                        loc = e.headers.get('Location')
+                        if loc:
+                            debuglog(debug, "redirect {} -> {} (UA {})".format(current_url, loc, ua))
+                            current_url = urljoin(current_url, loc)
+                            break  # follow redirect with default UA list
+                    if e.code == 404:
+                        log("404: " + current_url)
+                        return None
+                    debuglog(debug, "HTTPError {} on {} with UA {}".format(e.code, current_url, ua))
+                    continue  # try next UA
+                except Exception as exc:
+                    debuglog(debug, "Exception on {} with UA {}: {}".format(current_url, ua, exc))
+                    continue  # try next UA
+            else:
+                # exhausted user agents
+                break
+            # if we hit a redirect, restart UA loop with new URL
+            continue
         if attempt < attempts - 1:
             time.sleep(5)
     debuglog(debug, "fetch failed for {}".format(url))
