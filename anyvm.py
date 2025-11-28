@@ -1414,6 +1414,7 @@ Host host
                     try:
                         if ':' not in vpath_str:
                             raise ValueError
+                        log("Processing -v argument: {}".format(vpath_str))
                         vhost, vguest = vpath_str.rsplit(':', 1)
                         vhost = os.path.abspath(vhost)
                         if not vhost or not vguest:
