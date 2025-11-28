@@ -14,6 +14,7 @@ import shutil
 import shlex
 import re
 import threading
+import random
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -202,14 +203,14 @@ def get_free_vnc_display(start=0, end=100):
     return None
 
 def fetch_url_content(url, debug=False):
-    attempts = 10
+    attempts = 20
     max_redirects = 5
     chrome_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
     for attempt in range(attempts):
         current_url = url
         debuglog(debug, "fetch attempt {} for {}".format(attempt + 1, current_url))
         for _ in range(max_redirects):
-            user_agents = ["python-qemu-script", chrome_ua]
+            user_agents = [chrome_ua]
             for ua in user_agents:
                 req = Request(current_url)
                 req.add_header('User-Agent', ua)
@@ -248,7 +249,9 @@ def fetch_url_content(url, debug=False):
             # if we hit a redirect, restart UA loop with new URL
             continue
         if attempt < attempts - 1:
-            time.sleep(5)
+            delay = random.uniform(1, 20)
+            debuglog(debug, "retrying in {:.1f}s".format(delay))
+            time.sleep(delay)
     debuglog(debug, "fetch failed for {}".format(url))
     return None
 
