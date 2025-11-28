@@ -12,6 +12,7 @@ on:
       - '**.py'
       - '.github/workflows/test.yml'
       - '.github/workflows/testrun.yml'
+      - '.github/workflows/testrunwindows.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
