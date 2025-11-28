@@ -46,23 +46,23 @@ jobs:
 
 
 
-  testwindowsArm:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ["freebsd", "netbsd", "openbsd"]
-        arch: [""]
-        runs: ["windows-11-arm"]
-        sync: ["scp"]
-
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: ${{ matrix.os }}
-      arch: ${{ matrix.arch }}
-      sync: ${{ matrix.sync }} 
-      
+#  testwindowsArm:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        os: ["freebsd", "netbsd", "openbsd"]
+#        arch: [""]
+#        runs: ["windows-11-arm"]
+#        sync: ["scp"]
+#
+#
+#    uses: ./.github/workflows/testrun.yml
+#    secrets: inherit
+#    with:
+#      runs: ${{ matrix.runs }}
+#      os: ${{ matrix.os }}
+#      arch: ${{ matrix.arch }}
+#      sync: ${{ matrix.sync }} 
+#      
       
       

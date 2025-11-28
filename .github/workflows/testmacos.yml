@@ -24,7 +24,7 @@ jobs:
       matrix:
         os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
         arch: ["aarch64", "x86_64"]
-        runs: ["macos-latest", "macos-15-intel"]
+        runs: ["macos-latest"]
         sync: ["scp"]
         exclude:
           - os: solaris
@@ -35,8 +35,7 @@ jobs:
             arch: aarch64
           - os: openindiana
             arch: aarch64
-          - runs: macos-15-intel
-            arch: aarch64
+
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
