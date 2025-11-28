@@ -553,6 +553,16 @@ def find_qemu(binary_name):
             
     return None
 
+def hvf_supported():
+    """Returns True if macOS Hypervisor.framework (HVF) is available."""
+    if platform.system() != "Darwin":
+        return False
+    try:
+        out = subprocess.check_output(["sysctl", "-n", "kern.hv_support"], stderr=DEVNULL)
+        return out.strip() == b"1"
+    except Exception:
+        return False
+
 def sync_sshfs(ssh_cmd, vhost, vguest, os_name):
     """Mounts a host directory into the guest using SSHFS."""
     if IS_WINDOWS:
@@ -1141,7 +1151,7 @@ def main():
                     accel = "kvm"
                 else:
                     log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
-            elif platform.system() == "Darwin":
+            elif platform.system() == "Darwin" and hvf_supported():
                 accel = "hvf"
         
         if config['cputype']:
