@@ -1211,6 +1211,10 @@ def main():
         "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
     ]
 
+    # Windows on ARM has DirectSound issues; disable audio only there.
+    if IS_WINDOWS and host_arch == "aarch64":
+        args_qemu.extend(["-audiodev", "none,id=snd"])
+
     # Network card selection
     if config['nc']:
         net_card = config['nc']
