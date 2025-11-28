@@ -573,6 +573,24 @@ def find_qemu(binary_name):
             
     return None
 
+def find_rsync():
+    """Find rsync on host; returns absolute path or None."""
+    path = None
+    if hasattr(shutil, 'which'):
+        path = shutil.which("rsync")
+    if path:
+        return path
+    candidates = [
+        r"C:\Program Files\Git\usr\bin\rsync.exe",
+        r"C:\Program Files (x86)\Git\usr\bin\rsync.exe",
+        r"C:\msys64\usr\bin\rsync.exe",
+        r"C:\cygwin64\bin\rsync.exe",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
 def hvf_supported():
     """Returns True if macOS Hypervisor.framework (HVF) is available."""
     if platform.system() != "Darwin":
@@ -683,21 +701,23 @@ fi
 
 def sync_rsync(ssh_cmd, vhost, vguest, os_name):
     """Syncs a host directory to the guest using rsync (Pull mode)."""
-    if IS_WINDOWS:
-        log("Warning: Rsync pull sync not supported on Windows host.")
+    host_rsync = find_rsync()
+    if IS_WINDOWS and not host_rsync:
+        log("Warning: rsync not found on host. Install rsync to use rsync sync mode.")
         return
 
     log("Syncing via rsync: {} -> {}".format(vhost, vguest))
+    rsync_path_arg = '--rsync-path="{}"'.format(host_rsync.replace("\\", "/"))
     
     mount_script = """
 mkdir -p "{vguest}"
 if command -v rsync >/dev/null 2>&1; then
-  rsync -avrtopg --delete host:"{vhost}/" "{vguest}/"
+  rsync -avrtopg --delete {rsync_path} host:"{vhost}/" "{vguest}/"
 else
   echo "Error: rsync not found in guest."
   exit 1
 fi
-""".format(vguest=vguest, vhost=vhost)
+""".format(vguest=vguest, vhost=vhost, rsync_path=rsync_path_arg)
 
     synced = False
     for _ in range(10):

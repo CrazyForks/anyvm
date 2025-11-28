@@ -1,5 +1,5 @@
 
-name: Test
+name: Windows
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       - '*'
     paths:
       - '**.py'
-      - '.github/workflows/test.yml'
+      - '.github/workflows/testwindows.yml'
       - '.github/workflows/testrun.yml'
 
 concurrency:
@@ -18,30 +18,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  testsync:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ["freebsd", "netbsd", "openbsd"]
-        arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "scp", "rsync"]
-
-    uses: ./.github/workflows/testrun.yml
-    with:
-      runs: ${{ matrix.runs }}
-      os: ${{ matrix.os }}
-      arch: ${{ matrix.arch }}
-      sync: ${{ matrix.sync }}
-
-
-  testnfs:
+  testwindows:
     strategy:
       fail-fast: false
       matrix:
         os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
-        arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
+        arch: [""]
+        runs: ["windows-latest"]
+        sync: ["scp"]
         exclude:
           - os: solaris
             arch: aarch64
@@ -57,15 +41,11 @@ jobs:
       runs: ${{ matrix.runs }}
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
-      sync: nfs
-   
+      sync: ${{ matrix.sync }}
 
 
 
-
-
-
-
+      
       
       
       
