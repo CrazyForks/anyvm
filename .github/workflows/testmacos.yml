@@ -35,6 +35,8 @@ jobs:
             arch: aarch64
           - os: openindiana
             arch: aarch64
+          - runs: macos-15-intel
+            arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
