@@ -945,7 +945,7 @@ def main():
                 u = asset.get('browser_download_url', '')
                 #log(u)
                 if u.endswith("qcow2.zst") or u.endswith("qcow2.xz"):
-                    if config['arch'] and config['arch'] not in u:
+                    if config['arch'] and config['arch'] != "x86_64" and config['arch'] not in u:
                         continue
                     # Extract version roughly
                     filename=u.split('/')[-1]
@@ -970,7 +970,7 @@ def main():
         target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
         target_xz = "{}-{}.qcow2.xz".format(config['os'], config['release'])
         
-        if config['arch']:
+        if config['arch'] and config['arch'] != 'x86_64':
              target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
              target_xz = "{}-{}-{}.qcow2.xz".format(config['os'], config['release'], config['arch'])
 
@@ -1028,7 +1028,7 @@ def main():
 
     # Key files
     vm_name = "{}-{}".format(config['os'], config['release'])
-    if config['arch']:
+    if config['arch'] and config['arch'] != "x86_64":
         vm_name += "-" + config['arch']
 
     hostid_url = "https://github.com/{}/releases/download/v{}/{}-host.id_rsa".format(builder_repo, config['builder'], vm_name)
