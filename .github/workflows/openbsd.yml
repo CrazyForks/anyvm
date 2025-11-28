@@ -32,6 +32,7 @@ jobs:
 
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
@@ -52,6 +53,7 @@ jobs:
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
@@ -69,6 +71,7 @@ jobs:
         runs: ["ubuntu-24.04"]
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: openbsd
@@ -85,6 +88,7 @@ jobs:
         runs: ["ubuntu-24.04"]
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: openbsd

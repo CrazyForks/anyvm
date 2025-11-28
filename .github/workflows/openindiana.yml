@@ -29,6 +29,7 @@ jobs:
 
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: openindiana
@@ -46,6 +47,7 @@ jobs:
 
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: openindiana

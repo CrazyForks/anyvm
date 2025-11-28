@@ -37,6 +37,7 @@ jobs:
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
+    secrets: inherit
     with:
       runs: ${{ matrix.runs }}
       os: ${{ matrix.os }}
