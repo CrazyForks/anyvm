@@ -80,7 +80,7 @@ jobs:
           - os: openindiana
             arch: aarch64
 
-    uses: ./.github/workflows/testrunwindows.yml
+    uses: ./.github/workflows/testrun.yml
     with:
       runs: ${{ matrix.runs }}
       os: ${{ matrix.os }}

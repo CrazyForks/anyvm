@@ -36,11 +36,11 @@ jobs:
     name: Test ${{ inputs.release }} ${{ inputs.arch }} ${{ inputs.sync }}
     steps:
     - uses: actions/checkout@v4
-    - name: Test 
-      id: test
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
-        set -ex
-        sudo apt-get update && sudo apt-get --no-install-recommends -y install \
+        sudo apt-get update
+        sudo apt-get --no-install-recommends -y install \
         zstd \
         ovmf \
         xz-utils \
@@ -48,14 +48,26 @@ jobs:
         ca-certificates \
         qemu-system-x86 \
         qemu-system-arm qemu-efi-aarch64  nfs-kernel-server rsync
-        
-        #enable kvm for current runner
-        sudo chmod 666 /dev/kvm
-        
-        touch justcheck.txt
-        mkdir -p /tmp/test
-        
-        python anyvm.py --workingdir /tmp/test \
+        sudo chmod 666 /dev/kvm || true
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install qemu zstd xz rsync
+
+    - name: Install dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        C:/msys64/usr/bin/pacman.exe  -S --noconfirm  mingw-w64-ucrt-x86_64-qemu
+
+    - name: Test 
+      id: test
+      shell: bash
+      run: |
+        set -ex
+        echo "anyvm" > justcheck.txt
+        mkdir -p ../test_output
+        python anyvm.py --workingdir ../test_output \
                         --os "${{ inputs.os }}" \
                         --release "${{ inputs.release }}" \
                         --arch "${{ inputs.arch }}" \
