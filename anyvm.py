@@ -986,7 +986,7 @@ def main():
     # Normalize arch string
     if config['arch'] in ["x86_64", "amd64"]:
         config['arch'] = ""
-    if config['arch'] in ["arm", "arm64"]:
+    if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
     builder_repo = "vmactions/{}-builder".format(config['os'])
