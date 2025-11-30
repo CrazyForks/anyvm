@@ -181,27 +181,6 @@ def get_free_port(start=10022, end=20000):
     return None
 
 
-def get_free_vnc_display(start=0, end=100):
-    """Return an available VNC display whose port binds on both loopback and wildcard."""
-    probe_addrs = ("0.0.0.0", "127.0.0.1")
-    for disp in range(start, end):
-        port = 5900 + disp
-        for addr in probe_addrs:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.5)
-            try:
-                s.bind((addr, port))
-            except Exception:
-                break
-            finally:
-                try:
-                    s.close()
-                except Exception:
-                    pass
-        else:
-            return disp
-    return None
-
 def fetch_url_content(url, debug=False, headers=None):
     attempts = 20
     max_redirects = 5
@@ -1338,9 +1317,10 @@ def main():
             start_disp = int(config['vnc']) if config['vnc'] else 0
         except ValueError:
             start_disp = 0
-        disp = get_free_vnc_display(start=start_disp)
-        if disp is None:
+        port = get_free_port(start=5900 + start_disp, end=5900 + 100)
+        if port is None:
             fatal("No available VNC display ports")
+        disp = port - 5900
         args_qemu.append("-display")
         args_qemu.append("vnc={}:{}".format(addr, disp))
     
