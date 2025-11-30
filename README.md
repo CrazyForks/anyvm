@@ -66,7 +66,12 @@ sudo apt-get --no-install-recommends -y install \
         qemu-utils \
         ca-certificates \
         qemu-system-x86 \
-        qemu-system-arm qemu-efi-aarch64 qemu-efi-riscv64 qemu-system-riscv64 u-boot-qemu ssh-client
+        qemu-system-arm \
+        qemu-efi-aarch64 \
+        qemu-efi-riscv64 \
+        qemu-system-riscv64 \
+        u-boot-qemu \
+        ssh-client
         
         
 python anyvm.py  --os freebsd
