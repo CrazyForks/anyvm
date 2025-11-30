@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: ["r151046", "r151048", "r151050", "r151052"]
+        release: ["r151046", "r151048", "r151050", "r151052", "r151054", "r151056"]
         arch: [""]
         runs: ["ubuntu-24.04"]
 

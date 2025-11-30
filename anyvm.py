@@ -968,7 +968,17 @@ def main():
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
-    builder_repo = "vmactions/{}-builder".format(config['os'])
+    arepo = "vmactions/{}-builder".format(config['os'])
+    brepo = "anyvm-org/{}-builder".format(config['os'])
+    if config['builder']:
+        builder_repo = brepo if cmp_version(config['builder'], "2.0.0") >= 0 else arepo
+        release_repo_candidates = [builder_repo]
+    elif config['release']:
+        builder_repo = brepo
+        release_repo_candidates = [brepo, arepo]
+    else:
+        builder_repo = brepo
+        release_repo_candidates = [brepo]
     working_dir_os = os.path.join(working_dir, config['os'])
     if not os.path.exists(working_dir_os):
         os.makedirs(working_dir_os)
@@ -979,13 +989,18 @@ def main():
         log("Using arch: x86_64")
 
     # Fetch release info
-    all_releases_file = os.path.join(working_dir_os, "all.json")
+    releases_cache = {}
     
-    def get_releases():
-        if os.path.exists(all_releases_file):
+    def get_releases(repo_slug):
+        cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
+        cache_path = os.path.join(working_dir_os, cache_name)
+        if repo_slug in releases_cache:
+            return releases_cache[repo_slug]
+        if os.path.exists(cache_path):
             try:
-                with open(all_releases_file, 'r') as f:
-                    return json.load(f)
+                with open(cache_path, 'r') as f:
+                    releases_cache[repo_slug] = json.load(f)
+                    return releases_cache[repo_slug]
             except ValueError:
                 pass
         
@@ -997,19 +1012,20 @@ def main():
             gh_headers["Authorization"] = "Bearer {}".format(token)
             debuglog(config['debug'], "Using GitHub token auth for releases")
 
-        url = "https://api.github.com/repos/{}/releases".format(builder_repo)
+        url = "https://api.github.com/repos/{}/releases".format(repo_slug)
         content = fetch_url_content(url, config['debug'], headers=gh_headers)
         if content:
             try:
                 data = json.loads(content)
-                with open(all_releases_file, 'w') as f:
+                with open(cache_path, 'w') as f:
                     f.write(content)
+                releases_cache[repo_slug] = data
                 return data
             except ValueError:
                 return []
         return []
 
-    releases_data = get_releases()
+    releases_data = get_releases(builder_repo)
     zst_link = ""
     published_at = ""
     # Find release version if not provided
@@ -1041,22 +1057,34 @@ def main():
 
     log("Using release: " + config['release'])
     # Find download link
-    if not zst_link:
-        target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
-        target_xz = "{}-{}.qcow2.xz".format(config['os'], config['release'])
-        
-        if config['arch'] and config['arch'] != 'x86_64':
-             target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
-             target_xz = "{}-{}-{}.qcow2.xz".format(config['os'], config['release'], config['arch'])
-
-        for r in releases_data:
+    def find_image_link(releases, target_zst, target_xz):
+        for r in releases:
             for asset in r.get('assets', []):
                 u = asset.get('browser_download_url', '')
                 if u.endswith(target_zst) or u.endswith(target_xz):
-                    zst_link = u
-                    break
-            if zst_link:
-                break
+                    return u
+        return ""
+
+    target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
+    target_xz = "{}-{}.qcow2.xz".format(config['os'], config['release'])
+    
+    if config['arch'] and config['arch'] != 'x86_64':
+        target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
+        target_xz = "{}-{}-{}.qcow2.xz".format(config['os'], config['release'], config['arch'])
+
+    search_repos = release_repo_candidates if config['release'] else [builder_repo]
+    searched = set()
+    for repo in search_repos:
+        if repo in searched:
+            continue
+        searched.add(repo)
+        repo_releases = releases_data if repo == builder_repo else get_releases(repo)
+        link = find_image_link(repo_releases, target_zst, target_xz)
+        if link:
+            builder_repo = repo
+            releases_data = repo_releases
+            zst_link = link
+            break
 
     if not zst_link:
         fatal("Cannot find the image link.")
