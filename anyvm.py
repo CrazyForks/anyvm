@@ -124,6 +124,7 @@ Options:
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
   --nc <type>            Network card model (e.g., virtio-net-pci, e1000).
   --sshport <port>       Host port forwarding for SSH (Default: auto-detected free port).
+  --host-ssh-port <port> Host SSH port reachable from the guest (Default: 22).
   --serial <port>        Expose the VM serial console on the given TCP port (auto-select starting 7000 if omitted).
   -p <mapping>           Custom port mapping. Can be used multiple times.
                          Formats: host:guest, tcp:host:guest, udp:host:guest.
@@ -831,6 +832,7 @@ def main():
         'cputype': "",
         'nc': "",
         'sshport': "",
+        'hostsshport': "",
         'console': False,
         'useefi': False,
         'detach': False,
@@ -894,6 +896,9 @@ def main():
             i += 1
         elif arg in ["--sshport", "--ssh-port"]:
             config['sshport'] = args[i+1]
+            i += 1
+        elif arg == "--host-ssh-port":
+            config['hostsshport'] = args[i+1]
             i += 1
         elif arg == "--builder":
             config['builder'] = args[i+1]
@@ -1503,14 +1508,17 @@ def main():
             
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
+            host_port_line = ""
+            if config['hostsshport']:
+                host_port_line = "  Port {}\n".format(config['hostsshport'])
             vm_ssh_config = """
 StrictHostKeyChecking=no
 
 Host host
   HostName  192.168.122.2
-  User {}
+{host_port}  User {user}
   ServerAliveInterval 1
-""".format(current_user)
+""".format(host_port=host_port_line, user=current_user)
             
             p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
             p.communicate(input=vm_ssh_config.encode('utf-8'))
