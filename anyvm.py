@@ -1595,8 +1595,8 @@ Host host
             # Avoid noisy banner when running as PID 1 inside a container
             if os.getpid() != 1:
                 log("======================================")
-                log("The vm is still running.")
-                log("You can login the vm with:  ssh " + vm_name)
+                log("The VM is still running in background.")
+                log("You can login the VM with:  ssh " + vm_name)
                 log("Or just:  ssh " + str(config['sshport']))
                 log("======================================")
         except KeyboardInterrupt:
