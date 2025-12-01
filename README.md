@@ -85,7 +85,7 @@ sudo apt-get --no-install-recommends -y install \
 brew install qemu
 ```
 
-### 6.3 Windows
+### 6.3 Windows [![Windows](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml)
 
 - Download QEMU for Windows: https://www.qemu.org/download/#windows or https://qemu.weilnetz.de/w64/
 - Or install with MSYS2 pacman:
@@ -104,6 +104,7 @@ choco install qemu
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
+
 
 
 
