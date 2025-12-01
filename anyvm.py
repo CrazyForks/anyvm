@@ -973,7 +973,7 @@ def main():
         host_arch = host_machine
     
     if not config['arch']:
-        log("Use host arch: " + host_arch)
+        debuglog(config['debug'], "Host arch: " + host_arch)
         config['arch'] = host_arch
 
     # Normalize arch string
@@ -998,9 +998,9 @@ def main():
         os.makedirs(working_dir_os)
 
     if config['arch']:
-        log("Using arch: " + config['arch'])
+        debuglog(config['debug'],"Using VM arch: " + config['arch'])
     else:
-        log("Using arch: x86_64")
+        debuglog(config['debug'],"Using VM arch: x86_64")
 
     # Fetch release info
     releases_cache = {}
@@ -1066,7 +1066,7 @@ def main():
                         elif cmp_version(parts[1], config['release']) > 0:
                           published_at = r.get('published_at', '')
                           config['release'] = parts[1]
-                          log("Found release: " + config['release'])
+                          debuglog(config['debug'],"Found release: " + config['release'])
 
 
     log("Using release: " + config['release'])
@@ -1103,7 +1103,7 @@ def main():
     if not zst_link:
         fatal("Cannot find the image link.")
 
-    log("Using link: " + zst_link)
+    debuglog(config['debug'],"Using link: " + zst_link)
 
     if not config['builder']:
         parts = zst_link.split('/')
@@ -1151,13 +1151,12 @@ def main():
     hostid_url = "https://github.com/{}/releases/download/v{}/{}-host.id_rsa".format(builder_repo, config['builder'], vm_name)
     hostid_file = os.path.join(output_dir, hostid_url.split('/')[-1])
     
-    os.unlink(hostid_file) if os.path.exists(hostid_file) else None
     if not os.path.exists(hostid_file):
         download_file(hostid_url, hostid_file, config['debug'])
-        if IS_WINDOWS:
-            tighten_windows_permissions(hostid_file)
-        else:
-            os.chmod(hostid_file, 0o600)
+    if IS_WINDOWS:
+        tighten_windows_permissions(hostid_file)
+    else:
+        os.chmod(hostid_file, 0o600)
 
     vmpub_url = "https://github.com/{}/releases/download/v{}/{}-id_rsa.pub".format(builder_repo, config['builder'], vm_name)
     vmpub_file = os.path.join(output_dir, vmpub_url.split('/')[-1])
@@ -1185,7 +1184,7 @@ def main():
                 fatal("No free serial ports available")
             config['serialport'] = str(serial_port)
         serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
-        log("Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
+        debuglog(config['debug'],"Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
 
     # QEMU Construction
     bin_name = "qemu-system-x86_64"
@@ -1372,7 +1371,7 @@ def main():
     # Execution
     cmd_list = [qemu_bin] + args_qemu
     cmd_text = format_command_for_display(cmd_list)
-    log("CMD:\n  " + cmd_text)
+    debuglog(config['debug'], "CMD:\n  " + cmd_text)
 
     if config['console']:
         subprocess.call(cmd_list)
@@ -1460,24 +1459,36 @@ def main():
 
             # Wait for boot
             wait_msg = "Waiting for VM to boot (port {})...".format(config['sshport'])
-            log(wait_msg)
+            debuglog(config['debug'], wait_msg)
             success = False
             interactive_wait = sys.stdout.isatty()
             wait_start = time.time()
-            last_wait_second = [-1]
+            last_wait_tick = [-1]  # hundredth-of-a-second ticks
+            wait_timer_stop = threading.Event()
+            wait_timer_thread = None
 
             def update_wait_timer():
                 if not interactive_wait:
                     return
-                elapsed = int(time.time() - wait_start)
-                if elapsed == last_wait_second[0]:
+                tick = int((time.time() - wait_start) * 100)
+                if tick == last_wait_tick[0]:
                     return
-                last_wait_second[0] = elapsed
-                sys.stdout.write("\r{} {}s".format(wait_msg, elapsed))
+                last_wait_tick[0] = tick
+                elapsed = tick / 100.0
+                sys.stdout.write("\r{} {:.2f}s".format(wait_msg, elapsed))
                 sys.stdout.flush()
 
+            if interactive_wait:
+                def wait_timer_worker():
+                    while not wait_timer_stop.is_set():
+                        update_wait_timer()
+                        time.sleep(0.01)
+                wait_timer_thread = threading.Thread(target=wait_timer_worker)
+                wait_timer_thread.daemon = True
+                wait_timer_thread.start()
+
             def finish_wait_timer():
-                if interactive_wait and last_wait_second[0] >= 0:
+                if interactive_wait and last_wait_tick[0] >= 0:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
             
@@ -1492,7 +1503,6 @@ def main():
             ]
             
             for i in range(300):
-                update_wait_timer()
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
                 ret, timed_out = call_with_timeout(
@@ -1507,13 +1517,15 @@ def main():
                     success = True
                     break
                 time.sleep(2)
-                update_wait_timer()
             
+            wait_timer_stop.set()
+            if wait_timer_thread:
+                wait_timer_thread.join(0.2)
             finish_wait_timer()
             if not success:
                 fatal("Boot timed out.")
             
-            log("VM Ready! Connect with: ssh {}".format(vm_name))
+            debuglog(config['debug'], "VM Ready! Connect with: ssh {}".format(vm_name))
             
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
@@ -1550,12 +1562,12 @@ Host host
                     try:
                         if ':' not in vpath_str:
                             raise ValueError
-                        log("Processing -v argument: {}".format(vpath_str))
+                        debuglog(config['debug'], "Processing -v argument: {}".format(vpath_str))
                         vhost, vguest = vpath_str.rsplit(':', 1)
                         vhost = os.path.abspath(vhost)
                         if not vhost or not vguest:
                             raise ValueError
-                        log("Mounting host dir: {} to guest: {}".format(vhost, vguest))
+                        debuglog(config['debug'], "Mounting host dir: {} to guest: {}".format(vhost, vguest))
                         
                         if config['sync'] == 'nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
