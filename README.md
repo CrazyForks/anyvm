@@ -30,6 +30,9 @@ python anyvm.py --os solaris
 
 python anyvm.py --os freebsd --release 14.3 --arch riscv64
 
+# Run a command inside the VM (everything after `--` is sent to the VM via ssh):
+python anyvm.py --os freebsd -- -- uname -a
+
 
 ```
 

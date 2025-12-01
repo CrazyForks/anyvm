@@ -147,6 +147,7 @@ Options:
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
+  --                     Send all following args to the final ssh command (executes inside the VM).
   --help, -h             Show this help message.
 
 Examples:
@@ -852,6 +853,8 @@ def main():
         'debug': False
     }
 
+    ssh_passthrough = []
+
     script_home = os.path.dirname(os.path.abspath(__file__))
     working_dir = os.path.join(script_home, "output")
     
@@ -870,6 +873,9 @@ def main():
     i = 0
     while i < len(args):
         arg = args[i]
+        if arg == "--":
+            ssh_passthrough = args[i+1:]
+            break
         if arg == "--os":
             config['os'] = args[i+1]
             i += 1
@@ -1566,9 +1572,11 @@ Host host
                  log("You can login the vm with: ssh " + vm_name)
                  log("Or just:  ssh " + str(config['sshport']))
                  log("======================================")
-            
+
             if not config['detach']:
-                subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
+                ssh_cmd = ssh_base_cmd + ssh_passthrough
+                debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
+                subprocess.call(ssh_cmd)
             # Avoid noisy banner when running as PID 1 inside a container
             if os.getpid() != 1:
                 log("======================================")
