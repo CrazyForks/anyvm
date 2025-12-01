@@ -135,7 +135,7 @@ Options:
   --sync <mode>          Synchronization mode for -v folders.
                          Supported: sshfs (default), nfs, rsync, scp.
                          Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
-  --workingdir <dir>     Directory to store images and metadata (Default: ./output).
+  --data-dir <dir>       Directory to store images and metadata (Default: ./output).
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
@@ -888,7 +888,7 @@ def main():
         elif arg == "--cpu-type":
             config['cputype'] = args[i+1]
             i += 1
-        elif arg == "--workingdir":
+        elif arg in ["--data-dir", "--workingdir"]:
             working_dir = os.path.abspath(args[i+1])
             i += 1
         elif arg == "--nc":
