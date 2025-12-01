@@ -1569,11 +1569,13 @@ Host host
             
             if not config['detach']:
                 subprocess.call(["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL), "-i", hostid_file, "-p", str(config['sshport']), "root@localhost"])
-            log("======================================")
-            log("The vm is still running.")
-            log("You can login the vm with:  ssh " + vm_name)
-            log("Or just:  ssh " + str(config['sshport']))
-            log("======================================")
+            # Avoid noisy banner when running as PID 1 inside a container
+            if os.getpid() != 1:
+                log("======================================")
+                log("The vm is still running.")
+                log("You can login the vm with:  ssh " + vm_name)
+                log("Or just:  ssh " + str(config['sshport']))
+                log("======================================")
         except KeyboardInterrupt:
             if not config['detach']:
                 terminate_process(proc, "QEMU")
