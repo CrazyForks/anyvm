@@ -33,7 +33,17 @@ python anyvm.py --os freebsd --release 14.3 --arch riscv64
 
 ```
 
-## 3. Guest build matrix (CI)
+## 3. Run in a Docker container
+
+Prefer containers? Use the Dockerized wrapper.
+
+```bash
+docker run --rm -it ghcr.io/anyvm-org/anyvm:latest --os freebsd
+```
+
+More examples and tags: https://github.com/anyvm-org/docker
+
+## 4. Guest build matrix (CI)
 
 | Guest | Workflow | x86_64 | aarch64 (arm64) | riscv64 |
 |-------|----------|--------|-----------------|---------|
@@ -45,7 +55,7 @@ python anyvm.py --os freebsd --release 14.3 --arch riscv64
 | OmniOS | [![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | ❌ | ❌ |
 | OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | ❌ | ❌ |
 
-## 4. Host support
+## 5. Host support
 
 | Host | x86_64 guests | aarch64 guests | riscv64 guests |
 |------|---------------|----------------|----------------|
@@ -54,9 +64,9 @@ python anyvm.py --os freebsd --release 14.3 --arch riscv64
 | Apple silicon macOS | ✅ | ✅ | ❌ |
 | Windows x86_64 | ✅ | ❌ | ❌ |
 
-## 5. Install dependencies
+## 6. Install dependencies
 
-### 5.1 Linux (apt-based)
+### 6.1 Linux (apt-based)
 
 ```bash
 sudo apt-get --no-install-recommends -y install \
@@ -66,13 +76,13 @@ sudo apt-get --no-install-recommends -y install \
   ssh-client
 ```
 
-### 5.2 macOS
+### 6.2 macOS
 
 ```bash
 brew install qemu
 ```
 
-### 5.3 Windows
+### 6.3 Windows
 
 - Download QEMU for Windows: https://www.qemu.org/download/#windows or https://qemu.weilnetz.de/w64/
 - Or install with MSYS2 pacman:
@@ -87,7 +97,7 @@ pacman.exe -S --noconfirm mingw-w64-ucrt-x86_64-qemu
 choco install qemu
 ```
 
-## 6. Notes
+## 7. Notes
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
