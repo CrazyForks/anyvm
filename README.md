@@ -79,7 +79,7 @@ sudo apt-get --no-install-recommends -y install \
   ssh-client
 ```
 
-### 6.2 macOS
+### 6.2 macOS [![MacOS](https://github.com/anyvm-org/anyvm/actions/workflows/testmacos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/testmacos.yml)
 
 ```bash
 brew install qemu
@@ -104,5 +104,6 @@ choco install qemu
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
+
 
 
