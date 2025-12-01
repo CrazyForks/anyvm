@@ -69,7 +69,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 
 ## 6. Install dependencies
 
-### 6.1 Linux (apt-based)
+### 6.1 Linux (apt-based) [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
 
 ```bash
 sudo apt-get --no-install-recommends -y install \
@@ -104,6 +104,7 @@ choco install qemu
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
+
 
 
 
