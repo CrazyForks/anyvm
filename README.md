@@ -1,4 +1,4 @@
-# Run any VM anywhere [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
+﻿# Run any VM anywhere [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
 
 anyvm is a single-file helper for bootstrapping BSD and Illumos guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
 
@@ -31,7 +31,7 @@ python anyvm.py --os solaris
 python anyvm.py --os freebsd --release 14.3 --arch riscv64
 
 # Run a command inside the VM (everything after `--` is sent to the VM via ssh):
-python anyvm.py --os freebsd -- -- uname -a
+python anyvm.py --os freebsd -- uname -a
 
 
 ```
