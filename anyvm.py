@@ -637,10 +637,10 @@ if [ "{os}" = "netbsd" ]; then
   fi
 else
   if [ "{os}" = "freebsd" ]; then
-    kldload fusefs || true
+    kldload fusefs >/dev/null 2>&1 || true
   fi
   if sshfs -o reconnect,ServerAliveCountMax=2,allow_other,default_permissions host:"{vhost}" "{vguest}" ; then
-    /sbin/mount || mount
+    /sbin/mount >/dev/null 2>&1 || mount >/dev/null 2>&1
   else
     exit 1
   fi
