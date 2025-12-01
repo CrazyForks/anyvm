@@ -160,6 +160,9 @@ Examples:
   # Windows host using SCP sync
   python qemu.py --os solaris --sync scp -v D:\\data:/data
 
+  # Run a command inside the VM (arguments after -- go to ssh)
+  python qemu.py --os freebsd -- uname -a
+
 """)
 
 def get_free_port(start=10022, end=20000):
