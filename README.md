@@ -1,6 +1,6 @@
 ﻿# Run any VM anywhere [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
 
-anyvm is a single-file helper for bootstrapping BSD and Illumos guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
+anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
 
 ## 1. Quick launch
 
@@ -106,6 +106,7 @@ choco install qemu
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
+
 
 
 
