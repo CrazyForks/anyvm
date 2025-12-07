@@ -4,7 +4,9 @@ anyvm is a single-file helper for bootstrapping BSD and Illumos guests with QEMU
 
 ## 1. Quick launch
 
-- [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/anyvm-org/anyvm)
+- Github CodeSpace:
+  
+  [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/anyvm-org/anyvm)
   
   Enable KVM in Codespaces before running:
 
@@ -14,7 +16,7 @@ anyvm is a single-file helper for bootstrapping BSD and Illumos guests with QEMU
 
 - Google Cloud Shell:
 
-<a href="https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Fanyvm-org%2Fanyvm&cloudshell_tutorial=.cloudshell%2Ftutorial.md&show=terminal&ephemeral=true&cloudshell_print=.cloudshell%2Fconsole.md" target="_blank" rel="noopener noreferrer">
+  <a href="https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2Fanyvm-org%2Fanyvm&cloudshell_tutorial=.cloudshell%2Ftutorial.md&show=terminal&ephemeral=true&cloudshell_print=.cloudshell%2Fconsole.md" target="_blank" rel="noopener noreferrer">
   <img src="https://gstatic.com/cloudssh/images/open-btn.svg" alt="Try it Now in Cloud Shell">
 </a>
 
@@ -104,6 +106,7 @@ choco install qemu
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
+
 
 
 
