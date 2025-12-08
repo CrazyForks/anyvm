@@ -1306,7 +1306,8 @@ def main():
             else:
                 net_card = "virtio-net-pci"
         elif config['os'] == "dragonflybsd":
-            net_card = "virtio-net-pci"
+            if config['release'] != "6.4.0":
+                net_card = "virtio-net-pci"
         elif config['arch'] == "riscv64":
             net_card = "virtio-net-pci"
 
