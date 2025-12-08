@@ -65,7 +65,9 @@ jobs:
 
     - name: Test 
       id: test
+      shell: bash
       run: |
+        set -e
         echo "anyvm" > justcheck.txt
         mkdir -p ../test_output
         python anyvm.py --debug --data-dir ../test_output --os "${{ inputs.os }}" --release "${{ inputs.release }}" --arch "${{ inputs.arch }}" -d -v "$(pwd):/mnt/host" --sshport 10022 --nc "${{ inputs.nc }}" --sync "${{ inputs.sync }}"
@@ -76,7 +78,6 @@ jobs:
 
 
 
-        
 
 
 
