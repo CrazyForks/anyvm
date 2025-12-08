@@ -829,6 +829,25 @@ def cmp_version(a, b):
         return -1
     return 0
 
+def tail_serial_log(path, stop_event):
+    # Wait for file creation
+    start_wait = time.time()
+    while not os.path.exists(path):
+        if stop_event.is_set() or (time.time() - start_wait > 10):
+            return
+        time.sleep(0.1)
+        
+    try:
+        with open(path, 'r') as f:
+            while not stop_event.is_set():
+                data = f.read()
+                if data:
+                    sys.stdout.write(data)
+                    sys.stdout.flush()
+                else:
+                    time.sleep(0.1)
+    except Exception:
+        pass
 
 
 def main():
@@ -1193,6 +1212,9 @@ def main():
         addr = "127.0.0.1"
 
     serial_bind_addr = "0.0.0.0" if config['public'] else "127.0.0.1"
+    serial_chardev_def = None
+    serial_log_file = None
+
     if config['console']:
         serial_arg = "mon:stdio"
     else:
@@ -1201,7 +1223,22 @@ def main():
             if not serial_port:
                 fatal("No free serial ports available")
             config['serialport'] = str(serial_port)
-        serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
+        
+        if config['debug']:
+             serial_log_file = os.path.join(working_dir_os, "{}.serial.log".format(vm_name))
+             if os.path.exists(serial_log_file):
+                 try:
+                     os.remove(serial_log_file)
+                 except:
+                     pass
+             
+             serial_chardev_id = "serial0"
+             serial_chardev_def = "socket,id={},host={},port={},server=on,wait=off,logfile={}".format(
+                 serial_chardev_id, serial_bind_addr, config['serialport'], serial_log_file)
+             serial_arg = "chardev:{}".format(serial_chardev_id)
+        else:
+             serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
+
         debuglog(config['debug'],"Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
 
     # QEMU Construction
@@ -1240,14 +1277,18 @@ def main():
             # proto:host:guest -> proto:addr:host-:guest
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], addr, parts[1], parts[2])
 
-    args_qemu = [
+    args_qemu = []
+    if serial_chardev_def:
+        args_qemu.extend(["-chardev", serial_chardev_def])
+
+    args_qemu.extend([
         "-serial", serial_arg,
         "-name", vm_name,
         "-smp", config['cpu'],
         "-m", config['mem'],
         "-netdev", netdev_args,
         "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
-    ]
+    ])
 
     # Windows on ARM has DirectSound issues; disable audio only there.
     if IS_WINDOWS and host_arch == "aarch64":
@@ -1264,6 +1305,8 @@ def main():
                 net_card = "e1000"
             else:
                 net_card = "virtio-net-pci"
+        elif config['os'] == "dragonflybsd":
+            net_card = "virtio-net-pci"
         elif config['arch'] == "riscv64":
             net_card = "virtio-net-pci"
 
@@ -1416,6 +1459,11 @@ def main():
 
             log("Started QEMU (PID: {})".format(proc.pid))
 
+            tail_stop_event = threading.Event()
+            if config['debug'] and serial_log_file:
+                 t = threading.Thread(target=tail_serial_log, args=(serial_log_file, tail_stop_event))
+                 t.daemon = True
+                 t.start()
             
             # Config SSH
             ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
