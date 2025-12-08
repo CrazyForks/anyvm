@@ -792,11 +792,15 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
     cmd = [
         "scp", "-r", "-q", "-O",
         "-P", str(sshport),
-        "-i", hostid_file,
+    ]
+    if hostid_file:
+        cmd.extend(["-i", hostid_file])
+        
+    cmd.extend([
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
         "-o", "LogLevel=ERROR",
-    ] + sources + ["root@localhost:" + vguest + "/"]
+    ] + sources + ["root@localhost:" + vguest + "/"])
     
     if subprocess.call(cmd) != 0:
         log("Warning: SCP sync failed.")
@@ -853,7 +857,8 @@ def main():
         'builder': "",
         'whpx': False,
         'serialport': "",
-        'debug': False
+        'debug': False,
+        'qcow2': ""
     }
 
     ssh_passthrough = []
@@ -945,6 +950,9 @@ def main():
         elif arg == "--serial":
             config['serialport'] = args[i+1]
             i += 1
+        elif arg == "--qcow2":
+            config['qcow2'] = args[i+1]
+            i += 1
         i += 1
 
     if config['debug']:
@@ -1002,166 +1010,176 @@ def main():
     else:
         debuglog(config['debug'],"Using VM arch: x86_64")
 
-    # Fetch release info
-    releases_cache = {}
-    
-    def get_releases(repo_slug):
-        cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
-        cache_path = os.path.join(working_dir_os, cache_name)
-        if repo_slug in releases_cache:
-            return releases_cache[repo_slug]
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, 'r') as f:
-                    releases_cache[repo_slug] = json.load(f)
-                    return releases_cache[repo_slug]
-            except ValueError:
-                pass
-        
-        gh_headers = {
-            "Accept": "application/vnd.github+json",
-        }
-        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if token:
-            gh_headers["Authorization"] = "Bearer {}".format(token)
-            debuglog(config['debug'], "Using GitHub token auth for releases")
-
-        url = "https://api.github.com/repos/{}/releases".format(repo_slug)
-        content = fetch_url_content(url, config['debug'], headers=gh_headers)
-        if content:
-            try:
-                data = json.loads(content)
-                with open(cache_path, 'w') as f:
-                    f.write(content)
-                releases_cache[repo_slug] = data
-                return data
-            except ValueError:
-                return []
-        return []
-
-    releases_data = get_releases(builder_repo)
-    zst_link = ""
-    published_at = ""
-    # Find release version if not provided
-    if not config['release']:
-        for r in releases_data:
-            #log(r)
-            for asset in r.get('assets', []):
-                u = asset.get('browser_download_url', '')
-                #log(u)
-                if u.endswith("qcow2.zst") or u.endswith("qcow2.xz"):
-                    if config['arch'] and config['arch'] != "x86_64" and config['arch'] not in u:
-                        continue
-                    # Extract version roughly
-                    filename=u.split('/')[-1]
-                    filename= removesuffix(filename, ".qcow2.zst")
-                    filename= removesuffix(filename, ".qcow2.xz")
-                    parts = filename.split('-')
-                    if len(parts) > 1:
-                        if published_at and published_at > r.get('published_at', ''):
-                            continue
-                        if not published_at:
-                            published_at = r.get('published_at', '')
-                            config['release'] = parts[1]
-                        elif cmp_version(parts[1], config['release']) > 0:
-                          published_at = r.get('published_at', '')
-                          config['release'] = parts[1]
-                          debuglog(config['debug'],"Found release: " + config['release'])
-
-
-    log("Using release: " + config['release'])
-    # Find download link
-    def find_image_link(releases, target_zst, target_xz):
-        for r in releases:
-            for asset in r.get('assets', []):
-                u = asset.get('browser_download_url', '')
-                if u.endswith(target_zst) or u.endswith(target_xz):
-                    return u
-        return ""
-
-    target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
-    target_xz = "{}-{}.qcow2.xz".format(config['os'], config['release'])
-    
-    if config['arch'] and config['arch'] != 'x86_64':
-        target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
-        target_xz = "{}-{}-{}.qcow2.xz".format(config['os'], config['release'], config['arch'])
-
-    search_repos = release_repo_candidates if config['release'] else [builder_repo]
-    searched = set()
-    for repo in search_repos:
-        if repo in searched:
-            continue
-        searched.add(repo)
-        repo_releases = releases_data if repo == builder_repo else get_releases(repo)
-        link = find_image_link(repo_releases, target_zst, target_xz)
-        if link:
-            builder_repo = repo
-            releases_data = repo_releases
-            zst_link = link
-            break
-
-    if not zst_link:
-        fatal("Cannot find the image link.")
-
-    debuglog(config['debug'],"Using link: " + zst_link)
-
-    if not config['builder']:
-        parts = zst_link.split('/')
-        for p in parts:
-            if p.startswith('v') and len(p) > 1 and p[1].isdigit():
-                config['builder'] = p[1:]
-                break
-    
-    output_dir = os.path.join(working_dir_os, "v" + config['builder'])
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    ova_file = os.path.join(output_dir, zst_link.split('/')[-1])
-    qcow_name = ova_file.replace('.zst', '').replace('.xz', '')
-    if not qcow_name.endswith('.qcow2'):
-        qcow_name += ".qcow2"
-
-    # Download and Extract
-    if not os.path.exists(qcow_name):
-        if not os.path.exists(ova_file):
-            if download_file(zst_link, ova_file, config['debug']):
-                download_optional_parts(zst_link, ova_file, debug=config['debug'])
-        
-        log("Extracting " + ova_file)
-        if ova_file.endswith('.zst'):
-            if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
-                fatal("zstd extraction failed")
-        elif ova_file.endswith('.xz'):
-            with open(qcow_name, 'wb') as f:
-                if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
-                    fatal("xz extraction failed")
-        
-        if not os.path.exists(qcow_name):
-            fatal("Extraction failed")
-        try:
-            os.remove(ova_file)
-        except OSError:
-            pass
-
-    # Key files
-    vm_name = "{}-{}".format(config['os'], config['release'])
-    if config['arch'] and config['arch'] != "x86_64":
-        vm_name += "-" + config['arch']
-
-    hostid_url = "https://github.com/{}/releases/download/v{}/{}-host.id_rsa".format(builder_repo, config['builder'], vm_name)
-    hostid_file = os.path.join(output_dir, hostid_url.split('/')[-1])
-    
-    if not os.path.exists(hostid_file):
-        download_file(hostid_url, hostid_file, config['debug'])
-    if IS_WINDOWS:
-        tighten_windows_permissions(hostid_file)
+    if config['qcow2']:
+        if not os.path.exists(config['qcow2']):
+            fatal("Specified qcow2 file not found: " + config['qcow2'])
+        qcow_name = os.path.abspath(config['qcow2'])
+        output_dir = working_dir_os
+        vm_name = "{}-custom".format(config['os'])
+        hostid_file = None
+        vmpub_file = None
+        log("Using local qcow2: " + qcow_name)
     else:
-        os.chmod(hostid_file, 0o600)
+        # Fetch release info
+        releases_cache = {}
+        
+        def get_releases(repo_slug):
+            cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
+            cache_path = os.path.join(working_dir_os, cache_name)
+            if repo_slug in releases_cache:
+                return releases_cache[repo_slug]
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, 'r') as f:
+                        releases_cache[repo_slug] = json.load(f)
+                        return releases_cache[repo_slug]
+                except ValueError:
+                    pass
+            
+            gh_headers = {
+                "Accept": "application/vnd.github+json",
+            }
+            token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+            if token:
+                gh_headers["Authorization"] = "Bearer {}".format(token)
+                debuglog(config['debug'], "Using GitHub token auth for releases")
 
-    vmpub_url = "https://github.com/{}/releases/download/v{}/{}-id_rsa.pub".format(builder_repo, config['builder'], vm_name)
-    vmpub_file = os.path.join(output_dir, vmpub_url.split('/')[-1])
-    if not os.path.exists(vmpub_file):
-        download_file(vmpub_url, vmpub_file, config['debug'])
+            url = "https://api.github.com/repos/{}/releases".format(repo_slug)
+            content = fetch_url_content(url, config['debug'], headers=gh_headers)
+            if content:
+                try:
+                    data = json.loads(content)
+                    with open(cache_path, 'w') as f:
+                        f.write(content)
+                    releases_cache[repo_slug] = data
+                    return data
+                except ValueError:
+                    return []
+            return []
+
+        releases_data = get_releases(builder_repo)
+        zst_link = ""
+        published_at = ""
+        # Find release version if not provided
+        if not config['release']:
+            for r in releases_data:
+                #log(r)
+                for asset in r.get('assets', []):
+                    u = asset.get('browser_download_url', '')
+                    #log(u)
+                    if u.endswith("qcow2.zst") or u.endswith("qcow2.xz"):
+                        if config['arch'] and config['arch'] != "x86_64" and config['arch'] not in u:
+                            continue
+                        # Extract version roughly
+                        filename=u.split('/')[-1]
+                        filename= removesuffix(filename, ".qcow2.zst")
+                        filename= removesuffix(filename, ".qcow2.xz")
+                        parts = filename.split('-')
+                        if len(parts) > 1:
+                            if published_at and published_at > r.get('published_at', ''):
+                                continue
+                            if not published_at:
+                                published_at = r.get('published_at', '')
+                                config['release'] = parts[1]
+                            elif cmp_version(parts[1], config['release']) > 0:
+                              published_at = r.get('published_at', '')
+                              config['release'] = parts[1]
+                              debuglog(config['debug'],"Found release: " + config['release'])
+
+
+        log("Using release: " + config['release'])
+        # Find download link
+        def find_image_link(releases, target_zst, target_xz):
+            for r in releases:
+                for asset in r.get('assets', []):
+                    u = asset.get('browser_download_url', '')
+                    if u.endswith(target_zst) or u.endswith(target_xz):
+                        return u
+            return ""
+
+        target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
+        target_xz = "{}-{}.qcow2.xz".format(config['os'], config['release'])
+        
+        if config['arch'] and config['arch'] != 'x86_64':
+            target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
+            target_xz = "{}-{}-{}.qcow2.xz".format(config['os'], config['release'], config['arch'])
+
+        search_repos = release_repo_candidates if config['release'] else [builder_repo]
+        searched = set()
+        for repo in search_repos:
+            if repo in searched:
+                continue
+            searched.add(repo)
+            repo_releases = releases_data if repo == builder_repo else get_releases(repo)
+            link = find_image_link(repo_releases, target_zst, target_xz)
+            if link:
+                builder_repo = repo
+                releases_data = repo_releases
+                zst_link = link
+                break
+
+        if not zst_link:
+            fatal("Cannot find the image link.")
+
+        debuglog(config['debug'],"Using link: " + zst_link)
+
+        if not config['builder']:
+            parts = zst_link.split('/')
+            for p in parts:
+                if p.startswith('v') and len(p) > 1 and p[1].isdigit():
+                    config['builder'] = p[1:]
+                    break
+        
+        output_dir = os.path.join(working_dir_os, "v" + config['builder'])
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        ova_file = os.path.join(output_dir, zst_link.split('/')[-1])
+        qcow_name = ova_file.replace('.zst', '').replace('.xz', '')
+        if not qcow_name.endswith('.qcow2'):
+            qcow_name += ".qcow2"
+
+        # Download and Extract
+        if not os.path.exists(qcow_name):
+            if not os.path.exists(ova_file):
+                if download_file(zst_link, ova_file, config['debug']):
+                    download_optional_parts(zst_link, ova_file, debug=config['debug'])
+            
+            log("Extracting " + ova_file)
+            if ova_file.endswith('.zst'):
+                if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
+                    fatal("zstd extraction failed")
+            elif ova_file.endswith('.xz'):
+                with open(qcow_name, 'wb') as f:
+                    if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
+                        fatal("xz extraction failed")
+            
+            if not os.path.exists(qcow_name):
+                fatal("Extraction failed")
+            try:
+                os.remove(ova_file)
+            except OSError:
+                pass
+
+        # Key files
+        vm_name = "{}-{}".format(config['os'], config['release'])
+        if config['arch'] and config['arch'] != "x86_64":
+            vm_name += "-" + config['arch']
+
+        hostid_url = "https://github.com/{}/releases/download/v{}/{}-host.id_rsa".format(builder_repo, config['builder'], vm_name)
+        hostid_file = os.path.join(output_dir, hostid_url.split('/')[-1])
+        
+        if not os.path.exists(hostid_file):
+            download_file(hostid_url, hostid_file, config['debug'])
+        if IS_WINDOWS:
+            tighten_windows_permissions(hostid_file)
+        else:
+            os.chmod(hostid_file, 0o600)
+
+        vmpub_url = "https://github.com/{}/releases/download/v{}/{}-id_rsa.pub".format(builder_repo, config['builder'], vm_name)
+        vmpub_file = os.path.join(output_dir, vmpub_url.split('/')[-1])
+        if not os.path.exists(vmpub_file):
+            download_file(vmpub_url, vmpub_file, config['debug'])
 
     # Ports
     if not config['sshport']:
@@ -1408,16 +1426,18 @@ def main():
                 else:
                     os.chmod(ssh_dir, 0o700)
             
-            with open(vmpub_file, 'r') as f:
-                pub = f.read()
-            with open(os.path.join(ssh_dir, "authorized_keys"), 'a') as f:
-                f.write(pub)
+            if vmpub_file and os.path.exists(vmpub_file):
+                with open(vmpub_file, 'r') as f:
+                    pub = f.read()
+                with open(os.path.join(ssh_dir, "authorized_keys"), 'a') as f:
+                    f.write(pub)
 
             conf_path = os.path.join(ssh_dir, "config.d")
             if not os.path.exists(conf_path):
                 os.makedirs(conf_path)
             
-            ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n  IdentityFile {}\n".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], hostid_file)
+            identity_line = "  IdentityFile {}\n".format(hostid_file) if hostid_file else ""
+            ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n{}".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], identity_line)
             
             os.unlink(os.path.join(conf_path, "{}.conf".format(vm_name))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(vm_name))) else None
             
@@ -1497,10 +1517,14 @@ def main():
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
                 "-o", "LogLevel=ERROR",
-                "-i", hostid_file,
+            ]
+            if hostid_file:
+                ssh_base_cmd.extend(["-i", hostid_file])
+            
+            ssh_base_cmd.extend([
                 "-p", str(config['sshport']),
                 "root@localhost"
-            ]
+            ])
             
             for i in range(300):
                 if proc.poll() is not None:
