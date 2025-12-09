@@ -69,6 +69,7 @@ jobs:
       run: |
         set -e
         mountdir=test
+        mkdir -p ${mountdir}
         echo "anyvm" > ${mountdir}/justcheck.txt
         mkdir -p ../test_output
         python anyvm.py --debug --data-dir ../test_output --os "${{ inputs.os }}" --release "${{ inputs.release }}" --arch "${{ inputs.arch }}" -d -v "${mountdir}:/mnt/host" --sshport 10022 --nc "${{ inputs.nc }}" --sync "${{ inputs.sync }}"
