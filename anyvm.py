@@ -66,6 +66,18 @@ except AttributeError:
 SSH_KNOWN_HOSTS_NULL = "NUL" if IS_WINDOWS else "/dev/null"
 
 OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
+
+
+DEFAULT_BUILDER_VERSIONS = {
+    "freebsd": "2.0.3",
+    "openbsd": "2.0.0",
+    "netbsd": "2.0.0",
+    "dragonflybsd": "2.0.3",
+    "solaris": "2.0.0",
+    "omnios": "2.0.0",
+    "openindiana": "2.0.0"
+}
+
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
 
 
@@ -1024,6 +1036,79 @@ def main():
     if not os.path.exists(working_dir_os):
         os.makedirs(working_dir_os)
 
+    # Fetch release info
+    releases_cache = {}
+    
+    def get_releases(repo_slug):
+        cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
+        cache_path = os.path.join(working_dir_os, cache_name)
+        if repo_slug in releases_cache:
+            return releases_cache[repo_slug]
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'r') as f:
+                    releases_cache[repo_slug] = json.load(f)
+                    return releases_cache[repo_slug]
+            except ValueError:
+                pass
+        
+        gh_headers = {
+            "Accept": "application/vnd.github+json",
+        }
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            gh_headers["Authorization"] = "Bearer {}".format(token)
+            debuglog(config['debug'], "Using GitHub token auth for releases")
+
+        url = "https://api.github.com/repos/{}/releases".format(repo_slug)
+        content = fetch_url_content(url, config['debug'], headers=gh_headers)
+        if content:
+            try:
+                data = json.loads(content)
+                with open(cache_path, 'w') as f:
+                    f.write(content)
+                releases_cache[repo_slug] = data
+                return data
+            except ValueError:
+                return []
+        return []
+
+    if not config['builder'] and not config['qcow2'] and config['os'] in DEFAULT_BUILDER_VERSIONS:
+        def_ver = DEFAULT_BUILDER_VERSIONS[config['os']]
+        def_repo = brepo if cmp_version(def_ver, "2.0.0") >= 0 else arepo
+        debuglog(config['debug'], "Checking default builder {} in {}".format(def_ver, def_repo))
+        try:
+            def_releases = get_releases(def_repo)
+            target_builder_rel = next((r for r in def_releases if r.get('tag_name') == "v" + def_ver or r.get('tag_name') == def_ver), None)
+            if target_builder_rel:
+                debuglog(config['debug'], "Found default builder release tag")
+                use_default = False
+                if config['release']:
+                    debuglog(config['debug'], "Checking for release {} in default builder".format(config['release']))
+                    for asset in target_builder_rel.get('assets', []):
+                        u = asset.get('browser_download_url', '')
+                        if (u.endswith("qcow2.zst") or u.endswith("qcow2.xz")):
+                            if config['arch'] and config['arch'] != "x86_64" and config['arch'] not in u:
+                                continue
+                            if config['release'] in u:
+                                debuglog(config['debug'], "Found matching asset: {}".format(u))
+                                use_default = True
+                                break
+                    if not use_default:
+                        debuglog(config['debug'], "Release {} not found in default builder, falling back".format(config['release']))
+                else:
+                    use_default = True
+                
+                if use_default:
+                    config['builder'] = def_ver
+                    builder_repo = def_repo
+                    release_repo_candidates = [builder_repo]
+                    debuglog(config['debug'], "Using default builder: {} from {}".format(def_ver, def_repo))
+            else:
+                debuglog(config['debug'], "Default builder release tag not found")
+        except Exception as e:
+            debuglog(config['debug'], "Failed to check default builder: " + str(e))
+
     if config['arch']:
         debuglog(config['debug'],"Using VM arch: " + config['arch'])
     else:
@@ -1039,43 +1124,6 @@ def main():
         vmpub_file = None
         log("Using local qcow2: " + qcow_name)
     else:
-        # Fetch release info
-        releases_cache = {}
-        
-        def get_releases(repo_slug):
-            cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
-            cache_path = os.path.join(working_dir_os, cache_name)
-            if repo_slug in releases_cache:
-                return releases_cache[repo_slug]
-            if os.path.exists(cache_path):
-                try:
-                    with open(cache_path, 'r') as f:
-                        releases_cache[repo_slug] = json.load(f)
-                        return releases_cache[repo_slug]
-                except ValueError:
-                    pass
-            
-            gh_headers = {
-                "Accept": "application/vnd.github+json",
-            }
-            token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-            if token:
-                gh_headers["Authorization"] = "Bearer {}".format(token)
-                debuglog(config['debug'], "Using GitHub token auth for releases")
-
-            url = "https://api.github.com/repos/{}/releases".format(repo_slug)
-            content = fetch_url_content(url, config['debug'], headers=gh_headers)
-            if content:
-                try:
-                    data = json.loads(content)
-                    with open(cache_path, 'w') as f:
-                        f.write(content)
-                    releases_cache[repo_slug] = data
-                    return data
-                except ValueError:
-                    return []
-            return []
-
         releases_data = get_releases(builder_repo)
         if config['builder']:
             target_tag = config['builder']
