@@ -278,6 +278,17 @@ def get_remote_file_info(url, debug=False):
         debuglog(debug, "HEAD failed for {}: {}".format(url, exc))
         return 0, False
 
+def check_url_exists(url, debug=False):
+    try:
+        req = Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        u = urlopen(req, timeout=10)
+        u.close()
+        return True
+    except Exception as e:
+        debuglog(debug, "Check URL failed: {} - {}".format(url, str(e)))
+        return False
+
 def download_file_multithread(url, dest, total_size, show_progress, debug=False):
     tmp_dest = dest + ".part"
     try:
@@ -1073,41 +1084,44 @@ def main():
                 return []
         return []
 
+    zst_link = ""
+
     if not config['builder'] and not config['qcow2'] and config['os'] in DEFAULT_BUILDER_VERSIONS:
         def_ver = DEFAULT_BUILDER_VERSIONS[config['os']]
         def_repo = brepo if cmp_version(def_ver, "2.0.0") >= 0 else arepo
         debuglog(config['debug'], "Checking default builder {} in {}".format(def_ver, def_repo))
-        try:
-            def_releases = get_releases(def_repo)
-            target_builder_rel = next((r for r in def_releases if r.get('tag_name') == "v" + def_ver or r.get('tag_name') == def_ver), None)
-            if target_builder_rel:
-                debuglog(config['debug'], "Found default builder release tag")
-                use_default = False
-                if config['release']:
-                    debuglog(config['debug'], "Checking for release {} in default builder".format(config['release']))
-                    for asset in target_builder_rel.get('assets', []):
-                        u = asset.get('browser_download_url', '')
-                        if (u.endswith("qcow2.zst") or u.endswith("qcow2.xz")):
-                            if config['arch'] and config['arch'] != "x86_64" and config['arch'] not in u:
-                                continue
-                            if config['release'] in u:
-                                debuglog(config['debug'], "Found matching asset: {}".format(u))
-                                use_default = True
-                                break
-                    if not use_default:
-                        debuglog(config['debug'], "Release {} not found in default builder, falling back".format(config['release']))
-                else:
-                    use_default = True
-                
-                if use_default:
-                    config['builder'] = def_ver
-                    builder_repo = def_repo
-                    release_repo_candidates = [builder_repo]
-                    debuglog(config['debug'], "Using default builder: {} from {}".format(def_ver, def_repo))
+        
+        use_default = False
+        found_zst_link = ""
+        
+        if config['release']:
+            # Try to construct the URL directly
+            target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
+            if config['arch'] and config['arch'] != 'x86_64':
+                target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
+            
+            # URL format: https://github.com/{repo}/releases/download/v{ver}/{filename}
+            tag = "v" + def_ver if not def_ver.startswith("v") else def_ver
+            
+            candidate_url = "https://github.com/{}/releases/download/{}/{}".format(def_repo, tag, target_zst)
+            debuglog(config['debug'], "Checking candidate URL: {}".format(candidate_url))
+            
+            if check_url_exists(candidate_url, config['debug']):
+                debuglog(config['debug'], "Candidate URL exists!")
+                use_default = True
+                found_zst_link = candidate_url
             else:
-                debuglog(config['debug'], "Default builder release tag not found")
-        except Exception as e:
-            debuglog(config['debug'], "Failed to check default builder: " + str(e))
+                debuglog(config['debug'], "Candidate URL not found, falling back to full search")
+        else:
+            use_default = True
+            
+        if use_default:
+            config['builder'] = def_ver
+            builder_repo = def_repo
+            release_repo_candidates = [builder_repo]
+            debuglog(config['debug'], "Using default builder: {} from {}".format(def_ver, def_repo))
+            if found_zst_link:
+                zst_link = found_zst_link
 
     if config['arch']:
         debuglog(config['debug'],"Using VM arch: " + config['arch'])
@@ -1124,14 +1138,20 @@ def main():
         vmpub_file = None
         log("Using local qcow2: " + qcow_name)
     else:
-        releases_data = get_releases(builder_repo)
-        if config['builder']:
-            target_tag = config['builder']
-            if not target_tag.startswith('v'):
-                target_tag = "v" + target_tag
-            releases_data = [r for r in releases_data if r.get('tag_name') == target_tag]
+        if not zst_link:
+            releases_data = get_releases(builder_repo)
+    
+            if not releases_data and (config['builder'] or not config['release']):
+                 fatal("Unsupported OS: {}. Builder repository {} not found.".format(config['os'], builder_repo))
+    
+            if config['builder']:
+                target_tag = config['builder']
+                if not target_tag.startswith('v'):
+                    target_tag = "v" + target_tag
+                releases_data = [r for r in releases_data if r.get('tag_name') == target_tag]
+        else:
+            releases_data = []
 
-        zst_link = ""
         published_at = ""
         # Find release version if not provided
         if not config['release']:
@@ -1177,19 +1197,20 @@ def main():
             target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
             target_xz = "{}-{}-{}.qcow2.xz".format(config['os'], config['release'], config['arch'])
 
-        search_repos = release_repo_candidates if config['release'] else [builder_repo]
-        searched = set()
-        for repo in search_repos:
-            if repo in searched:
-                continue
-            searched.add(repo)
-            repo_releases = releases_data if repo == builder_repo else get_releases(repo)
-            link = find_image_link(repo_releases, target_zst, target_xz)
-            if link:
-                builder_repo = repo
-                releases_data = repo_releases
-                zst_link = link
-                break
+        if not zst_link:
+            search_repos = release_repo_candidates if config['release'] else [builder_repo]
+            searched = set()
+            for repo in search_repos:
+                if repo in searched:
+                    continue
+                searched.add(repo)
+                repo_releases = releases_data if repo == builder_repo else get_releases(repo)
+                link = find_image_link(repo_releases, target_zst, target_xz)
+                if link:
+                    builder_repo = repo
+                    releases_data = repo_releases
+                    zst_link = link
+                    break
 
         if not zst_link:
             fatal("Cannot find the image link.")
@@ -1279,7 +1300,7 @@ def main():
             config['serialport'] = str(serial_port)
         
         if config['debug']:
-             serial_log_file = os.path.join(working_dir_os, "{}.serial.log".format(vm_name))
+             serial_log_file = os.path.join(output_dir, "{}.serial.log".format(vm_name))
              if os.path.exists(serial_log_file):
                  try:
                      os.remove(serial_log_file)
