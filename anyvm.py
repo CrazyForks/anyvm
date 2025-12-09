@@ -1077,6 +1077,12 @@ def main():
             return []
 
         releases_data = get_releases(builder_repo)
+        if config['builder']:
+            target_tag = config['builder']
+            if not target_tag.startswith('v'):
+                target_tag = "v" + target_tag
+            releases_data = [r for r in releases_data if r.get('tag_name') == target_tag]
+
         zst_link = ""
         published_at = ""
         # Find release version if not provided
