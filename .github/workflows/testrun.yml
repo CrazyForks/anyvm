@@ -68,9 +68,10 @@ jobs:
       shell: bash
       run: |
         set -e
-        echo "anyvm" > justcheck.txt
+        mountdir=test
+        echo "anyvm" > ${mountdir}/justcheck.txt
         mkdir -p ../test_output
-        python anyvm.py --debug --data-dir ../test_output --os "${{ inputs.os }}" --release "${{ inputs.release }}" --arch "${{ inputs.arch }}" -d -v "$(pwd):/mnt/host" --sshport 10022 --nc "${{ inputs.nc }}" --sync "${{ inputs.sync }}"
+        python anyvm.py --debug --data-dir ../test_output --os "${{ inputs.os }}" --release "${{ inputs.release }}" --arch "${{ inputs.arch }}" -d -v "${mountdir}:/mnt/host" --sshport 10022 --nc "${{ inputs.nc }}" --sync "${{ inputs.sync }}"
         # We use the ssh port as an alias to the vm, so we can use 'ssh $port' to login
         ssh 10022 ls /mnt/host
         ssh 10022 ls /mnt/host | grep justcheck.txt
