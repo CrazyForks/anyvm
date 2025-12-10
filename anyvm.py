@@ -710,13 +710,15 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
     if need_add:
         log("Configuring NFS export on host (requires sudo)...")
         if sudo_cmd or os.geteuid() == 0:
+            subprocess.call(sudo_cmd + ["mkdir", "-p", "/run/sendsigs.omit.d/"])
             cmd_write = sudo_cmd + ["tee", "-a", "/etc/exports"]
             p_write = subprocess.Popen(cmd_write, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             p_write.communicate(input=(entry_line + "\n").encode('utf-8'))
             
             if p_write.returncode == 0:
                 subprocess.call(sudo_cmd + ["exportfs", "-a"])
-                if subprocess.call(sudo_cmd + ["service", "nfs-server", "restart"]) != 0:
+                if subprocess.call(sudo_cmd + ["service", "nfs-kernel-server", "restart"]) != 0:
+                    if subprocess.call(sudo_cmd + ["service", "nfs-server", "restart"]) != 0:
                         subprocess.call(sudo_cmd + ["systemctl", "restart", "nfs-server"])
             else:
                 log("Failed to write to /etc/exports")
