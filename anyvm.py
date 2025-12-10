@@ -702,13 +702,17 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
     try:
         if os.path.exists("/etc/exports"):
             with open("/etc/exports", "r") as f:
-                if vhost in f.read():
+                content = f.read()
+                # Check if the exact path is already exported
+                # Simple string check might be flaky, but good enough for now
+                if vhost + " " in content:
                     need_add = False
     except:
         pass
 
     if need_add:
         log("Configuring NFS export on host (requires sudo)...")
+        debuglog(True, "Adding export: " + entry_line)
         if sudo_cmd or os.geteuid() == 0:
             subprocess.call(sudo_cmd + ["mkdir", "-p", "/run/sendsigs.omit.d/"])
             cmd_write = sudo_cmd + ["tee", "-a", "/etc/exports"]
