@@ -1657,22 +1657,207 @@ def main():
                     return
                 last_wait_tick[0] = tick
                 elapsed = tick / 100.0
-                sys.stdout.write("\r{} {:.2f}s".format(wait_msg, elapsed))
+
+                def supports_ansi_color(stream):
+                    try:
+                        if not hasattr(stream, "isatty") or not stream.isatty():
+                            return False
+                    except Exception:
+                        return False
+                    if os.environ.get("NO_COLOR") is not None:
+                        return False
+                    if os.environ.get("TERM") == "dumb":
+                        return False
+                    if IS_WINDOWS:
+                        # Best-effort heuristics: modern terminals set one of these.
+                        if os.environ.get("WT_SESSION"):
+                            return True
+                        if os.environ.get("ANSICON"):
+                            return True
+                        if os.environ.get("ConEmuANSI", "").upper() == "ON":
+                            return True
+                        if os.environ.get("TERM"):
+                            return True
+                        return False
+                    return True
+
+                use_color = supports_ansi_color(sys.stdout)
+                green = "\x1b[32m"
+                reset = "\x1b[0m"
+
+                try:
+                    cols = shutil.get_terminal_size(fallback=(80, 20)).columns
+                except Exception:
+                    cols = 80
+
+                prefix = "{} {:.2f}s".format(wait_msg, elapsed)
+
+                # Leave at least a small bar area; if the terminal is too narrow, just print the prefix.
+                bar_total = max(0, cols - len(prefix) - 1)
+                if bar_total < 10:
+                    line = prefix
+                    visible_len = len(prefix)
+                else:
+                    # Build a progress bar that repeatedly:
+                    # 1) fills left->right to full
+                    # 2) clears left->right back to empty
+                    inner = max(1, bar_total - 2)  # brackets take 2 chars
+
+                    speed_cells_per_sec = 18.0
+
+                    bg_char = "░"
+
+                    def shade_for_fraction(filled_fraction):
+                        # filled_fraction: 0.0 (empty) .. 1.0 (full)
+                        # Only render a fully solid block when truly full.
+                        if filled_fraction >= 1.0:
+                            return "█"
+                        if filled_fraction >= 0.75:
+                            return "▓"
+                        if filled_fraction >= 0.50:
+                            return "▒"
+                        if filled_fraction >= 0.25:
+                            return "░"
+                        return bg_char
+
+                    cells = [bg_char] * inner
+                    bright = [False] * inner
+                    if inner == 1:
+                        # Tiny terminal; just blink between empty/full-ish
+                        frac = (elapsed * speed_cells_per_sec) % 1.0
+                        cells[0] = shade_for_fraction(frac)
+                        bright[0] = (cells[0] != bg_char)
+                    else:
+                        # One full cycle = fill across inner cells, then clear across inner cells.
+                        fill_duration = float(inner) / max(0.001, speed_cells_per_sec)
+                        cycle = 2.0 * fill_duration
+                        t = elapsed % cycle
+
+                        if t < fill_duration:
+                            # Filling: boundary moves from 0 -> inner
+                            boundary = t * speed_cells_per_sec
+                            # Prevent float rounding from hitting the next cell early.
+                            if boundary >= inner:
+                                boundary = inner - 1e-9
+                            full = int(boundary)
+                            frac = boundary - full
+                            for idx in range(min(full, inner)):
+                                cells[idx] = "█"
+                                bright[idx] = True
+                            if 0 <= full < inner:
+                                cells[full] = shade_for_fraction(frac)
+                                bright[full] = (frac > 0.0)
+                        else:
+                            # Clearing: left edge moves from 0 -> inner
+                            cleared = (t - fill_duration) * speed_cells_per_sec
+                            if cleared >= inner:
+                                cleared = inner - 1e-9
+                            full_empty = int(cleared)
+                            frac = cleared - full_empty
+                            # left side empty
+                            for idx in range(min(full_empty, inner)):
+                                cells[idx] = bg_char
+                                bright[idx] = False
+                            # boundary cell fades out as we clear
+                            if 0 <= full_empty < inner:
+                                cells[full_empty] = shade_for_fraction(1.0 - frac)
+                                bright[full_empty] = (frac < 1.0)
+                            # remaining cells stay filled
+                            for idx in range(full_empty + 1, inner):
+                                cells[idx] = "█"
+                                bright[idx] = True
+
+                    bar_text = "[{}]".format("".join(cells))
+                    if use_color:
+                        dim_green = "\x1b[2;32m"
+                        bar_cells = []
+                        current_bright = None
+                        for idx, ch in enumerate(cells):
+                            want_bright = bright[idx]
+                            if want_bright != current_bright:
+                                bar_cells.append(green if want_bright else dim_green)
+                                current_bright = want_bright
+                            bar_cells.append(ch)
+                        bar_render = "[" + "".join(bar_cells) + reset + "]"
+                    else:
+                        bar_render = bar_text
+                    line = "{} {}".format(prefix, bar_render)
+                    visible_len = len(prefix) + 1 + len(bar_text)
+
+                # Pad to clear any leftover chars from previous frame.
+                if cols and visible_len < cols:
+                    line = line + (" " * (cols - visible_len))
+
+                sys.stdout.write("\r" + line)
                 sys.stdout.flush()
 
             if interactive_wait:
                 def wait_timer_worker():
                     while not wait_timer_stop.is_set():
                         update_wait_timer()
-                        time.sleep(0.01)
+                        # 15 updates per second
+                        time.sleep(1.0 / 15.0)
                 wait_timer_thread = threading.Thread(target=wait_timer_worker)
                 wait_timer_thread.daemon = True
                 wait_timer_thread.start()
 
             def finish_wait_timer():
-                if interactive_wait and last_wait_tick[0] >= 0:
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
+                if not interactive_wait or last_wait_tick[0] < 0:
+                    return
+                # Render a final, fully-filled bar so the last frame doesn't look partial.
+                elapsed = last_wait_tick[0] / 100.0
+
+                def supports_ansi_color(stream):
+                    try:
+                        if not hasattr(stream, "isatty") or not stream.isatty():
+                            return False
+                    except Exception:
+                        return False
+                    if os.environ.get("NO_COLOR") is not None:
+                        return False
+                    if os.environ.get("TERM") == "dumb":
+                        return False
+                    if IS_WINDOWS:
+                        if os.environ.get("WT_SESSION"):
+                            return True
+                        if os.environ.get("ANSICON"):
+                            return True
+                        if os.environ.get("ConEmuANSI", "").upper() == "ON":
+                            return True
+                        if os.environ.get("TERM"):
+                            return True
+                        return False
+                    return True
+
+                use_color = supports_ansi_color(sys.stdout)
+                green = "\x1b[32m"
+                reset = "\x1b[0m"
+
+                try:
+                    cols = shutil.get_terminal_size(fallback=(80, 20)).columns
+                except Exception:
+                    cols = 80
+
+                prefix = "{} {:.2f}s".format(wait_msg, elapsed)
+                bar_total = max(0, cols - len(prefix) - 1)
+                if bar_total < 10:
+                    line = prefix
+                    visible_len = len(prefix)
+                else:
+                    inner = max(1, bar_total - 2)
+                    bar_text = "[{}]".format("█" * inner)
+                    if use_color:
+                        bar_render = "[" + green + ("█" * inner) + reset + "]"
+                    else:
+                        bar_render = bar_text
+                    line = "{} {}".format(prefix, bar_render)
+                    visible_len = len(prefix) + 1 + len(bar_text)
+
+                if cols and visible_len < cols:
+                    line = line + (" " * (cols - visible_len))
+
+                sys.stdout.write("\r" + line + "\n")
+                sys.stdout.flush()
             
             ssh_base_cmd = [
                 "ssh",
