@@ -135,7 +135,9 @@ Options:
   --cpu <num>            Number of CPU cores (Default: all host cores).
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
   --nc <type>            Network card model (e.g., virtio-net-pci, e1000).
-  --sshport <port>       Host port forwarding for SSH (Default: auto-detected free port).
+  --ssh-port <port>      Host port forwarding for SSH (Default: auto-detected free port).
+  --ssh-name <name>      Add an extra SSH alias for the VM (e.g., ssh vmname).
+                                                 When set, it will be added to the port-based alias entry.
   --host-ssh-port <port> Host SSH port reachable from the guest (Default: 22).
   --serial <port>        Expose the VM serial console on the given TCP port (auto-select starting 7000 if omitted).
   -p <mapping>           Custom port mapping. Can be used multiple times.
@@ -888,6 +890,7 @@ def main():
         'cputype': "",
         'nc': "",
         'sshport': "",
+        'sshname': "",
         'hostsshport': "",
         'console': False,
         'useefi': False,
@@ -959,6 +962,9 @@ def main():
         elif arg in ["--sshport", "--ssh-port"]:
             config['sshport'] = args[i+1]
             i += 1
+        elif arg == "--ssh-name":
+            config['sshname'] = args[i+1]
+            i += 1
         elif arg == "--host-ssh-port":
             config['hostsshport'] = args[i+1]
             i += 1
@@ -1009,6 +1015,12 @@ def main():
     if not config['os']:
         print_usage()
         fatal("Missing required argument: --os")
+
+    if config.get('sshname'):
+        # Keep this conservative: Host patterns are space-delimited in ssh config.
+        # Disallow whitespace and other separators to avoid generating invalid config.
+        if not re.match(r'^[A-Za-z0-9._-]+$', config['sshname']):
+            fatal("Invalid --ssh-name value: {} (allowed: A-Z a-z 0-9 . _ -)".format(config['sshname']))
 
     if config['os'] == "freebsd":
         config['useefi'] = True
@@ -1567,12 +1579,26 @@ def main():
                 os.makedirs(conf_path)
             
             identity_line = "  IdentityFile {}\n".format(hostid_file) if hostid_file else ""
-            ssh_config_content = "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n{}".format(vm_name, SSH_KNOWN_HOSTS_NULL, config['sshport'], identity_line)
+
+            def build_ssh_host_config(host_aliases):
+                host_spec = " ".join(str(x) for x in host_aliases if x)
+                return "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n{}".format(
+                    host_spec,
+                    SSH_KNOWN_HOSTS_NULL,
+                    config['sshport'],
+                    identity_line,
+                )
+
+            # Primary alias (vm_name)
+            ssh_config_content = build_ssh_host_config([vm_name])
+
+            vm_conf_file = os.path.join(conf_path, "{}.conf".format(vm_name))
+            debuglog(config['debug'], "Generated SSH config (vm name) -> {}:\n{}".format(vm_conf_file, ssh_config_content.strip()))
             
-            os.unlink(os.path.join(conf_path, "{}.conf".format(vm_name))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(vm_name))) else None
+            os.unlink(vm_conf_file) if os.path.exists(vm_conf_file) else None
             
             # Write config for VM name
-            with open(os.path.join(conf_path, "{}.conf".format(vm_name)), 'w') as f:
+            with open(vm_conf_file, 'w') as f:
                 f.write(ssh_config_content)
 
             if IS_WINDOWS:
@@ -1581,11 +1607,17 @@ def main():
                 os.chmod(os.path.join(conf_path, "{}.conf".format(vm_name)), 0o600)
 
             # Write config for Port
-            port_conf_content = ssh_config_content.replace("Host " + vm_name, "Host " + str(config['sshport']))
+            port_aliases = [str(config['sshport'])]
+            if config.get('sshname'):
+                port_aliases.append(config['sshname'])
+            port_conf_content = build_ssh_host_config(port_aliases)
+
+            port_conf_file = os.path.join(conf_path, "{}.conf".format(config['sshport']))
+            debuglog(config['debug'], "Generated SSH config (port alias) -> {}:\n{}".format(port_conf_file, port_conf_content.strip()))
             
-            os.unlink(os.path.join(conf_path, "{}.conf".format(config['sshport']))) if os.path.exists(os.path.join(conf_path, "{}.conf".format(config['sshport']))) else None
+            os.unlink(port_conf_file) if os.path.exists(port_conf_file) else None
             
-            with open(os.path.join(conf_path, "{}.conf".format(config['sshport'])), 'w') as f: 
+            with open(port_conf_file, 'w') as f: 
                  f.write(port_conf_content)
             
             if IS_WINDOWS:
@@ -1740,6 +1772,8 @@ Host host
                  log("")
                  log("You can login the vm with: ssh " + vm_name)
                  log("Or just:  ssh " + str(config['sshport']))
+                 if config.get('sshname'):
+                     log("Or just:  ssh " + str(config['sshname']))
                  log("======================================")
 
             if not config['detach']:
@@ -1752,6 +1786,8 @@ Host host
                 log("The VM is still running in background.")
                 log("You can login the VM with:  ssh " + vm_name)
                 log("Or just:  ssh " + str(config['sshport']))
+                if config.get('sshname'):
+                    log("Or just:  ssh " + str(config['sshname']))
                 log("======================================")
         except KeyboardInterrupt:
             if not config['detach']:
