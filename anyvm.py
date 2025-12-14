@@ -1581,11 +1581,14 @@ def main():
             global_identity_block = ""
             if hostid_file:
                 # Apply the VM key to all SSH hosts (requested behavior).
-                global_identity_block = "Host *\n  IdentityFile {}\n\n".format(hostid_file)
+                global_identity_block = "Host *\n  IdentityFile {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n\n".format(
+                    hostid_file,
+                    SSH_KNOWN_HOSTS_NULL,
+                )
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  User root\n  HostName localhost\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     config['sshport'],
