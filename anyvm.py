@@ -1577,17 +1577,20 @@ def main():
             conf_path = os.path.join(ssh_dir, "config.d")
             if not os.path.exists(conf_path):
                 os.makedirs(conf_path)
-            
-            identity_line = "  IdentityFile {}\n".format(hostid_file) if hostid_file else ""
+
+            global_identity_block = ""
+            if hostid_file:
+                # Apply the VM key to all SSH hosts (requested behavior).
+                global_identity_block = "Host *\n  IdentityFile {}\n\n".format(hostid_file)
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                return "\nHost {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n{}".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile={}\n  User root\n  HostName localhost\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     config['sshport'],
-                    identity_line,
                 )
+                return "\n" + global_identity_block + host_block
 
             # Primary alias (vm_name)
             ssh_config_content = build_ssh_host_config([vm_name])
