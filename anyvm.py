@@ -1560,6 +1560,7 @@ def main():
                  t.start()
             
             # Config SSH
+            os.chmod(os.path.expanduser("~"), 0o755)
             ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
             if not os.path.exists(ssh_dir):
                 os.makedirs(ssh_dir)
