@@ -64,9 +64,9 @@ More examples and tags: https://github.com/anyvm-org/docker
 
 | Host | x86_64 guests | aarch64 guests | riscv64 guests |
 |------|---------------|----------------|----------------|
-| x86_64 Linux | ✅ | ✅ | ✅ |
-| aarch64 (arm64) Linux | ❌ | ✅ | ❌ |
-| Apple silicon macOS | ✅ | ✅ | ❌ |
+| Linux x86_64 | ✅ | ✅ | ✅ |
+| Linux aarch64 (arm64)  | ❌ | ✅ | ❌ |
+| MacOS Apple silicon  | ✅ | ✅ | ❌ |
 | Windows x86_64 | ✅ | ❌ | ❌ |
 
 ## 6. Install dependencies
