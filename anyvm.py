@@ -74,7 +74,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "netbsd": "2.0.0",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
-    "omnios": "2.0.0",
+    "omnios": "2.0.3",
     "openindiana": "2.0.0"
 }
 
@@ -949,13 +949,13 @@ def main():
             ssh_passthrough = args[i+1:]
             break
         if arg == "--os":
-            config['os'] = args[i+1]
+            config['os'] = args[i+1].lower()
             i += 1
         elif arg == "--release":
             config['release'] = args[i+1]
             i += 1
         elif arg == "--arch":
-            config['arch'] = args[i+1]
+            config['arch'] = args[i+1].lower()
             i += 1
         elif arg == "--mem":
             config['mem'] = args[i+1]
