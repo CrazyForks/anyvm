@@ -1935,7 +1935,11 @@ Host host
             p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
             p.communicate(input=vm_ssh_config.encode('utf-8'))
             p.wait()
-
+            # OmniOS DNS configuration
+            if config['os'] == 'omnios':
+                p = subprocess.Popen(ssh_base_cmd + ["sh"], stdin=subprocess.PIPE)
+                p.communicate(input=b'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n')
+                p.wait()
             # Mount Shared Folders
             if config['vpaths']:
                 sudo_cmd = []
