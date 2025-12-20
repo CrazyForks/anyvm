@@ -652,13 +652,17 @@ def hvf_supported():
     except Exception:
         return False
 
-def sync_sshfs(ssh_cmd, vhost, vguest, os_name):
+def sync_sshfs(ssh_cmd, vhost, vguest, os_name, os_release=None):
     """Mounts a host directory into the guest using SSHFS."""
     if IS_WINDOWS:
         log("Warning: SSHFS sync not supported on Windows host.")
         return
 
+    # FreeBSD 13.2/14.0 images may not ship with sshfs; install on demand.
+    needs_pkg_install = (os_name == "freebsd" and os_release in ("13.2", "14.0"))
+
     mount_script = """
+{pre}
 mkdir -p "{vguest}"
 if [ "{os}" = "netbsd" ]; then
   if ! /usr/sbin/mount_psshfs host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
@@ -674,7 +678,16 @@ else
     exit 1
   fi
 fi
-""".format(vguest=vguest, vhost=vhost, os=os_name)
+""".format(
+                pre=("""
+if command -v pkg >/dev/null 2>&1; then
+    IGNORE_OSVERSION=yes pkg install -y fusefs-sshfs >/dev/null 2>&1 || true
+fi
+""" if needs_pkg_install else ""),
+                vguest=vguest,
+                vhost=vhost,
+                os=os_name,
+        )
 
     mounted = False
     for _ in range(10):
@@ -1954,7 +1967,7 @@ Host host
                         elif config['sync'] == 'scp':
                             sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file)
                         else:
-                            sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'])
+                            sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'], config.get('release'))
 
                     except ValueError:
                         log("Invalid format for -v. Use host_path:guest_path")
