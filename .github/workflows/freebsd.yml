@@ -27,6 +27,13 @@ jobs:
         release: ["13.2", "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "15.0"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
+        exclude:
+          - release: 12.4
+            arch: aarch64
+          - release: 13.2
+            arch: aarch64
+          - release: 14.0
+            arch: aarch64
 
 
     uses: ./.github/workflows/testrun.yml
