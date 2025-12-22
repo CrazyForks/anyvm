@@ -71,7 +71,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.0.3",
     "openbsd": "2.0.0",
-    "netbsd": "2.0.0",
+    "netbsd": "2.0.1",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
     "omnios": "2.0.3",
@@ -140,6 +140,7 @@ Options:
                                                  When set, it will be added to the port-based alias entry.
   --host-ssh-port <port> Host SSH port reachable from the guest (Default: 22).
   --serial <port>        Expose the VM serial console on the given TCP port (auto-select starting 7000 if omitted).
+  --enable-ipv6          Enable IPv6 in QEMU user networking (slirp). (Default: disabled)
   -p <mapping>           Custom port mapping. Can be used multiple times.
                          Formats: host:guest, tcp:host:guest, udp:host:guest.
                          Example: -p 8080:80 -p udp:3000:3000
@@ -921,6 +922,8 @@ def main():
         'builder': "",
         'whpx': False,
         'serialport': "",
+        # QEMU user networking (slirp) IPv6 is disabled by default.
+        'enable_ipv6': False,
         'debug': False,
         'qcow2': ""
     }
@@ -1017,6 +1020,8 @@ def main():
         elif arg == "--serial":
             config['serialport'] = args[i+1]
             i += 1
+        elif arg == "--enable-ipv6":
+            config['enable_ipv6'] = True
         elif arg == "--qcow2":
             config['qcow2'] = args[i+1]
             i += 1
@@ -1370,6 +1375,8 @@ def main():
     # Build Netdev Argument
     # Always include standard SSH mapping
     netdev_args = "user,id=net0,net=192.168.122.0/24,dhcpstart=192.168.122.50"
+    if not config.get('enable_ipv6'):
+        netdev_args += ",ipv6=off"
     netdev_args += ",hostfwd=tcp:{}:{}-:22".format(addr, config['sshport'])
     
     # Add custom port mappings
