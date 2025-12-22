@@ -1459,7 +1459,7 @@ def main():
             "-drive", "if=pflash,format=raw,file={},unit=1".format(vars_path)
         ])
     elif config['arch'] == "riscv64":
-        machine_opts = "virt,accel=tcg,graphics=off,usb=off,dump-guest-core=off,acpi=off"
+        machine_opts = "virt,accel=tcg,graphics=off,usb=off,acpi=off"
         cpu_opts = "rv64"
         
         args_qemu.extend([
@@ -1509,6 +1509,9 @@ def main():
                         efi_src = msys_efi
             elif platform.system() == "Darwin":
                 efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+                if not os.path.exists("/usr/share/qemu/OVMF.fd"):
+                    #for Intel Macs with Homebrew
+                    efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
             else:
                 efi_src = "/usr/share/qemu/OVMF.fd"
             vars_path = os.path.join(output_dir, vm_name + "-OVMF_VARS.fd")
