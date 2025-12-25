@@ -1429,8 +1429,7 @@ def main():
         "-smp", config['cpu'],
         "-m", config['mem'],
         "-netdev", netdev_args,
-        "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if),
-        "-device", "virtio-rng-pci"
+        "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
     ])
 
     # Windows on ARM has DirectSound issues; disable audio only there.
@@ -1533,8 +1532,8 @@ def main():
         args_qemu.extend([
             "-machine", machine_opts,
             "-cpu", cpu_opts,
-            "-device", "{},netdev=net0,bus=pci.0,addr=0x3".format(net_card),
-            "-device", "virtio-balloon-pci,bus=pci.0,addr=0x6"
+            "-device", "{},netdev=net0".format(net_card),
+            "-device", "virtio-balloon-pci"
         ])
         
         # x86 UEFI handling
@@ -1577,6 +1576,9 @@ def main():
     
     if config['qmon']:
         args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
+
+    # Always provide RNG to guest
+    args_qemu.extend(["-device", "virtio-rng-pci"])
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
