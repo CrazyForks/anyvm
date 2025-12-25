@@ -151,6 +151,7 @@ Options:
                          Supported: sshfs (default), nfs, rsync, scp.
                          Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
+  --cache-dir <dir>      Directory to cache downloaded release files.
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
@@ -925,7 +926,8 @@ def main():
         # QEMU user networking (slirp) IPv6 is disabled by default.
         'enable_ipv6': False,
         'debug': False,
-        'qcow2': ""
+        'qcow2': "",
+        'cachedir': ""
     }
 
     ssh_passthrough = []
@@ -1024,6 +1026,9 @@ def main():
             config['enable_ipv6'] = True
         elif arg == "--qcow2":
             config['qcow2'] = args[i+1]
+            i += 1
+        elif arg == "--cache-dir":
+            config['cachedir'] = os.path.abspath(args[i+1])
             i += 1
         i += 1
 
@@ -1300,25 +1305,49 @@ def main():
 
         # Download and Extract
         if not os.path.exists(qcow_name):
-            if not os.path.exists(ova_file):
-                if download_file(zst_link, ova_file, config['debug']):
-                    download_optional_parts(zst_link, ova_file, debug=config['debug'])
+            ova_file_to_extract = ova_file
+            if config.get('cachedir'):
+                rel_path = os.path.relpath(output_dir, working_dir)
+                cache_output_dir = os.path.join(config['cachedir'], rel_path)
+                if not os.path.exists(cache_output_dir):
+                    debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
+                    os.makedirs(cache_output_dir)
+                cached_ova = os.path.join(cache_output_dir, os.path.basename(ova_file))
+                if not os.path.exists(cached_ova):
+                    debuglog(config['debug'], "Image not found in cache, downloading to: {}".format(cached_ova))
+                    if download_file(zst_link, cached_ova, config['debug']):
+                        download_optional_parts(zst_link, cached_ova, debug=config['debug'])
+                
+                if os.path.exists(cached_ova):
+                    debuglog(config['debug'], "Using cached image: {}".format(cached_ova))
+                    ova_file_to_extract = cached_ova
+                else:
+                    fatal("Failed to download image to cache.")
+            else:
+                if not os.path.exists(ova_file):
+                    if download_file(zst_link, ova_file, config['debug']):
+                        download_optional_parts(zst_link, ova_file, debug=config['debug'])
             
-            log("Extracting " + ova_file)
-            if ova_file.endswith('.zst'):
-                if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
+            if not os.path.exists(ova_file_to_extract):
+                fatal("Image file not found: " + ova_file_to_extract)
+
+            log("Extracting " + ova_file_to_extract)
+            if ova_file_to_extract.endswith('.zst'):
+                if subprocess.call(['zstd', '-d', ova_file_to_extract, '-o', qcow_name]) != 0:
                     fatal("zstd extraction failed")
-            elif ova_file.endswith('.xz'):
+            elif ova_file_to_extract.endswith('.xz'):
                 with open(qcow_name, 'wb') as f:
-                    if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
+                    if subprocess.call(['xz', '-d', '-c', ova_file_to_extract], stdout=f) != 0:
                         fatal("xz extraction failed")
             
             if not os.path.exists(qcow_name):
                 fatal("Extraction failed")
-            try:
-                os.remove(ova_file)
-            except OSError:
-                pass
+            
+            if not config.get('cachedir'):
+                try:
+                    os.remove(ova_file_to_extract)
+                except OSError:
+                    pass
 
         # Key files
         vm_name = "{}-{}".format(config['os'], config['release'])
@@ -1329,16 +1358,46 @@ def main():
         hostid_file = os.path.join(output_dir, hostid_url.split('/')[-1])
         
         if not os.path.exists(hostid_file):
-            download_file(hostid_url, hostid_file, config['debug'])
-        if IS_WINDOWS:
-            tighten_windows_permissions(hostid_file)
-        else:
-            os.chmod(hostid_file, 0o600)
+            if config.get('cachedir'):
+                rel_path = os.path.relpath(output_dir, working_dir)
+                cache_output_dir = os.path.join(config['cachedir'], rel_path)
+                if not os.path.exists(cache_output_dir):
+                    debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
+                    os.makedirs(cache_output_dir)
+                cached_hostid = os.path.join(cache_output_dir, os.path.basename(hostid_file))
+                if not os.path.exists(cached_hostid):
+                    debuglog(config['debug'], "host.id_rsa not found in cache, downloading to: {}".format(cached_hostid))
+                    download_file(hostid_url, cached_hostid, config['debug'])
+                if os.path.exists(cached_hostid):
+                    debuglog(config['debug'], "Copying host.id_rsa from cache to: {}".format(hostid_file))
+                    shutil.copy2(cached_hostid, hostid_file)
+            else:
+                download_file(hostid_url, hostid_file, config['debug'])
+        
+        if os.path.exists(hostid_file):
+            if IS_WINDOWS:
+                tighten_windows_permissions(hostid_file)
+            else:
+                os.chmod(hostid_file, 0o600)
 
         vmpub_url = "https://github.com/{}/releases/download/v{}/{}-id_rsa.pub".format(builder_repo, config['builder'], vm_name)
         vmpub_file = os.path.join(output_dir, vmpub_url.split('/')[-1])
         if not os.path.exists(vmpub_file):
-            download_file(vmpub_url, vmpub_file, config['debug'])
+            if config.get('cachedir'):
+                rel_path = os.path.relpath(output_dir, working_dir)
+                cache_output_dir = os.path.join(config['cachedir'], rel_path)
+                if not os.path.exists(cache_output_dir):
+                    debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
+                    os.makedirs(cache_output_dir)
+                cached_vmpub = os.path.join(cache_output_dir, os.path.basename(vmpub_file))
+                if not os.path.exists(cached_vmpub):
+                    debuglog(config['debug'], "id_rsa.pub not found in cache, downloading to: {}".format(cached_vmpub))
+                    download_file(vmpub_url, cached_vmpub, config['debug'])
+                if os.path.exists(cached_vmpub):
+                    debuglog(config['debug'], "Copying id_rsa.pub from cache to: {}".format(vmpub_file))
+                    shutil.copy2(cached_vmpub, vmpub_file)
+            else:
+                download_file(vmpub_url, vmpub_file, config['debug'])
 
     # Ports
     if not config['sshport']:
