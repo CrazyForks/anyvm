@@ -55,7 +55,7 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install qemu zstd xz rsync
+        brew install qemu rsync
 
     - name: Install dependencies (Windows)
       if: runner.os == 'Windows'

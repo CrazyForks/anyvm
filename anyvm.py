@@ -71,7 +71,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.0.3",
     "openbsd": "2.0.0",
-    "netbsd": "2.0.2",
+    "netbsd": "2.0.3",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
     "omnios": "2.0.3",
@@ -1208,7 +1208,10 @@ def main():
                 target_tag = config['builder']
                 if not target_tag.startswith('v'):
                     target_tag = "v" + target_tag
+                debuglog(config['debug'], "Filtering releases for tag: {}".format(target_tag))
                 releases_data = [r for r in releases_data if r.get('tag_name') == target_tag]
+                if not releases_data:
+                    fatal("Builder version {} not found in repository {}.".format(target_tag, builder_repo))
         else:
             releases_data = []
 
@@ -1229,15 +1232,17 @@ def main():
                         filename= removesuffix(filename, ".qcow2.xz")
                         parts = filename.split('-')
                         if len(parts) > 1:
+                            ver = parts[1]
+                            debuglog(config['debug'], "Candidate release found: {} from asset {}".format(ver, filename))
                             if published_at and published_at > r.get('published_at', ''):
                                 continue
                             if not published_at:
                                 published_at = r.get('published_at', '')
-                                config['release'] = parts[1]
-                            elif cmp_version(parts[1], config['release']) > 0:
-                              published_at = r.get('published_at', '')
-                              config['release'] = parts[1]
-                              debuglog(config['debug'],"Found release: " + config['release'])
+                                config['release'] = ver
+                            elif cmp_version(ver, config['release']) > 0:
+                                published_at = r.get('published_at', '')
+                                config['release'] = ver
+                                debuglog(config['debug'],"Updated latest release to: " + config['release'])
 
 
         log("Using release: " + config['release'])
