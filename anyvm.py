@@ -1122,42 +1122,66 @@ def main():
 
     zst_link = ""
 
-    if not config['builder'] and not config['qcow2'] and config['os'] in DEFAULT_BUILDER_VERSIONS:
-        def_ver = DEFAULT_BUILDER_VERSIONS[config['os']]
-        def_repo = brepo if cmp_version(def_ver, "2.0.0") >= 0 else arepo
-        debuglog(config['debug'], "Checking default builder {} in {}".format(def_ver, def_repo))
+    if not config['qcow2']:
+        search_builder = config['builder']
+        search_repo = builder_repo
+        is_default = False
+        if not search_builder and config['os'] in DEFAULT_BUILDER_VERSIONS:
+            search_builder = DEFAULT_BUILDER_VERSIONS[config['os']]
+            search_repo = brepo if cmp_version(search_builder, "2.0.0") >= 0 else arepo
+            is_default = True
         
-        use_default = False
-        found_zst_link = ""
-        
-        if config['release']:
-            # Try to construct the URL directly
-            target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
-            if config['arch'] and config['arch'] != 'x86_64':
-                target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
+        if search_builder:
+            debuglog(config['debug'], "Checking builder {} in {}".format(search_builder, search_repo))
             
-            # URL format: https://github.com/{repo}/releases/download/v{ver}/{filename}
-            tag = "v" + def_ver if not def_ver.startswith("v") else def_ver
+            use_this_builder = False
+            found_zst_link = ""
             
-            candidate_url = "https://github.com/{}/releases/download/{}/{}".format(def_repo, tag, target_zst)
-            debuglog(config['debug'], "Checking candidate URL: {}".format(candidate_url))
-            
-            if check_url_exists(candidate_url, config['debug']):
-                debuglog(config['debug'], "Candidate URL exists!")
-                use_default = True
-                found_zst_link = candidate_url
+            if config['release']:
+                # Try to construct the URL directly
+                target_zst = "{}-{}.qcow2.zst".format(config['os'], config['release'])
+                if config['arch'] and config['arch'] != 'x86_64':
+                    target_zst = "{}-{}-{}.qcow2.zst".format(config['os'], config['release'], config['arch'])
+                
+                # URL format: https://github.com/{repo}/releases/download/v{ver}/{filename}
+                tag = "v" + search_builder if not search_builder.startswith("v") else search_builder
+                
+                candidate_url = "https://github.com/{}/releases/download/{}/{}".format(search_repo, tag, target_zst)
+                debuglog(config['debug'], "Checking candidate URL: {}".format(candidate_url))
+                
+                if check_url_exists(candidate_url, config['debug']):
+                    debuglog(config['debug'], "Candidate URL exists!")
+                    use_this_builder = True
+                    found_zst_link = candidate_url
+                else:
+                    # Try xz as fallback
+                    target_xz = target_zst.replace('.zst', '.xz')
+                    candidate_url_xz = "https://github.com/{}/releases/download/{}/{}".format(search_repo, tag, target_xz)
+                    debuglog(config['debug'], "Checking candidate URL (xz): {}".format(candidate_url_xz))
+                    if check_url_exists(candidate_url_xz, config['debug']):
+                        debuglog(config['debug'], "Candidate URL (xz) exists!")
+                        use_this_builder = True
+                        found_zst_link = candidate_url_xz
+                    else:
+                        debuglog(config['debug'], "Candidate URL not found, falling back to full search")
             else:
-                debuglog(config['debug'], "Candidate URL not found, falling back to full search")
-        else:
-            use_default = True
+                # If no release provided, we can't construct URL, but if we're using default builder, we force it
+                if is_default:
+                    use_this_builder = True
             
-        if use_default:
-            config['builder'] = def_ver
-            builder_repo = def_repo
-            release_repo_candidates = [builder_repo]
-            debuglog(config['debug'], "Using default builder: {} from {}".format(def_ver, def_repo))
-            if found_zst_link:
-                zst_link = found_zst_link
+            if use_this_builder:
+                config['builder'] = search_builder
+                builder_repo = search_repo
+                release_repo_candidates = [builder_repo]
+                if is_default:
+                    debuglog(config['debug'], "Using default builder: {} from {}".format(search_builder, search_repo))
+                if found_zst_link:
+                    zst_link = found_zst_link
+                    debuglog(config['debug'], "Successfully constructed direct download link: {}".format(zst_link))
+                else:
+                    debuglog(config['debug'], "Target builder {} set, but no release specified to construct link yet.".format(search_builder))
+            else:
+                debuglog(config['debug'], "Could not construct direct link for builder {} (release {}), will fallback to API search.".format(search_builder, config['release']))
 
     if config['arch']:
         debuglog(config['debug'],"Using VM arch: " + config['arch'])
