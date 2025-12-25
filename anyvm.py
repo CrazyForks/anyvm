@@ -71,7 +71,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.0.3",
     "openbsd": "2.0.0",
-    "netbsd": "2.0.1",
+    "netbsd": "2.0.2",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
     "omnios": "2.0.3",
