@@ -1429,7 +1429,8 @@ def main():
         "-smp", config['cpu'],
         "-m", config['mem'],
         "-netdev", netdev_args,
-        "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
+        "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if),
+        "-device", "virtio-rng-pci"
     ])
 
     # Windows on ARM has DirectSound issues; disable audio only there.
@@ -1451,6 +1452,8 @@ def main():
             if config['release'] != "6.4.0":
                 net_card = "virtio-net-pci"
         elif config['arch'] == "riscv64":
+            net_card = "virtio-net-pci"
+        elif config['os'] == "netbsd" and config['arch'] == "aarch64":
             net_card = "virtio-net-pci"
 
     # Platform specific args
