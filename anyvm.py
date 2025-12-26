@@ -2041,7 +2041,7 @@ def main():
                 "root@localhost"
             ])
             
-            boot_timeout_seconds = 300  # 5 minutes
+            boot_timeout_seconds = 600  # 10 minutes
             boot_start_time = time.time()
             
             while True:
