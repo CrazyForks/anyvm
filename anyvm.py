@@ -1709,7 +1709,7 @@ def main():
             if proc.poll() is not None:
                 fail_with_output("QEMU exited immediately")
 
-
+            qemu_start_time = time.time()
             log("Started QEMU (PID: {})".format(proc.pid))
 
             tail_stop_event = threading.Event()
@@ -2130,7 +2130,8 @@ def main():
                     terminate_process(proc, "QEMU")
                     fatal("Boot timed out after retry. Giving up.")
             
-            debuglog(config['debug'], "VM Ready! Connect with: ssh {}".format(vm_name))
+            qemu_elapsed = time.time() - qemu_start_time
+            debuglog(config['debug'], "VM Ready! Boot took {:.2f} seconds. Connect with: ssh {}".format(qemu_elapsed, vm_name))
             
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
