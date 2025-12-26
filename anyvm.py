@@ -1338,6 +1338,7 @@ def main():
                     
                     # Extract zst/xz to qcow2
                     log("Extracting " + ova_file)
+                    extract_start_time = time.time()
                     if ova_file.endswith('.zst'):
                         if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
                             fatal("zstd extraction failed")
@@ -1345,6 +1346,8 @@ def main():
                         with open(qcow_name, 'wb') as f:
                             if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
                                 fatal("xz extraction failed")
+                    extract_duration = time.time() - extract_start_time
+                    debuglog(config['debug'], "Extraction took {:.2f} seconds".format(extract_duration))
                     
                     if not os.path.exists(qcow_name):
                         fatal("Extraction failed")
@@ -1370,6 +1373,7 @@ def main():
                     fatal("Image file not found: " + ova_file)
 
                 log("Extracting " + ova_file)
+                extract_start_time = time.time()
                 if ova_file.endswith('.zst'):
                     if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
                         fatal("zstd extraction failed")
@@ -1377,6 +1381,8 @@ def main():
                     with open(qcow_name, 'wb') as f:
                         if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
                             fatal("xz extraction failed")
+                extract_duration = time.time() - extract_start_time
+                debuglog(config['debug'], "Extraction took {:.2f} seconds".format(extract_duration))
                 
                 if not os.path.exists(qcow_name):
                     fatal("Extraction failed")
