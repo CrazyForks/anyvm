@@ -1948,12 +1948,14 @@ def main():
                 sys.stdout.write("\r" + line)
                 sys.stdout.flush()
 
+
+            def wait_timer_worker():
+                while not wait_timer_stop.is_set():
+                    update_wait_timer()
+                    # 15 updates per second
+                    time.sleep(1.0 / 15.0)
+
             if interactive_wait:
-                def wait_timer_worker():
-                    while not wait_timer_stop.is_set():
-                        update_wait_timer()
-                        # 15 updates per second
-                        time.sleep(1.0 / 15.0)
                 wait_timer_thread = threading.Thread(target=wait_timer_worker)
                 wait_timer_thread.daemon = True
                 wait_timer_thread.start()
@@ -2030,9 +2032,17 @@ def main():
                 "root@localhost"
             ])
             
-            for i in range(300):
+            boot_timeout_seconds = 300  # 5 minutes
+            boot_start_time = time.time()
+            
+            while True:
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
+                
+                elapsed = time.time() - boot_start_time
+                if elapsed >= boot_timeout_seconds:
+                    break
+                
                 ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
                     timeout_seconds=5,
@@ -2050,8 +2060,66 @@ def main():
             if wait_timer_thread:
                 wait_timer_thread.join(0.2)
             finish_wait_timer()
+            
             if not success:
-                fatal("Boot timed out.")
+                # First timeout - kill QEMU and retry once
+                log("Boot timed out after 5 minutes. Killing QEMU and retrying...")
+                terminate_process(proc, "QEMU")
+                
+                # Restart QEMU
+                try:
+                    proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                except OSError as e:
+                    fatal("Failed to restart QEMU: {}".format(e))
+                
+                time.sleep(1)
+                if proc.poll() is not None:
+                    fail_with_output("QEMU exited immediately on retry")
+                
+                log("Restarted QEMU (PID: {}), waiting for boot (retry)...".format(proc.pid))
+                
+                # Reset wait timer for retry
+                wait_start = time.time()
+                last_wait_tick[0] = -1
+                wait_timer_stop.clear()
+                if interactive_wait:
+                    wait_timer_thread = threading.Thread(target=wait_timer_worker)
+                    wait_timer_thread.daemon = True
+                    wait_timer_thread.start()
+                
+                # Second boot attempt with 5 minute timeout
+                boot_start_time = time.time()
+                success = False
+                
+                while True:
+                    if proc.poll() is not None:
+                        fail_with_output("QEMU terminated during boot (retry)")
+                    
+                    elapsed = time.time() - boot_start_time
+                    if elapsed >= boot_timeout_seconds:
+                        break
+                    
+                    ret, timed_out = call_with_timeout(
+                        ssh_base_cmd + ["exit"],
+                        timeout_seconds=5,
+                        stdout=DEVNULL,
+                        stderr=DEVNULL
+                    )
+                    if timed_out:
+                        continue
+                    if ret == 0:
+                        success = True
+                        break
+                    time.sleep(2)
+                
+                wait_timer_stop.set()
+                if wait_timer_thread:
+                    wait_timer_thread.join(0.2)
+                finish_wait_timer()
+                
+                if not success:
+                    terminate_process(proc, "QEMU")
+                    fatal("Boot timed out after retry. Giving up.")
             
             debuglog(config['debug'], "VM Ready! Connect with: ssh {}".format(vm_name))
             
