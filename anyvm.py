@@ -151,7 +151,7 @@ Options:
                          Supported: sshfs (default), nfs, rsync, scp.
                          Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
-  --cache-dir <dir>      Directory to cache downloaded release files.
+  --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids re-download and re-extract).
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
@@ -1305,47 +1305,81 @@ def main():
 
         # Download and Extract
         if not os.path.exists(qcow_name):
-            ova_file_to_extract = ova_file
             if config.get('cachedir'):
+                # New caching strategy: cache qcow2 instead of zst
                 rel_path = os.path.relpath(output_dir, working_dir)
                 cache_output_dir = os.path.join(config['cachedir'], rel_path)
                 if not os.path.exists(cache_output_dir):
                     debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
                     os.makedirs(cache_output_dir)
-                cached_ova = os.path.join(cache_output_dir, os.path.basename(ova_file))
-                if not os.path.exists(cached_ova):
-                    debuglog(config['debug'], "Image not found in cache, downloading to: {}".format(cached_ova))
-                    if download_file(zst_link, cached_ova, config['debug']):
-                        download_optional_parts(zst_link, cached_ova, debug=config['debug'])
                 
-                if os.path.exists(cached_ova):
-                    debuglog(config['debug'], "Using cached image: {}".format(cached_ova))
-                    ova_file_to_extract = cached_ova
+                # Check for cached qcow2 file
+                cached_qcow2 = os.path.join(cache_output_dir, os.path.basename(qcow_name))
+                
+                if os.path.exists(cached_qcow2):
+                    # Cache hit: copy qcow2 from cache to data-dir
+                    debuglog(config['debug'], "Found cached qcow2: {}".format(cached_qcow2))
+                    log("Copying cached image: {} -> {}".format(cached_qcow2, qcow_name))
+                    shutil.copy2(cached_qcow2, qcow_name)
                 else:
-                    fatal("Failed to download image to cache.")
+                    # Cache miss: download zst to data-dir, extract, copy qcow2 to cache, delete zst
+                    debuglog(config['debug'], "qcow2 not found in cache, downloading zst to data-dir")
+                    
+                    if not os.path.exists(ova_file):
+                        if download_file(zst_link, ova_file, config['debug']):
+                            download_optional_parts(zst_link, ova_file, debug=config['debug'])
+                    
+                    if not os.path.exists(ova_file):
+                        fatal("Failed to download image: " + ova_file)
+                    
+                    # Extract zst/xz to qcow2
+                    log("Extracting " + ova_file)
+                    if ova_file.endswith('.zst'):
+                        if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
+                            fatal("zstd extraction failed")
+                    elif ova_file.endswith('.xz'):
+                        with open(qcow_name, 'wb') as f:
+                            if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
+                                fatal("xz extraction failed")
+                    
+                    if not os.path.exists(qcow_name):
+                        fatal("Extraction failed")
+                    
+                    # Delete zst from data-dir immediately after extraction
+                    debuglog(config['debug'], "Removing zst file: {}".format(ova_file))
+                    try:
+                        os.remove(ova_file)
+                    except OSError as e:
+                        debuglog(config['debug'], "Failed to remove zst file: {}".format(e))
+                    
+                    # Copy qcow2 to cache
+                    debuglog(config['debug'], "Copying qcow2 to cache: {} -> {}".format(qcow_name, cached_qcow2))
+                    log("Caching extracted image: {}".format(cached_qcow2))
+                    shutil.copy2(qcow_name, cached_qcow2)
             else:
+                # No cache-dir: download zst, extract, delete zst
                 if not os.path.exists(ova_file):
                     if download_file(zst_link, ova_file, config['debug']):
                         download_optional_parts(zst_link, ova_file, debug=config['debug'])
-            
-            if not os.path.exists(ova_file_to_extract):
-                fatal("Image file not found: " + ova_file_to_extract)
+                
+                if not os.path.exists(ova_file):
+                    fatal("Image file not found: " + ova_file)
 
-            log("Extracting " + ova_file_to_extract)
-            if ova_file_to_extract.endswith('.zst'):
-                if subprocess.call(['zstd', '-d', ova_file_to_extract, '-o', qcow_name]) != 0:
-                    fatal("zstd extraction failed")
-            elif ova_file_to_extract.endswith('.xz'):
-                with open(qcow_name, 'wb') as f:
-                    if subprocess.call(['xz', '-d', '-c', ova_file_to_extract], stdout=f) != 0:
-                        fatal("xz extraction failed")
-            
-            if not os.path.exists(qcow_name):
-                fatal("Extraction failed")
-            
-            if not config.get('cachedir'):
+                log("Extracting " + ova_file)
+                if ova_file.endswith('.zst'):
+                    if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
+                        fatal("zstd extraction failed")
+                elif ova_file.endswith('.xz'):
+                    with open(qcow_name, 'wb') as f:
+                        if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
+                            fatal("xz extraction failed")
+                
+                if not os.path.exists(qcow_name):
+                    fatal("Extraction failed")
+                
+                # Delete zst from data-dir
                 try:
-                    os.remove(ova_file_to_extract)
+                    os.remove(ova_file)
                 except OSError:
                     pass
 
