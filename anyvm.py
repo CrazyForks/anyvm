@@ -1320,7 +1320,6 @@ def main():
                     # Cache hit: copy qcow2 from cache to data-dir
                     debuglog(config['debug'], "Found cached qcow2: {}".format(cached_qcow2))
                     log("Copying cached image: {} -> {}".format(cached_qcow2, qcow_name))
-                    import time
                     start_time = time.time()
                     shutil.copy2(cached_qcow2, qcow_name)
                     duration = time.time() - start_time
