@@ -1741,7 +1741,7 @@ def main():
             global_identity_block = ""
             if hostid_file:
                 # Apply the VM key to all SSH hosts (requested behavior).
-                global_identity_block = "Host *\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\nHost localhost\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n\n".format(
+                global_identity_block = "Host *\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
                     hostid_file,
                 )
 
