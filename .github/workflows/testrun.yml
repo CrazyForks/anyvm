@@ -49,7 +49,7 @@ jobs:
         qemu-utils \
         ca-certificates \
         qemu-system-x86 \
-        qemu-system-arm qemu-efi-aarch64  nfs-kernel-server rsync
+        qemu-system-arm qemu-efi-aarch64 qemu-system-misc nfs-kernel-server rsync
         sudo chmod 666 /dev/kvm || true
 
     - name: Install dependencies (macOS)
