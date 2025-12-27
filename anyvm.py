@@ -1741,9 +1741,8 @@ def main():
             global_identity_block = ""
             if hostid_file:
                 # Apply the VM key to all SSH hosts (requested behavior).
-                global_identity_block = "Host *\n  IdentityFile {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n\n".format(
+                global_identity_block = "Host *\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
                     hostid_file,
-                    SSH_KNOWN_HOSTS_NULL,
                 )
 
             def build_ssh_host_config(host_aliases):
