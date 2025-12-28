@@ -804,17 +804,17 @@ fi
     if not synced:
         log("Warning: Failed to sync shared folder via rsync.")
 
-def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
+def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
     """Syncs via scp (Push mode from host to guest)."""
     log("Syncing via scp: {} -> {}".format(vhost, vguest))
     
     # Ensure destination directory exists in guest
     try:
-         # ssh_cmd is like ['ssh', ..., 'root@localhost']
-         # We append mkdir command
-         subprocess.call(ssh_cmd + ["mkdir", "-p", vguest])
+        # ssh_cmd is like ['ssh', ..., '<user>@localhost']
+        # We append mkdir command
+        subprocess.call(ssh_cmd + ["mkdir", "-p", vguest])
     except Exception:
-         pass
+        pass
 
     if not os.path.exists(vhost):
         log("Warning: Host path {} does not exist; skipping.".format(vhost))
@@ -846,7 +846,7 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file):
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
         "-o", "LogLevel=ERROR",
-    ] + sources + ["root@localhost:" + vguest + "/"])
+    ] + sources + ["{}@localhost:".format(ssh_user) + vguest + "/"])
     
     if subprocess.call(cmd) != 0:
         log("Warning: SCP sync failed.")
@@ -1442,6 +1442,8 @@ def main():
             else:
                 download_file(vmpub_url, vmpub_file, config['debug'])
 
+    vm_user = "user" if config['os'] == "haiku" else "root"
+
     # Ports
     if not config['sshport']:
         config['sshport'] = get_free_port()
@@ -1747,9 +1749,10 @@ def main():
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  User root\n  HostName localhost\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  User {}\n  HostName localhost\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
+                    vm_user,
                     config['sshport'],
                 )
                 return "\n" + global_identity_block + host_block
@@ -2037,7 +2040,7 @@ def main():
             
             ssh_base_cmd.extend([
                 "-p", str(config['sshport']),
-                "root@localhost"
+                "{}@localhost".format(vm_user)
             ])
             
             boot_timeout_seconds = 600  # 10 minutes
@@ -2183,7 +2186,7 @@ Host host
                         elif config['sync'] == 'rsync':
                             sync_rsync(ssh_base_cmd, vhost, vguest, config['os'])
                         elif config['sync'] == 'scp':
-                            sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file)
+                            sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user)
                         else:
                             sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'], config.get('release'))
 
