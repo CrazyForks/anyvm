@@ -116,6 +116,9 @@ choco install qemu
 
 AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's graphical console directly from your browser.
 
+<img width="2348" height="1660" alt="image" src="https://github.com/user-attachments/assets/7f334153-5c89-4323-b6e8-86a1467c80df" />
+
+
 - **Automatic Launch**: Enabled by default (unless `--vnc off` is specified). AnyVM automatically starts a VNC-to-Web proxy.
 - **Modern Interface**: Features a sleek dark mode, glassmorphism aesthetics, and smooth animations.
   - **Clipboard Support**: Use the "Paste Text" button or `Ctrl+V` to send your local clipboard to the VM.
@@ -243,6 +246,7 @@ All examples below use `python anyvm.py ...`. You can also run `python anyvm.py 
   - Examples:
     - `python anyvm.py --os freebsd -- uname -a`
     - `python anyvm.py --os freebsd -- sh -lc "id; uname -a"`
+
 
 
 
