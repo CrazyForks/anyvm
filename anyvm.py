@@ -15,6 +15,10 @@ import shlex
 import re
 import threading
 import random
+import asyncio
+import base64
+import hashlib
+import struct
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -116,6 +120,786 @@ def fatal(msg):
     print("Error: {}".format(msg), file=sys.stderr)
     sys.exit(1)
 
+# --- VNC Web Proxy ---
+VNC_WEB_HTML = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>AnyVM - VNC Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { 
+            background: #0f172a; 
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        #container {
+            position: relative;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+            border: 1px solid #334155;
+        }
+        #status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            color: #94a3b8;
+            font-size: 12px;
+            z-index: 100;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(4px);
+            padding: 6px 12px;
+            border-radius: 20px;
+            border: 1px solid #334155;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        #status.connected {
+            color: #4ade80;
+            border-color: #065f46;
+        }
+        #status.reconnecting {
+            top: 50%;
+            left: 50%;
+            right: auto;
+            transform: translate(-50%, -50%);
+            padding: 20px 40px;
+            font-size: 18px;
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5),
+                        0 0 0 100vmax rgba(0, 0, 0, 0.4);
+            border: 1px solid #475569 !important;
+            color: #f1f5f9 !important;
+            border-radius: 12px;
+            font-weight: 500;
+            pointer-events: none;
+            text-align: center;
+            line-height: 1.6;
+        }
+        #screen {
+            background: #000;
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            image-rendering: -moz-crisp-edges;
+            -ms-interpolation-mode: nearest-neighbor;
+            max-width: 95vw;
+            max-height: 85vh;
+            object-fit: contain;
+            transition: filter 0.5s ease;
+        }
+        #screen.disconnected {
+            filter: grayscale(100%) brightness(0.7);
+        }
+        .error { color: #f87171 !important; border-color: #7f1d1d !important; }
+        .toolbar {
+            position: fixed;
+            bottom: 30px;
+            display: flex;
+            gap: 12px;
+            z-index: 100;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(8px);
+            padding: 10px 20px;
+            border-radius: 12px;
+            border: 1px solid #334155;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+        }
+        button {
+            background: #334155;
+            color: #f1f5f9;
+            border: 1px solid #475569;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        button:hover {
+            background: #1e293b;
+            border-color: #3b82f6;
+            color: #3b82f6;
+            transform: translateY(-1px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        #stats {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            color: #94a3b8;
+            font-size: 11px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            z-index: 100;
+            background: rgba(15, 23, 42, 0.7);
+            backdrop-filter: blur(4px);
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid #334155;
+            pointer-events: none;
+            display: flex;
+            gap: 12px;
+        }
+        #stats span { color: #f1f5f9; font-weight: 600; }
+    </style>
+</head>
+<body>
+    <div id="stats">
+        <div>FPS: <span id="fps-val">0</span></div>
+        <div>Latency: <span id="lat-val">0</span>ms</div>
+    </div>
+    <div id="status">Connecting...</div>
+    <div id="container">
+        <canvas id="screen"></canvas>
+    </div>
+    <div class="toolbar">
+        <button onclick="sendCtrlAltDel()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            Ctrl+Alt+Del
+        </button>
+        <button onclick="toggleFullscreen()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+            Fullscreen
+        </button>
+        <button onclick="pasteText()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+            Paste Text
+        </button>
+    </div>
+
+<script>
+const canvas = document.getElementById('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+const status = document.getElementById('status');
+
+let ws;
+let connected = false;
+let fbWidth = 800, fbHeight = 600;
+let pendingUpdate = false;
+let updateInterval = null;
+
+let frameCount = 0;
+let lastFpsTime = performance.now();
+let lastLatency = 0;
+let requestStartTime = 0;
+let reconnectTimer = null;
+let countdownInterval = null;
+const fpsVal = document.getElementById('fps-val');
+const latVal = document.getElementById('lat-val');
+const statsDiv = document.getElementById('stats');
+
+const RFB_VERSION = "RFB 003.008\\n";
+
+function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/websockify`);
+    ws.binaryType = 'arraybuffer';
+    
+    let state = 'version';
+    let buffer = new Uint8Array(0);
+    
+    ws.onopen = () => {
+        if (canvas.classList.contains('disconnected')) {
+            location.reload();
+            return;
+        }
+        status.textContent = 'Connected, negotiating...';
+        status.classList.remove('error');
+        status.classList.remove('reconnecting');
+        canvas.classList.remove('disconnected');
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+        if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+        }
+    };
+    
+    ws.onclose = () => {
+        status.className = 'error reconnecting';
+        status.classList.remove('connected');
+        canvas.classList.add('disconnected');
+        connected = false;
+        if (updateInterval) clearInterval(updateInterval);
+        
+        let timeLeft = 5;
+        const updateStatus = () => {
+            status.innerHTML = `<span style="color: #3b82f6; font-weight: 600;">Disconnected</span><br><span style="font-size: 13px; color: #94a3b8; font-weight: 400;">Retrying in ${timeLeft}s...</span>`;
+        };
+        
+        updateStatus();
+        if (countdownInterval) clearInterval(countdownInterval);
+        countdownInterval = setInterval(() => {
+            timeLeft--;
+            if (timeLeft < 0) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            } else {
+                updateStatus();
+            }
+        }, 1000);
+        
+        if (!reconnectTimer) {
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connect();
+            }, 5000);
+        }
+    };
+    
+    ws.onerror = (e) => {
+        status.textContent = 'Connection error';
+        status.className = 'error';
+        status.classList.remove('connected');
+    };
+    
+    ws.onmessage = (e) => {
+        const data = new Uint8Array(e.data);
+        buffer = concatBuffers(buffer, data);
+        processBuffer();
+    };
+    
+    function concatBuffers(a, b) {
+        const result = new Uint8Array(a.length + b.length);
+        result.set(a, 0);
+        result.set(b, a.length);
+        return result;
+    }
+    
+    function consume(n) {
+        const result = buffer.slice(0, n);
+        buffer = buffer.slice(n);
+        return result;
+    }
+    
+    function processBuffer() {
+        while (true) {
+            if (state === 'version') {
+                if (buffer.length >= 12) {
+                    consume(12);
+                    ws.send(new TextEncoder().encode(RFB_VERSION));
+                    state = 'security';
+                } else break;
+            }
+            else if (state === 'security') {
+                if (buffer.length >= 1) {
+                    const numTypes = buffer[0];
+                    if (buffer.length >= 1 + numTypes) {
+                        consume(1 + numTypes);
+                        ws.send(new Uint8Array([1]));
+                        state = 'security_result';
+                    } else break;
+                } else break;
+            }
+            else if (state === 'security_result') {
+                if (buffer.length >= 4) {
+                    const result = new DataView(consume(4).buffer).getUint32(0);
+                    if (result === 0) {
+                        ws.send(new Uint8Array([1]));
+                        state = 'server_init';
+                    } else {
+                        status.textContent = 'Auth failed';
+                        status.className = 'error';
+                        return;
+                    }
+                } else break;
+            }
+            else if (state === 'server_init') {
+                if (buffer.length >= 24) {
+                    const view = new DataView(buffer.buffer, buffer.byteOffset);
+                    fbWidth = view.getUint16(0);
+                    fbHeight = view.getUint16(2);
+                    const nameLen = view.getUint32(20);
+                    
+                    if (buffer.length >= 24 + nameLen) {
+                        consume(24 + nameLen);
+                        canvas.width = fbWidth;
+                        canvas.height = fbHeight;
+                        
+                        const setPixelFormat = new Uint8Array([
+                            0, 0, 0, 0,
+                            32, 24, 0, 1,
+                            0, 255, 0, 255, 0, 255,
+                            16, 8, 0,
+                            0, 0, 0
+                        ]);
+                        ws.send(setPixelFormat);
+                        
+                        const setEncodings = new Uint8Array([
+                            2, 0,
+                            0, 1,
+                            0, 0, 0, 0
+                        ]);
+                        ws.send(setEncodings);
+                        
+                        connected = true;
+                        pendingUpdate = false;
+                        status.textContent = `Connected: ${fbWidth}x${fbHeight}`;
+                        status.classList.add('connected');
+                        state = 'normal';
+                        
+                        // Request updates as fast as possible
+                        requestUpdate(false);
+                    } else break;
+                } else break;
+            }
+            else if (state === 'normal') {
+                if (buffer.length < 1) break;
+                const msgType = buffer[0];
+                
+                if (msgType === 0) {
+                    if (buffer.length < 4) break;
+                    const numRects = new DataView(buffer.buffer, buffer.byteOffset).getUint16(2);
+                    let offset = 4;
+                    let complete = true;
+                    
+                    for (let i = 0; i < numRects; i++) {
+                        if (buffer.length < offset + 12) { complete = false; break; }
+                        const view = new DataView(buffer.buffer, buffer.byteOffset + offset);
+                        const x = view.getUint16(0);
+                        const y = view.getUint16(2);
+                        const w = view.getUint16(4);
+                        const h = view.getUint16(6);
+                        const enc = view.getInt32(8);
+                        offset += 12;
+                        
+                        if (enc === 0) {
+                            const pixelBytes = w * h * 4;
+                            if (buffer.length < offset + pixelBytes) { complete = false; break; }
+                            const pixels = buffer.slice(offset, offset + pixelBytes);
+                            offset += pixelBytes;
+                            
+                            const imgData = ctx.createImageData(w, h);
+                            const src = pixels;
+                            const dst = imgData.data;
+                            for (let j = 0, len = w * h; j < len; j++) {
+                                const si = j * 4;
+                                const di = j * 4;
+                                dst[di]     = src[si + 2];
+                                dst[di + 1] = src[si + 1];
+                                dst[di + 2] = src[si];
+                                dst[di + 3] = 255;
+                            }
+                            ctx.putImageData(imgData, x, y);
+                        }
+                    }
+                    
+                    if (complete) {
+                        consume(offset);
+                        pendingUpdate = false;
+                        frameCount++;
+                        if (requestStartTime) {
+                            lastLatency = Math.round(performance.now() - requestStartTime);
+                            latVal.textContent = lastLatency;
+                        }
+                        // Request next update immediately for maximum FPS
+                        requestAnimationFrame(() => {
+                            if (!pendingUpdate) requestUpdate(true);
+                        });
+                    } else break;
+                }
+                else if (msgType === 1) {
+                    if (buffer.length < 6) break;
+                    const numColors = new DataView(buffer.buffer, buffer.byteOffset).getUint16(4);
+                    const totalLen = 6 + numColors * 6;
+                    if (buffer.length < totalLen) break;
+                    consume(totalLen);
+                }
+                else if (msgType === 2) {
+                    consume(1);
+                }
+                else if (msgType === 3) {
+                    if (buffer.length < 8) break;
+                    const textLen = new DataView(buffer.buffer, buffer.byteOffset).getUint32(4);
+                    if (buffer.length < 8 + textLen) break;
+                    consume(8 + textLen);
+                }
+                else {
+                    consume(1);
+                }
+            }
+            else break;
+        }
+    }
+    
+    function requestUpdate(incremental) {
+        if (!connected) return;
+        pendingUpdate = true;
+        requestStartTime = performance.now();
+        const req = new Uint8Array([
+            3,
+            incremental ? 1 : 0,
+            0, 0, 0, 0,
+            (fbWidth >> 8) & 0xff, fbWidth & 0xff,
+            (fbHeight >> 8) & 0xff, fbHeight & 0xff
+        ]);
+        ws.send(req);
+    }
+    
+    let lastMouseX = 0, lastMouseY = 0, lastButtons = 0;
+    
+    canvas.addEventListener('mousemove', sendMouse);
+    canvas.addEventListener('mousedown', sendMouse);
+    canvas.addEventListener('mouseup', sendMouse);
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    
+    function sendMouse(e) {
+        if (!connected) return;
+        e.preventDefault();
+        
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = fbWidth / rect.width;
+        const scaleY = fbHeight / rect.height;
+        
+        const x = Math.floor((e.clientX - rect.left) * scaleX);
+        const y = Math.floor((e.clientY - rect.top) * scaleY);
+        
+        const clampedX = Math.max(0, Math.min(fbWidth - 1, x));
+        const clampedY = Math.max(0, Math.min(fbHeight - 1, y));
+        
+        let buttons = 0;
+        if (e.buttons & 1) buttons |= 1;
+        if (e.buttons & 2) buttons |= 4;
+        if (e.buttons & 4) buttons |= 2;
+        
+        if (clampedX !== lastMouseX || clampedY !== lastMouseY || buttons !== lastButtons) {
+            lastMouseX = clampedX;
+            lastMouseY = clampedY;
+            lastButtons = buttons;
+            
+            const msg = new Uint8Array([
+                5, buttons,
+                (clampedX >> 8) & 0xff, clampedX & 0xff,
+                (clampedY >> 8) & 0xff, clampedY & 0xff
+            ]);
+            ws.send(msg);
+        }
+    }
+    
+    canvas.addEventListener('wheel', (e) => {
+        if (!connected) return;
+        e.preventDefault();
+        
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.floor((e.clientX - rect.left) * (fbWidth / rect.width));
+        const y = Math.floor((e.clientY - rect.top) * (fbHeight / rect.height));
+        const clampedX = Math.max(0, Math.min(fbWidth - 1, x));
+        const clampedY = Math.max(0, Math.min(fbHeight - 1, y));
+        
+        const btn = e.deltaY < 0 ? 8 : 16;
+        
+        ws.send(new Uint8Array([5, btn, (clampedX >> 8) & 0xff, clampedX & 0xff, (clampedY >> 8) & 0xff, clampedY & 0xff]));
+        ws.send(new Uint8Array([5, 0, (clampedX >> 8) & 0xff, clampedX & 0xff, (clampedY >> 8) & 0xff, clampedY & 0xff]));
+    }, { passive: false });
+    
+    document.addEventListener('keydown', e => sendKey(e, true));
+    document.addEventListener('keyup', e => sendKey(e, false));
+    
+    function sendKey(e, down) {
+        if (!connected) return;
+        
+        // Support Ctrl+V for pasting (block both down and up)
+        if (e.ctrlKey && (e.key === 'v' || e.key === 'V' || e.code === 'KeyV')) {
+            if (down) pasteText();
+            e.preventDefault();
+            return;
+        }
+
+        e.preventDefault();
+        
+        let keysym = 0;
+        const code = e.code;
+        const key = e.key;
+        
+        const keyMap = {
+            'Backspace': 0xff08, 'Tab': 0xff09, 'Enter': 0xff0d, 'Escape': 0xff1b,
+            'Delete': 0xffff, 'Home': 0xff50, 'End': 0xff57, 'PageUp': 0xff55,
+            'PageDown': 0xff56, 'ArrowLeft': 0xff51, 'ArrowUp': 0xff52,
+            'ArrowRight': 0xff53, 'ArrowDown': 0xff54, 'Insert': 0xff63,
+            'F1': 0xffbe, 'F2': 0xffbf, 'F3': 0xffc0, 'F4': 0xffc1,
+            'F5': 0xffc2, 'F6': 0xffc3, 'F7': 0xffc4, 'F8': 0xffc5,
+            'F9': 0xffc6, 'F10': 0xffc7, 'F11': 0xffc8, 'F12': 0xffc9,
+            'ShiftLeft': 0xffe1, 'ShiftRight': 0xffe2,
+            'ControlLeft': 0xffe3, 'ControlRight': 0xffe4,
+            'AltLeft': 0xffe9, 'AltRight': 0xffea,
+            'MetaLeft': 0xffeb, 'MetaRight': 0xffec,
+            'Space': 0x0020,
+        };
+        
+        if (keyMap[code]) {
+            keysym = keyMap[code];
+        } else if (keyMap[key]) {
+            keysym = keyMap[key];
+        } else if (key.length === 1) {
+            keysym = key.charCodeAt(0);
+        } else {
+            return;
+        }
+        
+        const msg = new Uint8Array([
+            4, down ? 1 : 0, 0, 0,
+            (keysym >> 24) & 0xff,
+            (keysym >> 16) & 0xff,
+            (keysym >> 8) & 0xff,
+            keysym & 0xff
+        ]);
+        ws.send(msg);
+    }
+}
+
+function sendCtrlAltDel() {
+    if (!connected || !ws) return;
+    const keys = [0xffe3, 0xffe9, 0xffff];
+    keys.forEach(k => {
+        ws.send(new Uint8Array([4, 1, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
+    });
+    keys.reverse().forEach(k => {
+        ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
+    });
+}
+
+function toggleFullscreen() {
+    if (document.fullscreenElement) {
+        document.exitFullscreen();
+    } else {
+        canvas.requestFullscreen();
+    }
+}
+
+function pasteText() {
+    if (!connected || !ws) return;
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+        alert('Clipboard API not available. Please use a secure connection (localhost or HTTPS).');
+        return;
+    }
+    navigator.clipboard.readText().then(function(text) {
+        [0xffe1, 0xffe2, 0xffe3, 0xffe4, 0xffe9, 0xffea].forEach(k => {
+            ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
+        });
+        for (let i = 0; i < text.length; i++) {
+            let ch = text[i];
+            let keysym = ch.charCodeAt(0);
+            if (ch === '\\r') continue;
+            if (ch === '\\n') keysym = 0xff0d;
+
+            let msgDown = new Uint8Array([4, 1, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
+            let msgUp = new Uint8Array([4, 0, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
+            ws.send(msgDown);
+            ws.send(msgUp);
+        }
+    }).catch(function(err) {
+        console.error('Failed to read clipboard:', err);
+        alert('Could not read clipboard. Please ensure you have granted permission.');
+    });
+}
+
+setInterval(() => {
+    const now = performance.now();
+    const dt = now - lastFpsTime;
+    if (dt >= 500) {
+        const fps = Math.round((frameCount * 1000) / dt);
+        fpsVal.textContent = fps;
+        frameCount = 0;
+        lastFpsTime = now;
+    }
+    // Statistics should only show when not in fullscreen
+    if (document.fullscreenElement) {
+        statsDiv.style.display = 'none';
+    } else {
+        statsDiv.style.display = 'flex';
+    }
+}, 500);
+
+connect();
+</script>
+</body>
+</html>
+"""
+
+class VNCWebProxy:
+    GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None):
+        self.vnc_host = vnc_host
+        self.vnc_port = vnc_port
+        self.web_port = web_port
+        self.vm_info = vm_info
+        self.qemu_pid = qemu_pid
+    
+    async def handle_client(self, reader, writer):
+        try:
+            request = await reader.read(4096)
+            request_text = request.decode('utf-8', errors='ignore')
+            lines = request_text.split('\r\n')
+            if not lines:
+                writer.close()
+                return
+            
+            headers = {}
+            for line in lines[1:]:
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    headers[key.strip().lower()] = value.strip()
+            
+            path = lines[0].split()[1] if len(lines[0].split()) > 1 else '/'
+            
+            if 'upgrade' in headers and headers.get('upgrade', '').lower() == 'websocket':
+                await self.handle_websocket(reader, writer, headers)
+            else:
+                await self.handle_http(writer, path)
+        except Exception:
+            pass
+        finally:
+            try:
+                writer.close()
+            except:
+                pass
+    
+    async def handle_http(self, writer, path):
+        title = "AnyVM - VNC Viewer"
+        if self.vm_info:
+            title = "AnyVM - {} - VNC Viewer".format(self.vm_info)
+        
+        html_content = VNC_WEB_HTML.replace("<title>AnyVM - VNC Viewer</title>", "<title>{}</title>".format(title))
+        
+        body = html_content.encode('utf-8')
+        response = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n".format(len(body))
+        ).encode('utf-8') + body
+        writer.write(response)
+        await writer.drain()
+    
+    async def handle_websocket(self, reader, writer, headers):
+        key = headers.get('sec-websocket-key', '')
+        accept = base64.b64encode(hashlib.sha1((key + self.GUID).encode()).digest()).decode()
+        response = (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: {}\r\n"
+            "\r\n".format(accept)
+        )
+        writer.write(response.encode())
+        await writer.drain()
+        
+        try:
+            vnc_reader, vnc_writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
+        except:
+            return
+        
+        async def ws_to_vnc():
+            try:
+                while True:
+                    frame = await self.read_ws_frame(reader)
+                    if frame is None: break
+                    vnc_writer.write(frame)
+                    await vnc_writer.drain()
+            except: pass
+            finally: vnc_writer.close()
+        
+        async def vnc_to_ws():
+            try:
+                while True:
+                    data = await vnc_reader.read(65536)
+                    if not data: break
+                    await self.send_ws_frame(writer, data)
+            except: pass
+        
+        await asyncio.gather(ws_to_vnc(), vnc_to_ws(), return_exceptions=True)
+    
+    async def read_ws_frame(self, reader):
+        try:
+            header = await reader.readexactly(2)
+            opcode = header[0] & 0x0f
+            if opcode == 0x8: return None
+            masked = (header[1] & 0x80) != 0
+            length = header[1] & 0x7f
+            if length == 126:
+                length = struct.unpack('>H', await reader.readexactly(2))[0]
+            elif length == 127:
+                length = struct.unpack('>Q', await reader.readexactly(8))[0]
+            
+            if masked:
+                mask = await reader.readexactly(4)
+                data = bytearray(await reader.readexactly(length))
+                for i in range(length): data[i] ^= mask[i % 4]
+                return bytes(data)
+            return await reader.readexactly(length)
+        except: return None
+    
+    async def send_ws_frame(self, writer, data):
+        try:
+            length = len(data)
+            if length <= 125: header = bytes([0x82, length])
+            elif length <= 65535: header = bytes([0x82, 126]) + struct.pack('>H', length)
+            else: header = bytes([0x82, 127]) + struct.pack('>Q', length)
+            writer.write(header + data)
+            # Use a small delay or drain to ensure data is sent but don't block too long
+            await writer.drain()
+        except:
+            pass
+
+    async def monitor_qemu(self):
+        while True:
+            await asyncio.sleep(5)
+            if self.qemu_pid:
+                pid = self.qemu_pid
+                alive = False
+                try:
+                    if os.name == 'nt':
+                        import ctypes
+                        kernel32 = ctypes.windll.kernel32
+                        h_process = kernel32.OpenProcess(0x1000, False, pid)
+                        if h_process:
+                            exit_code = ctypes.c_ulong()
+                            kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
+                            kernel32.CloseHandle(h_process)
+                            alive = (exit_code.value == 259) # STILL_ACTIVE
+                        else:
+                            alive = False
+                    else:
+                        os.kill(pid, 0)
+                        alive = True
+                except:
+                    alive = False
+                
+                if not alive:
+                    os._exit(0)
+
+    async def run(self):
+        server = await asyncio.start_server(self.handle_client, '0.0.0.0', self.web_port)
+        asyncio.create_task(self.monitor_qemu())
+        async with server: 
+            await server.serve_forever()
+
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None):
+    proxy = VNCWebProxy('localhost', vnc_port, web_port, vm_info, qemu_pid)
+    asyncio.run(proxy.run())
+
+def fatal(msg):
+    print("Error: {}".format(msg), file=sys.stderr)
+    sys.exit(1)
+
 def print_usage():
     print("""
 Usage: python qemu.py [OPTIONS]
@@ -155,7 +939,9 @@ Options:
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
-  --vnc <display>        Enable VNC on specified display (e.g., 0 for :0).
+  --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
+                         Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
+                         Use "--vnc off" to disable.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
@@ -896,7 +1682,38 @@ def tail_serial_log(path, stop_event):
         pass
 
 
+def detect_host_ssh_port(sshd_config_path="/etc/ssh/sshd_config"):
+    try:
+        with open(sshd_config_path, 'r') as f:
+            for line in f:
+                line = line.split('#', 1)[0].strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].lower() == "port":
+                    port = parts[1]
+                    if port.isdigit():
+                        return port
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return ""
+    return ""
+
+
 def main():
+    # Handle internal VNC proxy mode
+    if len(sys.argv) > 1 and sys.argv[1] == '--internal-vnc-proxy':
+        try:
+            vnc_port = int(sys.argv[2])
+            web_port = int(sys.argv[3])
+            vm_info = sys.argv[4]
+            qemu_pid = int(sys.argv[5])
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid)
+        except Exception:
+            pass
+        return
+
     # Default configuration
     default_cpu = str(max(1, os.cpu_count() or 1))
     config = {
@@ -1594,19 +2411,21 @@ def main():
             cpu = "host"
         
         args_qemu.extend([
-            "-machine", "virt,accel={},gic-version=3".format(accel),
+            "-machine", "virt,accel={},gic-version=3,usb=on".format(accel),
             "-cpu", cpu,
+            "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card),
             "-drive", "if=pflash,format=raw,readonly=on,file={}".format(efi_path),
             "-drive", "if=pflash,format=raw,file={},unit=1".format(vars_path)
         ])
     elif config['arch'] == "riscv64":
-        machine_opts = "virt,accel=tcg,graphics=off,usb=off,acpi=off"
+        machine_opts = "virt,accel=tcg,graphics=off,usb=on,acpi=off"
         cpu_opts = "rv64"
         
         args_qemu.extend([
             "-machine", machine_opts,
             "-cpu", cpu_opts,
+            "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card),
             "-kernel", "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin",
             "-device", "virtio-balloon-pci"
@@ -1626,7 +2445,7 @@ def main():
              elif platform.system() == "Darwin":
                  accel = "hvf"
         
-        machine_opts = "pc,accel={},hpet=off,smm=off,graphics=off,vmport=off".format(accel)
+        machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
         
         if accel == "kvm":
             cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
@@ -1666,6 +2485,7 @@ def main():
             ])
 
     # VNC and Monitor
+    web_port = None
     if config['vnc'] != "off":
         try:
             start_disp = int(config['vnc']) if config['vnc'] else 0
@@ -1677,6 +2497,14 @@ def main():
         disp = port - 5900
         args_qemu.append("-display")
         args_qemu.append("vnc={}:{}".format(addr, disp))
+        # Use USB tablet for absolute mouse positioning to fix offset and speed issues
+        args_qemu.extend(["-device", "usb-tablet"])
+
+        # Prepare info for VNC Web Proxy
+        web_port = get_free_port(start=6080, end=6180)
+        if web_port:
+            display_arch = config['arch'] if config['arch'] else host_arch
+            vm_info = "-".join(filter(None, [config['os'], config['release'], display_arch]))
     
     if config['qmon']:
         args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
@@ -1713,6 +2541,30 @@ def main():
 
             qemu_start_time = time.time()
             log("Started QEMU (PID: {})".format(proc.pid))
+            
+            # Start VNC Web Proxy as a separate detached process if enabled
+            if config['vnc'] != "off" and web_port:
+                proxy_args = [
+                    sys.executable, 
+                    os.path.abspath(__file__), 
+                    '--internal-vnc-proxy', 
+                    str(port), 
+                    str(web_port), 
+                    vm_info, 
+                    str(proc.pid)
+                ]
+                popen_kwargs = {}
+                if IS_WINDOWS:
+                    # CREATE_NO_WINDOW = 0x08000000, DETACHED_PROCESS = 0x00000008
+                    popen_kwargs['creationflags'] = 0x08000000 | 0x00000008
+                else:
+                    popen_kwargs['start_new_session'] = True
+                
+                try:
+                    subprocess.Popen(proxy_args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, **popen_kwargs)
+                    log("VNC Web UI available at http://localhost:{}".format(web_port))
+                except Exception as e:
+                    debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
 
             tail_stop_event = threading.Event()
             if config['debug'] and serial_log_file:
@@ -2138,6 +2990,10 @@ def main():
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
             host_port_line = ""
+            if not config['hostsshport']:
+                config['hostsshport'] = detect_host_ssh_port()
+                if config['hostsshport']:
+                    debuglog(config['debug'], "Detected host SSH port {}".format(config['hostsshport']))
             if config['hostsshport']:
                 host_port_line = "  Port {}\n".format(config['hostsshport'])
             vm_ssh_config = """
@@ -2200,6 +3056,8 @@ Host host
                  log("Or just:  ssh " + str(config['sshport']))
                  if config.get('sshname'):
                      log("Or just:  ssh " + str(config['sshname']))
+                 if web_port:
+                     log("VNC Web UI: http://localhost:{}".format(web_port))
                  log("======================================")
 
             if not config['detach']:
@@ -2214,6 +3072,8 @@ Host host
                 log("Or just:  ssh " + str(config['sshport']))
                 if config.get('sshname'):
                     log("Or just:  ssh " + str(config['sshname']))
+                if web_port:
+                    log("VNC Web UI: http://localhost:{}".format(web_port))
                 log("======================================")
         except KeyboardInterrupt:
             if not config['detach']:

@@ -12,6 +12,13 @@ anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU o
 
   ```bash
   sudo chmod o+rw /dev/kvm
+  
+  sudo apt-get --no-install-recommends -y install \
+  zstd ovmf xz-utils qemu-utils ca-certificates \
+  qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
+  qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc u-boot-qemu \
+  openssh-client
+  
   ```
 
 - Google Cloud Shell:
@@ -168,6 +175,18 @@ All examples below use `python anyvm.py ...`. You can also run `python anyvm.py 
   - Default: IPv6 is disabled (anyvm adds `ipv6=off` to `-netdev user,...`).
   - Example: `python anyvm.py --os freebsd --enable-ipv6`
 
+### VNC Web UI (Display)
+
+AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's graphical console directly from your browser.
+
+- **Automatic Launch**: Enabled by default (unless `--vnc off` is specified). AnyVM automatically starts a VNC-to-Web proxy.
+- **Modern Interface**: Features a sleek dark mode, glassmorphism aesthetics, and smooth animations.
+  - **Clipboard Support**: Use the "Paste Text" button or `Ctrl+V` to send your local clipboard to the VM.
+  - **Special Keys**: Dedicated "Ctrl+Alt+Del" button.
+  - **Fullscreen**: Toggle fullscreen mode for an immersive experience.
+  - **Stats**: Real-time FPS and latency monitoring.
+- **Accessibility**: Available at `http://localhost:6080` by default. If the port is occupied, AnyVM will automatically try the next available port (e.g., 6081, 6082).
+
 ### Shared folders (-v) and sync mode (--sync)
 
 - `-v <host:guest>`: Add a shared/synced folder mapping (repeatable).
@@ -191,7 +210,8 @@ All examples below use `python anyvm.py ...`. You can also run `python anyvm.py 
 - `--serial <port>`: Expose the guest serial console via a host TCP port (if omitted, auto-select starting at 7000).
   - Example: `python anyvm.py --os freebsd --serial 7000`
 
-- `--vnc <display>`: Enable VNC (e.g. `0` means `:0`).
+- `--vnc <display>`: Enable VNC (e.g. `0` means `:0` / port 5900). 
+  - **VNC Web UI**: Enabled by default starting at port `6080` (auto-increments if busy). Use `--vnc off` to disable.
   - Example: `python anyvm.py --os freebsd --vnc 0`
 
 - `--mon <port>`: Expose the QEMU monitor via telnet on localhost.
