@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rsync:
+  testscp:
     strategy:
       fail-fast: false
       matrix:
@@ -35,5 +35,5 @@ jobs:
       os: haiku
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: rsync
+      sync: scp
       user: user
