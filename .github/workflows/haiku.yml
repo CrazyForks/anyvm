@@ -37,3 +37,4 @@ jobs:
       arch: ${{ matrix.arch }}
       sync: scp
       user: user
+      vmpath: /boot/home/host
