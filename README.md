@@ -112,7 +112,19 @@ choco install qemu
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
 
-## 8. CLI options (with examples)
+## 8. VNC Web UI (Display)
+
+AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's graphical console directly from your browser.
+
+- **Automatic Launch**: Enabled by default (unless `--vnc off` is specified). AnyVM automatically starts a VNC-to-Web proxy.
+- **Modern Interface**: Features a sleek dark mode, glassmorphism aesthetics, and smooth animations.
+  - **Clipboard Support**: Use the "Paste Text" button or `Ctrl+V` to send your local clipboard to the VM.
+  - **Special Keys**: Dedicated "Ctrl+Alt+Del" button.
+  - **Fullscreen**: Toggle fullscreen mode for an immersive experience.
+  - **Stats**: Real-time FPS and latency monitoring.
+- **Accessibility**: Available at `http://localhost:6080` by default. If the port is occupied, AnyVM will automatically try the next available port (e.g., 6081, 6082).
+
+## 9. CLI options (with examples)
 
 All examples below use `python anyvm.py ...`. You can also run `python anyvm.py --help` to see the built-in help.
 
@@ -175,17 +187,6 @@ All examples below use `python anyvm.py ...`. You can also run `python anyvm.py 
   - Default: IPv6 is disabled (anyvm adds `ipv6=off` to `-netdev user,...`).
   - Example: `python anyvm.py --os freebsd --enable-ipv6`
 
-### VNC Web UI (Display)
-
-AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's graphical console directly from your browser.
-
-- **Automatic Launch**: Enabled by default (unless `--vnc off` is specified). AnyVM automatically starts a VNC-to-Web proxy.
-- **Modern Interface**: Features a sleek dark mode, glassmorphism aesthetics, and smooth animations.
-  - **Clipboard Support**: Use the "Paste Text" button or `Ctrl+V` to send your local clipboard to the VM.
-  - **Special Keys**: Dedicated "Ctrl+Alt+Del" button.
-  - **Fullscreen**: Toggle fullscreen mode for an immersive experience.
-  - **Stats**: Real-time FPS and latency monitoring.
-- **Accessibility**: Available at `http://localhost:6080` by default. If the port is occupied, AnyVM will automatically try the next available port (e.g., 6081, 6082).
 
 ### Shared folders (-v) and sync mode (--sync)
 
