@@ -277,7 +277,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         </button>
         <button onclick="pasteText()">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
-            Paste Text
+            Paste Text (Ctrl+V)
         </button>
     </div>
 
@@ -1879,6 +1879,15 @@ def main():
         host_arch = "aarch64"
     else:
         host_arch = host_machine
+        # On macOS, if running under Rosetta 2, platform.machine() returns x86_64.
+        # Check if the host is actually aarch64.
+        if platform.system() == "Darwin" and host_arch == "x86_64":
+            try:
+                if subprocess.check_output(["sysctl", "-n", "hw.optional.arm64"], stderr=DEVNULL).strip() == b"1":
+                    host_arch = "aarch64"
+                    debuglog(config.get('debug', False), "Detected macOS Aarch64 host (running under Rosetta 2)")
+            except:
+                pass
     
     if not config['arch']:
         debuglog(config['debug'], "Host arch: " + host_arch)
@@ -2383,9 +2392,17 @@ def main():
         
         if not os.path.exists(efi_path):
             create_sized_file(efi_path, 64)
-            candidates = ["/usr/share/qemu-efi-aarch64/QEMU_EFI.fd", "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"]
+            candidates = [
+                "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd", 
+                "/usr/share/AAVMF/AAVMF_CODE.fd",
+                "/usr/share/qemu/edk2-aarch64-code.fd",
+                "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+                "/opt/homebrew/share/edk2/aarch64/QEMU_EFI.fd",
+                "/usr/local/share/qemu/edk2-aarch64-code.fd"
+            ]
             for c in candidates:
                 if os.path.exists(c):
+                    debuglog(config['debug'], "Found Aarch64 EFI firmware: {}".format(c))
                     copy_content_to_file(c, efi_path)
                     break
         
@@ -2469,12 +2486,31 @@ def main():
                     if os.path.exists(msys_efi):
                         efi_src = msys_efi
             elif platform.system() == "Darwin":
-                efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
-                if not os.path.exists("/usr/share/qemu/OVMF.fd"):
-                    #for Intel Macs with Homebrew
-                    efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+                candidates = [
+                    "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+                    "/usr/local/share/qemu/edk2-x86_64-code.fd",
+                    "/usr/share/qemu/OVMF.fd"
+                ]
+                efi_src = ""
+                for c in candidates:
+                    if os.path.exists(c):
+                        efi_src = c
+                        break
+                if not efi_src:
+                    efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd" # Default fallback
             else:
-                efi_src = "/usr/share/qemu/OVMF.fd"
+                candidates = [
+                    "/usr/share/qemu/OVMF.fd",
+                    "/usr/share/OVMF/OVMF_CODE.fd",
+                    "/usr/share/ovmf/OVMF_CODE.fd"
+                ]
+                efi_src = ""
+                for c in candidates:
+                    if os.path.exists(c):
+                        efi_src = c
+                        break
+                if not efi_src:
+                    efi_src = "/usr/share/qemu/OVMF.fd"
             vars_path = os.path.join(output_dir, vm_name + "-OVMF_VARS.fd")
             if not os.path.exists(vars_path):
                 create_sized_file(vars_path, 4)
