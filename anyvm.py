@@ -79,6 +79,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
     "omnios": "2.0.3",
+    "haiku": "0.0.1",
     "openindiana": "2.0.0"
 }
 
@@ -910,7 +911,7 @@ Description:
 
 Options:
   --os <name>            Operating System name (Required).
-                         Supported: freebsd, openbsd, netbsd, dragonflybsd, solaris
+                         Supported: freebsd, openbsd, netbsd, dragonflybsd, solaris, haiku
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64 or aarch64.

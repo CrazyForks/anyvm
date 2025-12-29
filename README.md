@@ -64,6 +64,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Solaris | [![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | ❌ | ❌ |
 | OmniOS | [![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | ❌ | ❌ |
 | OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | ❌ | ❌ |
+| Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | ❌ | ❌ |
 
 ## 5. Host support
 
@@ -134,7 +135,7 @@ All examples below use `python anyvm.py ...`. You can also run `python anyvm.py 
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `solaris` / `omnios` / `openindiana`
+  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `solaris` / `omnios` / `openindiana` / `haiku`
   - Example:
     - `python anyvm.py --os freebsd`
 

@@ -1,0 +1,39 @@
+
+name: Haiku
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/haiku.yml'
+      - '.github/workflows/testrun.yml'
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rsync:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [""]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: haiku
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: rsync
+      user: user
