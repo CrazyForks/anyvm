@@ -19,6 +19,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  testrsync:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: [""]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: haiku
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: rsync
+      user: user
+      vmpath: /boot/home/host
+
+
   testscp:
     strategy:
       fail-fast: false
