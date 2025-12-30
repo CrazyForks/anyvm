@@ -121,32 +121,40 @@ def open_vnc_page(web_port):
     """Automatically open the VNC web page in the browser based on environment."""
     if not web_port:
         return
-    url = "http://localhost:{}".format(web_port)
-    try:
-        # Check for WSL environment
-        is_wsl = False
-        if platform.system() == 'Linux':
-            try:
-                if os.path.exists('/proc/version'):
-                    with open('/proc/version', 'r') as f:
-                        if 'microsoft' in f.read().lower():
-                            is_wsl = True
-            except:
-                pass
 
-        if IS_WINDOWS or is_wsl:
-            # Windows or WSL: Use explorer.exe to open the URL
-            subprocess.Popen(['explorer.exe', url], shell=IS_WINDOWS)
-        elif platform.system() == 'Darwin':
-            # macOS: Open if likely in a GUI session (not over SSH)
-            if not os.environ.get('SSH_CLIENT') and not os.environ.get('SSH_TTY'):
-                subprocess.Popen(['open', url], stdout=DEVNULL, stderr=DEVNULL)
-        elif platform.system() == 'Linux':
-            # Linux: Open if DISPLAY or WAYLAND_DISPLAY is set
-            if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
-                subprocess.Popen(['xdg-open', url], stdout=DEVNULL, stderr=DEVNULL)
-    except Exception:
-        pass
+    def _open_in_background():
+        # Give VNC proxy/QEMU a moment to initialize ports properly
+        time.sleep(1)
+        url = "http://localhost:{}".format(web_port)
+        try:
+            # Check for WSL environment
+            is_wsl = False
+            if platform.system() == 'Linux':
+                try:
+                    if os.path.exists('/proc/version'):
+                        with open('/proc/version', 'r') as f:
+                            if 'microsoft' in f.read().lower():
+                                is_wsl = True
+                except:
+                    pass
+
+            if IS_WINDOWS or is_wsl:
+                # Windows or WSL: Use explorer.exe to open the URL
+                subprocess.Popen(['explorer.exe', url], shell=IS_WINDOWS)
+            elif platform.system() == 'Darwin':
+                # macOS: Open if likely in a GUI session (not over SSH)
+                if not os.environ.get('SSH_CLIENT') and not os.environ.get('SSH_TTY'):
+                    subprocess.Popen(['open', url], stdout=DEVNULL, stderr=DEVNULL)
+            elif platform.system() == 'Linux':
+                # Linux: Open if DISPLAY or WAYLAND_DISPLAY is set
+                if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
+                    subprocess.Popen(['xdg-open', url], stdout=DEVNULL, stderr=DEVNULL)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_open_in_background)
+    t.daemon = True
+    t.start()
 
 def fatal(msg):
     print("Error: {}".format(msg), file=sys.stderr)
@@ -1167,6 +1175,8 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
+  --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio.
+  --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
@@ -1971,6 +1981,8 @@ def main():
         'debug': False,
         'qcow2': "",
         'cachedir': "",
+        'vga': "virtio",
+        'resolution': "1280x800",
         'snapshot': False
     }
 
@@ -2050,6 +2062,12 @@ def main():
             i += 1
         elif arg == "--vnc":
             config['vnc'] = args[i+1]
+            i += 1
+        elif arg in ["--res", "--resolution"]:
+            config['resolution'] = args[i+1]
+            i += 1
+        elif arg == "--vga":
+            config['vga'] = args[i+1]
             i += 1
         elif arg == "--sync":
             config['sync'] = args[i+1]
@@ -2614,6 +2632,10 @@ def main():
                     copy_content_to_file(c, efi_path)
                     break
         
+        if config['snapshot'] and os.path.exists(vars_path):
+            try: os.remove(vars_path)
+            except OSError: pass
+        
         if not os.path.exists(vars_path):
             create_sized_file(vars_path, 64)
 
@@ -2635,14 +2657,26 @@ def main():
         if accel == "kvm":
             cpu = "host"
         
+        vga_type = config['vga'] if config['vga'] else "virtio-gpu"
+        if vga_type == "virtio":
+            vga_type = "virtio-gpu"
+        
         args_qemu.extend([
             "-machine", "virt,accel={},gic-version=3,usb=on".format(accel),
             "-cpu", cpu,
             "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card),
             "-drive", "if=pflash,format=raw,readonly=on,file={}".format(efi_path),
-            "-drive", "if=pflash,format=raw,file={},unit=1".format(vars_path)
+            "-drive", "if=pflash,format=raw,file={},unit=1".format(vars_path),
+            "-device", vga_type
         ])
+
+        if config['resolution']:
+            res_parts = config['resolution'].lower().split('x')
+            if len(res_parts) == 2:
+                # For virtio-gpu-pci
+                args_qemu.extend(["-global", "virtio-gpu-pci.xres={}".format(res_parts[0])])
+                args_qemu.extend(["-global", "virtio-gpu-pci.yres={}".format(res_parts[1])])
     elif config['arch'] == "riscv64":
         machine_opts = "virt,accel=tcg,graphics=off,usb=on,acpi=off"
         cpu_opts = "rv64"
@@ -2677,12 +2711,34 @@ def main():
         else:
             cpu_opts = "qemu64"
             
+        if config['vga']:
+            vga_type = config['vga']
+        else:
+            vga_type = "std"
+
         args_qemu.extend([
             "-machine", machine_opts,
             "-cpu", cpu_opts,
             "-device", "{},netdev=net0".format(net_card),
-            "-device", "virtio-balloon-pci"
+            "-device", "virtio-balloon-pci",
+            "-vga", vga_type
         ])
+
+        if config['resolution']:
+            res_parts = config['resolution'].lower().split('x')
+            if len(res_parts) == 2:
+                # For std and virtio-vga, we can often set resolution via xres/yres
+                # Note: This works best with certain video drivers in the guest.
+                if vga_type in ["std", "virtio"]:
+                    # In some QEMU versions, we need to specify the device explicitly to set xres/yres
+                    # But for simplicity, let's try appending it as a hint if possible or just use the flag
+                    # Most reliable way for std is -device VGA,xres=W,yres=H or similar.
+                    # Given AnyVM's structure, we'll append xres/yres if we find where VGA is defined.
+                    # For now, let's try a common approach:
+                    args_qemu.extend(["-global", "VGA.xres={}".format(res_parts[0])])
+                    args_qemu.extend(["-global", "VGA.yres={}".format(res_parts[1])])
+                    args_qemu.extend(["-global", "virtio-vga.xres={}".format(res_parts[0])])
+                    args_qemu.extend(["-global", "virtio-vga.yres={}".format(res_parts[1])])
         
         # x86 UEFI handling
         if config['useefi']:
@@ -2720,6 +2776,10 @@ def main():
                 if not efi_src:
                     efi_src = "/usr/share/qemu/OVMF.fd"
             vars_path = os.path.join(output_dir, vm_name + "-OVMF_VARS.fd")
+            if config['snapshot'] and os.path.exists(vars_path):
+                try: os.remove(vars_path)
+                except OSError: pass
+
             if not os.path.exists(vars_path):
                 create_sized_file(vars_path, 4)
             
