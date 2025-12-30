@@ -168,6 +168,10 @@ All examples below use `python anyvm.py ...`. You can also run `python anyvm.py 
 - `--qcow2 <path>`: Use a local qcow2 image (skip downloading).
   - Example: `python anyvm.py --os freebsd --qcow2 .\\output\\freebsd\\freebsd-14.3.qcow2`
 
+- `--snapshot`: Enable QEMU snapshot mode. Changes made to the disk are not saved. 
+  - Works with `--cache-dir` to run directly from the cache without copying to the data directory.
+  - Example: `python anyvm.py --os freebsd --snapshot`
+
 ### Networking (user-mode networking / slirp)
 
 - `--ssh-port <port>` / `--sshport <port>`: Host port forwarded to guest SSH (`:22`). If omitted, anyvm auto-picks a free port.

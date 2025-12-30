@@ -1174,6 +1174,7 @@ Options:
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
+  --snapshot             Enable QEMU snapshot mode (changes are not saved).
   --                     Send all following args to the final ssh command (executes inside the VM).
   --help, -h             Show this help message.
 
@@ -1969,7 +1970,8 @@ def main():
         'enable_ipv6': False,
         'debug': False,
         'qcow2': "",
-        'cachedir': ""
+        'cachedir': "",
+        'snapshot': False
     }
 
     ssh_passthrough = []
@@ -2072,6 +2074,8 @@ def main():
         elif arg == "--cache-dir":
             config['cachedir'] = os.path.abspath(args[i+1])
             i += 1
+        elif arg == "--snapshot":
+            config['snapshot'] = True
         i += 1
 
     if config['debug']:
@@ -2355,73 +2359,36 @@ def main():
             qcow_name += ".qcow2"
 
         # Download and Extract
-        if not os.path.exists(qcow_name):
-            if config.get('cachedir'):
-                # New caching strategy: cache qcow2 instead of zst
-                rel_path = os.path.relpath(output_dir, working_dir)
-                cache_output_dir = os.path.join(config['cachedir'], rel_path)
-                if not os.path.exists(cache_output_dir):
-                    debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
-                    os.makedirs(cache_output_dir)
-                
-                # Check for cached qcow2 file
-                cached_qcow2 = os.path.join(cache_output_dir, os.path.basename(qcow_name))
-                
-                if os.path.exists(cached_qcow2):
-                    # Cache hit: copy qcow2 from cache to data-dir
-                    debuglog(config['debug'], "Found cached qcow2: {}".format(cached_qcow2))
-                    log("Copying cached image: {} -> {}".format(cached_qcow2, qcow_name))
-                    start_time = time.time()
-                    shutil.copy2(cached_qcow2, qcow_name)
-                    duration = time.time() - start_time
-                    debuglog(config['debug'], "Copying from cache took {:.2f} seconds".format(duration))
-                else:
-                    # Cache miss: download zst to data-dir, extract, copy qcow2 to cache, delete zst
-                    debuglog(config['debug'], "qcow2 not found in cache, downloading zst to data-dir")
-                    
-                    if not os.path.exists(ova_file):
-                        if download_file(zst_link, ova_file, config['debug']):
-                            download_optional_parts(zst_link, ova_file, debug=config['debug'])
-                    
-                    if not os.path.exists(ova_file):
-                        fatal("Failed to download image: " + ova_file)
-                    
-                    # Extract zst/xz to qcow2
-                    log("Extracting " + ova_file)
-                    extract_start_time = time.time()
-                    if ova_file.endswith('.zst'):
-                        if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
-                            fatal("zstd extraction failed")
-                    elif ova_file.endswith('.xz'):
-                        with open(qcow_name, 'wb') as f:
-                            if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
-                                fatal("xz extraction failed")
-                    extract_duration = time.time() - extract_start_time
-                    debuglog(config['debug'], "Extraction took {:.2f} seconds".format(extract_duration))
-                    
-                    if not os.path.exists(qcow_name):
-                        fatal("Extraction failed")
-                    
-                    # Delete zst from data-dir immediately after extraction
-                    debuglog(config['debug'], "Removing zst file: {}".format(ova_file))
-                    try:
-                        os.remove(ova_file)
-                    except OSError as e:
-                        debuglog(config['debug'], "Failed to remove zst file: {}".format(e))
-                    
-                    # Copy qcow2 to cache
-                    debuglog(config['debug'], "Copying qcow2 to cache: {} -> {}".format(qcow_name, cached_qcow2))
-                    log("Caching extracted image: {}".format(cached_qcow2))
-                    shutil.copy2(qcow_name, cached_qcow2)
+        cached_qcow2 = None
+        if config.get('cachedir'):
+            rel_path = os.path.relpath(output_dir, working_dir)
+            cache_output_dir = os.path.join(config['cachedir'], rel_path)
+            if not os.path.exists(cache_output_dir):
+                debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
+                os.makedirs(cache_output_dir)
+            cached_qcow2 = os.path.join(cache_output_dir, os.path.basename(qcow_name))
+
+        if config['snapshot'] and cached_qcow2 and os.path.exists(cached_qcow2):
+            debuglog(config['debug'], "Snapshot mode: Using cached qcow2 directly: {}".format(cached_qcow2))
+            qcow_name = cached_qcow2
+        elif not os.path.exists(qcow_name):
+            if cached_qcow2 and os.path.exists(cached_qcow2):
+                # Cache hit: copy qcow2 from cache to data-dir
+                debuglog(config['debug'], "Found cached qcow2: {}".format(cached_qcow2))
+                log("Copying cached image: {} -> {}".format(cached_qcow2, qcow_name))
+                start_time = time.time()
+                shutil.copy2(cached_qcow2, qcow_name)
+                duration = time.time() - start_time
+                debuglog(config['debug'], "Copying from cache took {:.2f} seconds".format(duration))
             else:
-                # No cache-dir: download zst, extract, delete zst
+                # Cache miss or no cache-dir: download and extract
                 if not os.path.exists(ova_file):
                     if download_file(zst_link, ova_file, config['debug']):
                         download_optional_parts(zst_link, ova_file, debug=config['debug'])
                 
                 if not os.path.exists(ova_file):
-                    fatal("Image file not found: " + ova_file)
-
+                    fatal("Failed to download image: " + ova_file)
+                
                 log("Extracting " + ova_file)
                 extract_start_time = time.time()
                 if ova_file.endswith('.zst'):
@@ -2442,6 +2409,19 @@ def main():
                     os.remove(ova_file)
                 except OSError:
                     pass
+                
+                if cached_qcow2:
+                    # Copy qcow2 to cache
+                    debuglog(config['debug'], "Copying qcow2 to cache: {} -> {}".format(qcow_name, cached_qcow2))
+                    log("Caching extracted image: {}".format(cached_qcow2))
+                    shutil.copy2(qcow_name, cached_qcow2)
+                    if config['snapshot']:
+                        debuglog(config['debug'], "Snapshot mode: Removing extracted qcow2 from data-dir and using cache")
+                        try:
+                            os.remove(qcow_name)
+                        except OSError:
+                            pass
+                        qcow_name = cached_qcow2
 
         # Key files
         vm_name = "{}-{}".format(config['os'], config['release'])
@@ -2586,6 +2566,9 @@ def main():
         "-netdev", netdev_args,
         "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
     ])
+
+    if config['snapshot']:
+        args_qemu.append("-snapshot")
 
     # Windows on ARM has DirectSound issues; disable audio only there.
     if IS_WINDOWS and host_arch == "aarch64":
