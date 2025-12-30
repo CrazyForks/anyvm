@@ -117,6 +117,37 @@ def debuglog(enabled, msg):
     if enabled:
         print("[DEBUG] {}".format(msg))
 
+def open_vnc_page(web_port):
+    """Automatically open the VNC web page in the browser based on environment."""
+    if not web_port:
+        return
+    url = "http://localhost:{}".format(web_port)
+    try:
+        # Check for WSL environment
+        is_wsl = False
+        if platform.system() == 'Linux':
+            try:
+                if os.path.exists('/proc/version'):
+                    with open('/proc/version', 'r') as f:
+                        if 'microsoft' in f.read().lower():
+                            is_wsl = True
+            except:
+                pass
+
+        if IS_WINDOWS or is_wsl:
+            # Windows or WSL: Use explorer.exe to open the URL
+            subprocess.Popen(['explorer.exe', url], shell=IS_WINDOWS)
+        elif platform.system() == 'Darwin':
+            # macOS: Open if likely in a GUI session (not over SSH)
+            if not os.environ.get('SSH_CLIENT') and not os.environ.get('SSH_TTY'):
+                subprocess.Popen(['open', url], stdout=DEVNULL, stderr=DEVNULL)
+        elif platform.system() == 'Linux':
+            # Linux: Open if DISPLAY or WAYLAND_DISPLAY is set
+            if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
+                subprocess.Popen(['xdg-open', url], stdout=DEVNULL, stderr=DEVNULL)
+    except Exception:
+        pass
+
 def fatal(msg):
     print("Error: {}".format(msg), file=sys.stderr)
     sys.exit(1)
@@ -189,14 +220,30 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         #screen {
             background: #000;
             display: block;
+            /* Nearest-neighbor scaling for maximum sharpness */
+            image-rendering: -webkit-optimize-contrast;
             image-rendering: pixelated;
             image-rendering: crisp-edges;
-            image-rendering: -moz-crisp-edges;
             -ms-interpolation-mode: nearest-neighbor;
+            
             max-width: 95vw;
             max-height: 85vh;
-            object-fit: contain;
+            width: auto;
+            height: auto;
             transition: filter 0.5s ease;
+        }
+        #screen:fullscreen {
+            width: auto; /* Managed by JS for integer scaling */
+            height: auto;
+            object-fit: contain;
+            background: #000;
+            image-rendering: pixelated;
+        }
+        #screen:-webkit-full-screen { 
+            width: auto; 
+            height: auto; 
+            object-fit: contain; 
+            image-rendering: pixelated; 
         }
         #screen.disconnected {
             filter: grayscale(100%) brightness(0.7);
@@ -204,21 +251,42 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         .error { color: #f87171 !important; border-color: #7f1d1d !important; }
         .toolbar {
             position: fixed;
-            bottom: 30px;
+            bottom: 8px;
             display: flex;
-            gap: 12px;
+            gap: 8px;
             z-index: 100;
-            background: rgba(15, 23, 42, 0.8);
+            background: rgba(15, 23, 42, 0.4);
             backdrop-filter: blur(8px);
-            padding: 10px 20px;
-            border-radius: 12px;
-            border: 1px solid #334155;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            -webkit-backdrop-filter: blur(8px);
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(51, 65, 85, 0.4);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: all 0.3s ease;
+        }
+        .toolbar-group {
+            display: flex;
+            gap: 6px;
+            border-right: 1px solid rgba(71, 85, 105, 0.3);
+            padding-right: 8px;
+            margin-right: 4px;
+        }
+        .toolbar-group:last-child {
+            border-right: none;
+            padding-right: 0;
+            margin-right: 0;
+        }
+        .toolbar:hover {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-color: #334155;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
         }
         button {
-            background: #334155;
-            color: #f1f5f9;
-            border: 1px solid #475569;
+            background: rgba(51, 65, 85, 0.3);
+            color: rgba(241, 245, 249, 0.8);
+            border: 1px solid rgba(71, 85, 105, 0.4);
             padding: 8px 16px;
             border-radius: 6px;
             cursor: pointer;
@@ -232,11 +300,24 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         button:hover {
             background: #1e293b;
             border-color: #3b82f6;
-            color: #3b82f6;
+            color: #f1f5f9;
             transform: translateY(-1px);
+        }
+        .toolbar:hover button {
+            background: rgba(51, 65, 85, 0.8);
+            color: #f1f5f9;
+        }
+        .toolbar:hover button:hover {
+            background: #1e293b;
         }
         button:active {
             transform: translateY(0);
+        }
+        button.active {
+            background: #3b82f6 !important;
+            color: #ffffff !important;
+            border-color: #60a5fa !important;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
         }
         #stats {
             position: fixed;
@@ -268,23 +349,37 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         <canvas id="screen"></canvas>
     </div>
     <div class="toolbar">
-        <button onclick="sendCtrlAltDel()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-            Ctrl+Alt+Del
-        </button>
+        <div class="toolbar-group">
+            <button id="btn-f1" onclick="sendCtrlAltF(1)" title="Ctrl+Alt+F1">Ctrl+Alt-F1</button>
+            <button id="btn-f2" onclick="sendCtrlAltF(2)" title="Ctrl+Alt+F2">Ctrl+Alt-F2</button>
+            <button id="btn-f3" onclick="sendCtrlAltF(3)" title="Ctrl+Alt+F3">Ctrl+Alt-F3</button>
+            <button id="btn-f4" onclick="sendCtrlAltF(4)" title="Ctrl+Alt+F4">Ctrl+Alt-F4</button>
+        </div>
+        <div class="toolbar-group">
+            <button onclick="sendCtrlAltDel()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                CAD
+            </button>
+        </div>
+        <div class="toolbar-group">
+            <button onclick="pasteText()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+                Paste
+            </button>
+        </div>
         <button onclick="toggleFullscreen()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
-            Fullscreen
-        </button>
-        <button onclick="pasteText()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
-            Paste Text (Ctrl+V)
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
         </button>
     </div>
 
 <script>
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d', { alpha: false });
+// Force disable all smoothing for nearest-neighbor rendering
+ctx.imageSmoothingEnabled = false;
+ctx.mozImageSmoothingEnabled = false;
+ctx.webkitImageSmoothingEnabled = false;
+ctx.msImageSmoothingEnabled = false;
 const status = document.getElementById('status');
 
 let ws;
@@ -299,6 +394,8 @@ let lastLatency = 0;
 let requestStartTime = 0;
 let reconnectTimer = null;
 let countdownInterval = null;
+let isPasting = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const fpsVal = document.getElementById('fps-val');
 const latVal = document.getElementById('lat-val');
 const statsDiv = document.getElementById('stats');
@@ -455,6 +552,10 @@ function connect() {
                         status.classList.add('connected');
                         state = 'normal';
                         
+                        // Force disable smoothing after any resolution change
+                        ctx.imageSmoothingEnabled = false;
+                        ctx.webkitImageSmoothingEnabled = false;
+                        
                         // Request updates as fast as possible
                         requestUpdate(false);
                     } else break;
@@ -565,11 +666,31 @@ function connect() {
         e.preventDefault();
         
         const rect = canvas.getBoundingClientRect();
-        const scaleX = fbWidth / rect.width;
-        const scaleY = fbHeight / rect.height;
+        const clientX = e.clientX - rect.left;
+        const clientY = e.clientY - rect.top;
+
+        // Robust mapping that works for both "width:auto" (no bars)
+        // and "object-fit:contain" (bars in fullscreen).
+        const canvasRatio = fbWidth / fbHeight;
+        const containerRatio = rect.width / rect.height;
         
-        const x = Math.floor((e.clientX - rect.left) * scaleX);
-        const y = Math.floor((e.clientY - rect.top) * scaleY);
+        let drawWidth, drawHeight, offsetX, offsetY;
+        if (containerRatio > canvasRatio) {
+            // Screen is wider than VM (black bars on sides)
+            drawHeight = rect.height;
+            drawWidth = drawHeight * canvasRatio;
+            offsetX = (rect.width - drawWidth) / 2;
+            offsetY = 0;
+        } else {
+            // Screen is taller than VM (black bars on top/bottom)
+            drawWidth = rect.width;
+            drawHeight = drawWidth / canvasRatio;
+            offsetX = 0;
+            offsetY = (rect.height - drawHeight) / 2;
+        }
+
+        const x = Math.floor((clientX - offsetX) * (fbWidth / drawWidth));
+        const y = Math.floor((clientY - offsetY) * (fbHeight / drawHeight));
         
         const clampedX = Math.max(0, Math.min(fbWidth - 1, x));
         const clampedY = Math.max(0, Math.min(fbHeight - 1, y));
@@ -598,8 +719,27 @@ function connect() {
         e.preventDefault();
         
         const rect = canvas.getBoundingClientRect();
-        const x = Math.floor((e.clientX - rect.left) * (fbWidth / rect.width));
-        const y = Math.floor((e.clientY - rect.top) * (fbHeight / rect.height));
+        const clientX = e.clientX - rect.left;
+        const clientY = e.clientY - rect.top;
+
+        const canvasRatio = fbWidth / fbHeight;
+        const containerRatio = rect.width / rect.height;
+        
+        let drawWidth, drawHeight, offsetX, offsetY;
+        if (containerRatio > canvasRatio) {
+            drawHeight = rect.height;
+            drawWidth = drawHeight * canvasRatio;
+            offsetX = (rect.width - drawWidth) / 2;
+            offsetY = 0;
+        } else {
+            drawWidth = rect.width;
+            drawHeight = drawWidth / canvasRatio;
+            offsetX = 0;
+            offsetY = (rect.height - drawHeight) / 2;
+        }
+
+        const x = Math.floor((clientX - offsetX) * (fbWidth / drawWidth));
+        const y = Math.floor((clientY - offsetY) * (fbHeight / drawHeight));
         const clampedX = Math.max(0, Math.min(fbWidth - 1, x));
         const clampedY = Math.max(0, Math.min(fbHeight - 1, y));
         
@@ -620,6 +760,14 @@ function connect() {
             if (down) pasteText();
             e.preventDefault();
             return;
+        }
+
+        // Update active desktop button on Ctrl+Alt+Fx
+        if (down && e.ctrlKey && e.altKey) {
+            if (e.code === 'F1') setDesktopActive(1);
+            else if (e.code === 'F2') setDesktopActive(2);
+            else if (e.code === 'F3') setDesktopActive(3);
+            else if (e.code === 'F4') setDesktopActive(4);
         }
 
         e.preventDefault();
@@ -664,9 +812,32 @@ function connect() {
     }
 }
 
+function setDesktopActive(n) {
+    for (let i = 1; i <= 4; i++) {
+        const btn = document.getElementById('btn-f' + i);
+        if (btn) {
+            if (i === n) btn.classList.add('active');
+            else btn.classList.remove('active');
+        }
+    }
+}
+
 function sendCtrlAltDel() {
     if (!connected || !ws) return;
     const keys = [0xffe3, 0xffe9, 0xffff];
+    keys.forEach(k => {
+        ws.send(new Uint8Array([4, 1, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
+    });
+    keys.reverse().forEach(k => {
+        ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
+    });
+}
+
+function sendCtrlAltF(n) {
+    if (!connected || !ws) return;
+    setDesktopActive(n);
+    const fKey = 0xffbe + (n - 1);
+    const keys = [0xffe3, 0xffe9, fKey];
     keys.forEach(k => {
         ws.send(new Uint8Array([4, 1, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
     });
@@ -683,31 +854,83 @@ function toggleFullscreen() {
     }
 }
 
-function pasteText() {
-    if (!connected || !ws) return;
+function handleResize() {
+    // Always force disable smoothing for maximum sharpness
+    ctx.imageSmoothingEnabled = false;
+    ctx.webkitImageSmoothingEnabled = false;
+    ctx.mozImageSmoothingEnabled = false;
+
+    if (document.fullscreenElement === canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        // Calculate based on PHYSICAL pixels to handle multi-monitor high-DPI
+        const physicalWidth = window.innerWidth * dpr;
+        const physicalHeight = window.innerHeight * dpr;
+        
+        const scaleX = Math.floor(physicalWidth / fbWidth);
+        const scaleY = Math.floor(physicalHeight / fbHeight);
+        const scale = Math.max(1, Math.min(scaleX, scaleY));
+        
+        // Map physical dimensions back to CSS pixels
+        canvas.style.width = (fbWidth * scale / dpr) + "px";
+        canvas.style.height = (fbHeight * scale / dpr) + "px";
+    } else {
+        canvas.style.width = "";
+        canvas.style.height = "";
+    }
+}
+
+document.addEventListener('fullscreenchange', handleResize);
+window.addEventListener('resize', handleResize);
+
+async function pasteText() {
+    if (!connected || !ws || isPasting) return;
     if (!navigator.clipboard || !navigator.clipboard.readText) {
         alert('Clipboard API not available. Please use a secure connection (localhost or HTTPS).');
         return;
     }
-    navigator.clipboard.readText().then(function(text) {
+    isPasting = true;
+    try {
+        const text = await navigator.clipboard.readText();
+        // Release any existing modifiers first
         [0xffe1, 0xffe2, 0xffe3, 0xffe4, 0xffe9, 0xffea].forEach(k => {
             ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
         });
+        
         for (let i = 0; i < text.length; i++) {
             let ch = text[i];
             let keysym = ch.charCodeAt(0);
             if (ch === '\\r') continue;
             if (ch === '\\n') keysym = 0xff0d;
 
+            const shiftChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_+{}|:<>?\\"';
+            const needsShift = shiftChars.indexOf(ch) !== -1;
+
+            if (needsShift) {
+                ws.send(new Uint8Array([4, 1, 0, 0, 0, 0, 0xff, 0xe1])); // Shift_L Down
+                await sleep(2);
+            }
+
             let msgDown = new Uint8Array([4, 1, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
             let msgUp = new Uint8Array([4, 0, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
+            
             ws.send(msgDown);
+            await sleep(5); // Gap between down and up to prevent key bounce/stuck
             ws.send(msgUp);
+
+            if (needsShift) {
+                await sleep(2);
+                ws.send(new Uint8Array([4, 0, 0, 0, 0, 0, 0xff, 0xe1])); // Shift_L Up
+            }
+            
+            // Small delay to prevent keyboard buffer overflow in the guest
+            await sleep(30);
         }
-    }).catch(function(err) {
+    } catch (err) {
         console.error('Failed to read clipboard:', err);
         alert('Could not read clipboard. Please ensure you have granted permission.');
-    });
+    } finally {
+        isPasting = false;
+    }
 }
 
 setInterval(() => {
@@ -727,6 +950,7 @@ setInterval(() => {
     }
 }, 500);
 
+setDesktopActive(1);
 connect();
 </script>
 </body>
@@ -862,7 +1086,7 @@ class VNCWebProxy:
 
     async def monitor_qemu(self):
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
             if self.qemu_pid:
                 pid = self.qemu_pid
                 alive = False
@@ -2554,12 +2778,41 @@ def main():
     cmd_text = format_command_for_display(cmd_list)
     debuglog(config['debug'], "CMD:\n  " + cmd_text)
 
+    # Function to start (or restart) the VNC Web Proxy monitoring the given QEMU PID
+    def start_vnc_proxy_for_pid(qemu_pid):
+        if config['vnc'] != "off" and web_port:
+            proxy_args = [
+                sys.executable, 
+                os.path.abspath(__file__), 
+                '--internal-vnc-proxy', 
+                str(port), 
+                str(web_port), 
+                vm_info, 
+                str(qemu_pid)
+            ]
+            popen_kwargs = {}
+            if IS_WINDOWS:
+                # CREATE_NO_WINDOW = 0x08000000, DETACHED_PROCESS = 0x00000008
+                popen_kwargs['creationflags'] = 0x08000000 | 0x00000008
+            else:
+                popen_kwargs['start_new_session'] = True
+            
+            try:
+                subprocess.Popen(proxy_args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, **popen_kwargs)
+                open_vnc_page(web_port)
+                log("VNC Web UI available at http://localhost:{}".format(web_port))
+            except Exception as e:
+                debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
+
     if config['console']:
-        subprocess.call(cmd_list)
+        proc = subprocess.Popen(cmd_list)
+        start_vnc_proxy_for_pid(proc.pid)
+        proc.wait()
     else:
         # Background run
         try:
             proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            start_vnc_proxy_for_pid(proc.pid)
         except OSError as e:
             fatal("Failed to start QEMU: {}".format(e))
 
@@ -2579,30 +2832,6 @@ def main():
             qemu_start_time = time.time()
             log("Started QEMU (PID: {})".format(proc.pid))
             
-            # Start VNC Web Proxy as a separate detached process if enabled
-            if config['vnc'] != "off" and web_port:
-                proxy_args = [
-                    sys.executable, 
-                    os.path.abspath(__file__), 
-                    '--internal-vnc-proxy', 
-                    str(port), 
-                    str(web_port), 
-                    vm_info, 
-                    str(proc.pid)
-                ]
-                popen_kwargs = {}
-                if IS_WINDOWS:
-                    # CREATE_NO_WINDOW = 0x08000000, DETACHED_PROCESS = 0x00000008
-                    popen_kwargs['creationflags'] = 0x08000000 | 0x00000008
-                else:
-                    popen_kwargs['start_new_session'] = True
-                
-                try:
-                    subprocess.Popen(proxy_args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, **popen_kwargs)
-                    log("VNC Web UI available at http://localhost:{}".format(web_port))
-                except Exception as e:
-                    debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
-
             tail_stop_event = threading.Event()
             if config['debug'] and serial_log_file:
                  t = threading.Thread(target=tail_serial_log, args=(serial_log_file, tail_stop_event))
@@ -2965,10 +3194,13 @@ def main():
                 # First timeout - kill QEMU and retry once
                 log("Boot timed out after 5 minutes. Killing QEMU and retrying...")
                 terminate_process(proc, "QEMU")
+                # Wait for old proxy to exit
+                time.sleep(1.5)
                 
                 # Restart QEMU
                 try:
                     proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    start_vnc_proxy_for_pid(proc.pid)
                 except OSError as e:
                     fatal("Failed to restart QEMU: {}".format(e))
                 
