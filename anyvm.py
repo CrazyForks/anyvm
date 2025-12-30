@@ -321,11 +321,24 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         button:active {
             transform: translateY(0);
         }
+        button:disabled {
+            background: rgba(51, 65, 85, 0.1) !important;
+            color: rgba(148, 163, 184, 0.4) !important;
+            border-color: rgba(51, 65, 85, 0.2) !important;
+            cursor: not-allowed;
+            transform: none !important;
+        }
         button.active {
             background: #3b82f6 !important;
             color: #ffffff !important;
             border-color: #60a5fa !important;
             box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+        }
+        button.audio-active {
+            background: #10b981 !important;
+            border-color: #34d399 !important;
+            color: white !important;
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
         }
         #stats {
             position: fixed;
@@ -375,6 +388,12 @@ VNC_WEB_HTML = """<!DOCTYPE html>
                 Paste
             </button>
         </div>
+        <div class="toolbar-group">
+            <button id="btn-audio" onclick="toggleAudio()" title="Enable Audio">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H2v6h4l5 4V5z"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                Audio
+            </button>
+        </div>
         <button onclick="toggleFullscreen()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
         </button>
@@ -403,6 +422,9 @@ let requestStartTime = 0;
 let reconnectTimer = null;
 let countdownInterval = null;
 let isPasting = false;
+let audioContext = null;
+let audioNextTime = 0;
+let audioEnabled = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const fpsVal = document.getElementById('fps-val');
 const latVal = document.getElementById('lat-val');
@@ -639,6 +661,20 @@ function connect() {
                     const textLen = new DataView(buffer.buffer, buffer.byteOffset).getUint32(4);
                     if (buffer.length < 8 + textLen) break;
                     consume(8 + textLen);
+                }
+                else if (msgType === 255) {
+                    if (buffer.length < 4) break;
+                    const subType = buffer[1];
+                    const operation = (buffer[2] << 8) | buffer[3];
+                    if (subType === 1 && operation === 2) { // Audio Data
+                        if (buffer.length < 8) break;
+                        const len = new DataView(buffer.buffer, buffer.byteOffset).getUint32(4);
+                        if (buffer.length < 8 + len) break;
+                        const audioData = consume(8 + len).slice(8);
+                        playAudio(audioData);
+                    } else {
+                        consume(4);
+                    }
                 }
                 else {
                     consume(1);
@@ -910,7 +946,7 @@ async function pasteText() {
             if (ch === '\\r') continue;
             if (ch === '\\n') keysym = 0xff0d;
 
-            const shiftChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_+{}|:<>?\\"';
+            const shiftChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_+{}|:<>?\"';
             const needsShift = shiftChars.indexOf(ch) !== -1;
 
             if (needsShift) {
@@ -941,6 +977,60 @@ async function pasteText() {
     }
 }
 
+function toggleAudio() {
+    if (!AUDIO_ENABLED) {
+        alert('Audio is not supported by your QEMU installation.');
+        return;
+    }
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+        audioNextTime = audioContext.currentTime;
+    }
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
+    
+    audioEnabled = !audioEnabled;
+    const btn = document.getElementById('btn-audio');
+    if (audioEnabled) {
+        btn.classList.add('audio-active');
+        // Enable: [255, 1, 0, 0]
+        ws.send(new Uint8Array([255, 1, 0, 0]));
+    } else {
+        btn.classList.remove('audio-active');
+        // Disable: [255, 1, 0, 1]
+        ws.send(new Uint8Array([255, 1, 0, 1]));
+    }
+}
+
+function playAudio(data) {
+    if (!audioContext || audioContext.state === 'suspended' || !audioEnabled) return;
+    
+    const samples = data.length / 4; // 16-bit stereo = 4 bytes/frame
+    if (samples === 0) return;
+    
+    const buffer = audioContext.createBuffer(2, samples, 44100);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    
+    for (let i = 0; i < samples; i++) {
+        left[i] = view.getInt16(i * 4, true) / 32768.0;
+        right[i] = view.getInt16(i * 4 + 2, true) / 32768.0;
+    }
+    
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    
+    const now = audioContext.currentTime;
+    if (audioNextTime < now) {
+        audioNextTime = now + 0.05;
+    }
+    source.start(audioNextTime);
+    audioNextTime += buffer.duration;
+}
+
 setInterval(() => {
     const now = performance.now();
     const dt = now - lastFpsTime;
@@ -959,6 +1049,14 @@ setInterval(() => {
 }, 500);
 
 setDesktopActive(1);
+if (!AUDIO_ENABLED) {
+    const btn = document.getElementById('btn-audio');
+    if (btn) {
+        btn.disabled = true;
+        btn.title = 'Audio not supported by QEMU installation';
+        btn.innerHTML = btn.innerHTML.replace('Audio', 'Unsupported');
+    }
+}
 connect();
 </script>
 </body>
@@ -968,12 +1066,13 @@ connect();
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
         self.vm_info = vm_info
         self.qemu_pid = qemu_pid
+        self.audio_enabled = audio_enabled
     
     async def handle_client(self, reader, writer):
         try:
@@ -1010,6 +1109,8 @@ class VNCWebProxy:
             title = "AnyVM - {} - VNC Viewer".format(self.vm_info)
         
         html_content = VNC_WEB_HTML.replace("<title>AnyVM - VNC Viewer</title>", "<title>{}</title>".format(title))
+        audio_status_js = "<script>const AUDIO_ENABLED = {};</script>".format("true" if self.audio_enabled else "false")
+        html_content = html_content.replace("<head>", "<head>" + audio_status_js)
         
         body = html_content.encode('utf-8')
         response = (
@@ -1039,7 +1140,6 @@ class VNCWebProxy:
             vnc_reader, vnc_writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
         except:
             return
-        
         async def ws_to_vnc():
             try:
                 while True:
@@ -1125,8 +1225,8 @@ class VNCWebProxy:
         async with server: 
             await server.serve_forever()
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None):
-    proxy = VNCWebProxy('localhost', vnc_port, web_port, vm_info, qemu_pid)
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False):
+    proxy = VNCWebProxy('localhost', vnc_port, web_port, vm_info, qemu_pid, audio_enabled)
     asyncio.run(proxy.run())
 
 def fatal(msg):
@@ -1175,7 +1275,7 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
-  --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio.
+  --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
@@ -1648,6 +1748,17 @@ def find_qemu(binary_name):
             
     return None
 
+def check_qemu_audio_backend(qemu_bin, backend_name):
+    """Checks if the QEMU binary supports the specified audio backend."""
+    try:
+        proc = subprocess.Popen([qemu_bin, "-audiodev", "help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = proc.communicate()
+        output = (stdout.decode('utf-8', errors='ignore') + 
+                  stderr.decode('utf-8', errors='ignore'))
+        return backend_name in output
+    except Exception:
+        return False
+
 def find_rsync():
     """Find rsync on host; returns absolute path or None."""
     path = None
@@ -1945,7 +2056,8 @@ def main():
             web_port = int(sys.argv[3])
             vm_info = sys.argv[4]
             qemu_pid = int(sys.argv[5])
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid)
+            audio_enabled = sys.argv[6] == '1' if len(sys.argv) > 6 else False
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled)
         except Exception:
             pass
         return
@@ -1981,7 +2093,7 @@ def main():
         'debug': False,
         'qcow2': "",
         'cachedir': "",
-        'vga': "virtio",
+        'vga': "",
         'resolution': "1280x800",
         'snapshot': False
     }
@@ -2111,6 +2223,7 @@ def main():
 
     if config['os'] == "freebsd":
         config['useefi'] = True
+    
 
     if config['whpx'] and not IS_WINDOWS:
         log("Warning: --whpx is only meaningful on Windows hosts; ignoring.")
@@ -2145,6 +2258,12 @@ def main():
         config['arch'] = ""
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
+
+    if not config['vga']:
+        if config['os'] == "netbsd" and config['arch'] != "aarch64":
+            config['vga'] = "std"
+        else:
+            config['vga'] = "virtio"
 
     arepo = "vmactions/{}-builder".format(config['os'])
     brepo = "anyvm-org/{}-builder".format(config['os'])
@@ -2729,14 +2848,10 @@ def main():
             if len(res_parts) == 2:
                 # For std and virtio-vga, we can often set resolution via xres/yres
                 # Note: This works best with certain video drivers in the guest.
-                if vga_type in ["std", "virtio"]:
-                    # In some QEMU versions, we need to specify the device explicitly to set xres/yres
-                    # But for simplicity, let's try appending it as a hint if possible or just use the flag
-                    # Most reliable way for std is -device VGA,xres=W,yres=H or similar.
-                    # Given AnyVM's structure, we'll append xres/yres if we find where VGA is defined.
-                    # For now, let's try a common approach:
+                if vga_type == "std":
                     args_qemu.extend(["-global", "VGA.xres={}".format(res_parts[0])])
                     args_qemu.extend(["-global", "VGA.yres={}".format(res_parts[1])])
+                elif vga_type == "virtio":
                     args_qemu.extend(["-global", "virtio-vga.xres={}".format(res_parts[0])])
                     args_qemu.extend(["-global", "virtio-vga.yres={}".format(res_parts[1])])
         
@@ -2799,8 +2914,16 @@ def main():
         if port is None:
             fatal("No available VNC display ports")
         disp = port - 5900
-        args_qemu.append("-display")
-        args_qemu.append("vnc={}:{}".format(addr, disp))
+        # Add audio support if the vnc driver is available
+        if check_qemu_audio_backend(qemu_bin, "vnc"):
+            args_qemu.extend(["-device", "intel-hda", "-device", "hda-duplex"])
+            args_qemu.extend(["-audiodev", "vnc,id=vnc_audio"])
+            args_qemu.append("-display")
+            args_qemu.append("vnc={}:{},audiodev=vnc_audio".format(addr, disp))
+        else:
+            args_qemu.append("-display")
+            args_qemu.append("vnc={}:{}".format(addr, disp))
+
         # Use USB tablet for absolute mouse positioning to fix offset and speed issues
         args_qemu.extend(["-device", "usb-tablet"])
 
@@ -2824,6 +2947,7 @@ def main():
     # Function to start (or restart) the VNC Web Proxy monitoring the given QEMU PID
     def start_vnc_proxy_for_pid(qemu_pid):
         if config['vnc'] != "off" and web_port:
+            is_audio_enabled = check_qemu_audio_backend(qemu_bin, "vnc")
             proxy_args = [
                 sys.executable, 
                 os.path.abspath(__file__), 
@@ -2831,7 +2955,8 @@ def main():
                 str(port), 
                 str(web_port), 
                 vm_info, 
-                str(qemu_pid)
+                str(qemu_pid),
+                '1' if is_audio_enabled else '0'
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
