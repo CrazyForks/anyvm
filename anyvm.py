@@ -2262,6 +2262,8 @@ def main():
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
             config['vga'] = "std"
+        elif if config['os'] == "haiku":
+            config['vga'] = "std"
         else:
             config['vga'] = "virtio"
 
