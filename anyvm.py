@@ -2827,10 +2827,13 @@ def main():
         
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
         
-        if accel == "kvm":
-            cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
+        if accel in ["kvm", "whpx", "hvf"]:
+            if accel == "kvm":
+                cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
+            else:
+                cpu_opts = "host"
         else:
-            cpu_opts = "qemu64"
+            cpu_opts = "qemu64,+rdrand,+rdseed"
             
         if config['vga']:
             vga_type = config['vga']
@@ -2939,7 +2942,7 @@ def main():
         args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
 
     # Always provide RNG to guest. Use rng-builtin as a cross-platform source of entropy.
-    args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0"])
+    args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000"])
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
