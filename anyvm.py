@@ -110,12 +110,16 @@ def format_command_for_display(cmd_list):
     return " \\\n  ".join(shlex.quote(arg) for arg in cmd_list)
 
 def log(msg):
-    print(msg)
+    t = time.time()
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+    print("[{}] {}".format(timestamp, msg))
 
 def debuglog(enabled, msg):
     """Conditional debug logger."""
     if enabled:
-        print("[DEBUG] {}".format(msg))
+        t = time.time()
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+        print("[{}] [DEBUG] {}".format(timestamp, msg))
 
 def open_vnc_page(web_port):
     """Automatically open the VNC web page in the browser based on environment."""
