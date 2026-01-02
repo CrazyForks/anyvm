@@ -2731,6 +2731,8 @@ def main():
             net_card = "virtio-net-pci"
         elif config['os'] == "netbsd" and config['arch'] == "aarch64":
             net_card = "virtio-net-pci"
+        elif config['os'] == "freebsd":
+            net_card = "virtio-net-pci"
 
     # Platform specific args
     if config['arch'] == "aarch64":
@@ -2831,7 +2833,7 @@ def main():
             if accel == "kvm":
                 cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
             else:
-                cpu_opts = "host"
+                cpu_opts = "host,+rdrand,+rdseed"
         else:
             cpu_opts = "qemu64,+rdrand,+rdseed"
             
