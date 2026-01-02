@@ -2938,8 +2938,8 @@ def main():
     if config['qmon']:
         args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
 
-    # Always provide RNG to guest
-    args_qemu.extend(["-device", "virtio-rng-pci"])
+    # Always provide RNG to guest. Use rng-builtin as a cross-platform source of entropy.
+    args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0"])
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
