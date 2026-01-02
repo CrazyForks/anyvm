@@ -2944,7 +2944,8 @@ def main():
         args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
 
     # Always provide RNG to guest. Use rng-builtin as a cross-platform source of entropy.
-    args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000"])
+    if config['os'] != "solaris":
+        args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000"])
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
