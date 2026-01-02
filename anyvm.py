@@ -3350,7 +3350,7 @@ def main():
                 
                 ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
-                    timeout_seconds=5,
+                    timeout_seconds=1,
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
@@ -3359,7 +3359,7 @@ def main():
                 if ret == 0:
                     success = True
                     break
-                time.sleep(2)
+
             
             wait_timer_stop.set()
             if wait_timer_thread:
