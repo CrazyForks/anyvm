@@ -243,6 +243,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             width: auto;
             height: auto;
             transition: filter 0.5s ease;
+            outline: none; /* Hide focus outline on canvas */
         }
         #screen:fullscreen {
             width: auto; /* Managed by JS for integer scaling */
@@ -371,7 +372,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
     </div>
     <div id="status">Connecting...</div>
     <div id="container">
-        <canvas id="screen"></canvas>
+        <canvas id="screen" tabindex="0"></canvas>
     </div>
     <div class="toolbar">
         <div class="toolbar-group">
@@ -716,7 +717,10 @@ function connect() {
     let lastMouseX = 0, lastMouseY = 0, lastButtons = 0;
     
     canvas.addEventListener('mousemove', sendMouse);
-    canvas.addEventListener('mousedown', sendMouse);
+    canvas.addEventListener('mousedown', (e) => {
+        canvas.focus();
+        sendMouse(e);
+    });
     canvas.addEventListener('mouseup', sendMouse);
     canvas.addEventListener('contextmenu', e => e.preventDefault());
     
@@ -819,10 +823,9 @@ function sendKey(e, down) {
     const code = e.code;
     const key = e.key;
 
-    // Support Ctrl+V for pasting
-    if (e.ctrlKey && (key === 'v' || key === 'V' || code === 'KeyV')) {
-        if (down) pasteText();
-        e.preventDefault();
+    // Support Ctrl+V (Windows/Linux) or Cmd+V (Mac) for pasting
+    if ((e.ctrlKey || e.metaKey) && (key === 'v' || key === 'V' || code === 'KeyV')) {
+        // We let the 'paste' event handle this to avoid permission prompts where possible
         return;
     }
 
@@ -953,7 +956,7 @@ document.addEventListener('fullscreenchange', handleResize);
 window.addEventListener('resize', handleResize);
 
 async function pasteText() {
-    if (!connected || !ws || isPasting) return;
+    if (!ws || isPasting) return;
     if (!navigator.clipboard || !navigator.clipboard.readText) {
         alert('Clipboard API not available. Please use a secure connection (localhost or HTTPS).');
         return;
@@ -961,40 +964,7 @@ async function pasteText() {
     isPasting = true;
     try {
         const text = await navigator.clipboard.readText();
-        // Release any existing modifiers first
-        [0xffe1, 0xffe2, 0xffe3, 0xffe4, 0xffe9, 0xffea].forEach(k => {
-            ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
-        });
-        
-        for (let i = 0; i < text.length; i++) {
-            let ch = text[i];
-            let keysym = ch.charCodeAt(0);
-            if (ch === '\\r') continue;
-            if (ch === '\\n') keysym = 0xff0d;
-
-            const shiftChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_+{}|:<>?\"';
-            const needsShift = shiftChars.indexOf(ch) !== -1;
-
-            if (needsShift) {
-                ws.send(new Uint8Array([4, 1, 0, 0, 0, 0, 0xff, 0xe1])); // Shift_L Down
-                await sleep(2);
-            }
-
-            let msgDown = new Uint8Array([4, 1, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
-            let msgUp = new Uint8Array([4, 0, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
-            
-            ws.send(msgDown);
-            await sleep(5); // Gap between down and up to prevent key bounce/stuck
-            ws.send(msgUp);
-
-            if (needsShift) {
-                await sleep(2);
-                ws.send(new Uint8Array([4, 0, 0, 0, 0, 0, 0xff, 0xe1])); // Shift_L Up
-            }
-            
-            // Small delay to prevent keyboard buffer overflow in the guest
-            await sleep(30);
-        }
+        await doPaste(text);
     } catch (err) {
         console.error('Failed to read clipboard:', err);
         alert('Could not read clipboard. Please ensure you have granted permission.');
@@ -1002,6 +972,58 @@ async function pasteText() {
         isPasting = false;
     }
 }
+
+async function doPaste(text) {
+    if (!text || !ws) return;
+    // Release any existing modifiers first
+    [0xffe1, 0xffe2, 0xffe3, 0xffe4, 0xffe9, 0xffea].forEach(k => {
+        ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
+    });
+    
+    for (let i = 0; i < text.length; i++) {
+        let ch = text[i];
+        let keysym = ch.charCodeAt(0);
+        if (ch === '\\r') continue;
+        if (ch === '\\n') keysym = 0xff0d;
+
+        const shiftChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ~!@#$%^&*()_+{}|:<>?"';
+        const needsShift = shiftChars.indexOf(ch) !== -1;
+
+        if (needsShift) {
+            ws.send(new Uint8Array([4, 1, 0, 0, 0, 0, 0xff, 0xe1])); // Shift_L Down
+            await sleep(2);
+        }
+
+        let msgDown = new Uint8Array([4, 1, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
+        let msgUp = new Uint8Array([4, 0, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]);
+        
+        ws.send(msgDown);
+        await sleep(5);
+        ws.send(msgUp);
+
+        if (needsShift) {
+            await sleep(2);
+            ws.send(new Uint8Array([4, 0, 0, 0, 0, 0, 0xff, 0xe1])); // Shift_L Up
+        }
+        await sleep(30);
+    }
+}
+
+document.addEventListener('paste', async (e) => {
+    // If we are in an input or textarea, let it be (unlikely in this app)
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text');
+    if (text && !isPasting) {
+        isPasting = true;
+        try {
+            await doPaste(text);
+        } finally {
+            isPasting = false;
+        }
+    }
+});
 
 function toggleAudio() {
     if (!AUDIO_ENABLED) {
@@ -1100,6 +1122,18 @@ if (!AUDIO_ENABLED) {
     }
 }
 connect();
+
+// Focus management: blur buttons after click and focus canvas when clicking on it
+document.addEventListener('mousedown', function(e) {
+    if (e.target.tagName === 'BUTTON' || e.target.closest('button')) {
+        // Let the click happen, then blur
+        setTimeout(() => {
+            if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
+                document.activeElement.blur();
+            }
+        }, 100);
+    }
+});
 </script>
 </body>
 </html>
