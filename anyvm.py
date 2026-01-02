@@ -398,12 +398,23 @@ VNC_WEB_HTML = """<!DOCTYPE html>
                 Audio
             </button>
         </div>
+        <div class="toolbar-group">
+            <button onclick="rebootVM()" title="Reboot">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                Reboot
+            </button>
+            <button onclick="shutdownVM()" title="Shutdown">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+                Shutdown
+            </button>
+        </div>
         <button onclick="toggleFullscreen()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
         </button>
     </div>
 
 <script>
+var AUDIO_ENABLED = AUDIO_ENABLED || false;
 const canvas = document.getElementById('screen');
 const ctx = canvas.getContext('2d', { alpha: false });
 // Force disable all smoothing for nearest-neighbor rendering
@@ -796,67 +807,78 @@ function connect() {
         ws.send(new Uint8Array([5, btn, (clampedX >> 8) & 0xff, clampedX & 0xff, (clampedY >> 8) & 0xff, clampedY & 0xff]));
         ws.send(new Uint8Array([5, 0, (clampedX >> 8) & 0xff, clampedX & 0xff, (clampedY >> 8) & 0xff, clampedY & 0xff]));
     }, { passive: false });
+}
     
-    document.addEventListener('keydown', e => sendKey(e, true));
-    document.addEventListener('keyup', e => sendKey(e, false));
+document.addEventListener('keydown', e => sendKey(e, true));
+document.addEventListener('keyup', e => sendKey(e, false));
+
+function sendKey(e, down) {
+    if (!ws) return;
     
-    function sendKey(e, down) {
-        if (!connected) return;
-        
-        // Support Ctrl+V for pasting (block both down and up)
-        if (e.ctrlKey && (e.key === 'v' || e.key === 'V' || e.code === 'KeyV')) {
-            if (down) pasteText();
-            e.preventDefault();
-            return;
-        }
+    // Captured keys that we handle via code-to-keysym mapping
+    const code = e.code;
+    const key = e.key;
 
-        // Update active desktop button on Ctrl+Alt+Fx
-        if (down && e.ctrlKey && e.altKey) {
-            if (e.code === 'F1') setDesktopActive(1);
-            else if (e.code === 'F2') setDesktopActive(2);
-            else if (e.code === 'F3') setDesktopActive(3);
-            else if (e.code === 'F4') setDesktopActive(4);
-        }
-
+    // Support Ctrl+V for pasting
+    if (e.ctrlKey && (key === 'v' || key === 'V' || code === 'KeyV')) {
+        if (down) pasteText();
         e.preventDefault();
-        
-        let keysym = 0;
-        const code = e.code;
-        const key = e.key;
-        
-        const keyMap = {
-            'Backspace': 0xff08, 'Tab': 0xff09, 'Enter': 0xff0d, 'Escape': 0xff1b,
-            'Delete': 0xffff, 'Home': 0xff50, 'End': 0xff57, 'PageUp': 0xff55,
-            'PageDown': 0xff56, 'ArrowLeft': 0xff51, 'ArrowUp': 0xff52,
-            'ArrowRight': 0xff53, 'ArrowDown': 0xff54, 'Insert': 0xff63,
-            'F1': 0xffbe, 'F2': 0xffbf, 'F3': 0xffc0, 'F4': 0xffc1,
-            'F5': 0xffc2, 'F6': 0xffc3, 'F7': 0xffc4, 'F8': 0xffc5,
-            'F9': 0xffc6, 'F10': 0xffc7, 'F11': 0xffc8, 'F12': 0xffc9,
-            'ShiftLeft': 0xffe1, 'ShiftRight': 0xffe2,
-            'ControlLeft': 0xffe3, 'ControlRight': 0xffe4,
-            'AltLeft': 0xffe9, 'AltRight': 0xffea,
-            'MetaLeft': 0xffeb, 'MetaRight': 0xffec,
-            'Space': 0x0020,
-        };
-        
-        if (keyMap[code]) {
-            keysym = keyMap[code];
-        } else if (keyMap[key]) {
-            keysym = keyMap[key];
-        } else if (key.length === 1) {
-            keysym = key.charCodeAt(0);
-        } else {
-            return;
-        }
-        
-        const msg = new Uint8Array([
+        return;
+    }
+
+    // Update active desktop button on Ctrl+Alt+Fx
+    if (down && e.ctrlKey && e.altKey) {
+        if (code === 'F1') setDesktopActive(1);
+        else if (code === 'F2') setDesktopActive(2);
+        else if (code === 'F3') setDesktopActive(3);
+        else if (code === 'F4') setDesktopActive(4);
+    }
+
+    const keyMap = {
+        // Special keys
+        'Backspace': 0xff08, 'Tab': 0xff09, 'Enter': 0xff0d, 'Escape': 0xff1b, 'Delete': 0xffff,
+        'Home': 0xff50, 'End': 0xff57, 'PageUp': 0xff55, 'PageDown': 0xff56,
+        'ArrowLeft': 0xff51, 'ArrowUp': 0xff52, 'ArrowRight': 0xff53, 'ArrowDown': 0xff54, 'Insert': 0xff63,
+        'F1': 0xffbe, 'F2': 0xffbf, 'F3': 0xffc0, 'F4': 0xffc1, 'F5': 0xffc2, 'F6': 0xffc3,
+        'F7': 0xffc4, 'F8': 0xffc5, 'F9': 0xffc6, 'F10': 0xffc7, 'F11': 0xffc8, 'F12': 0xffc9,
+        'ShiftLeft': 0xffe1, 'ShiftRight': 0xffe2, 'ControlLeft': 0xffe3, 'ControlRight': 0xffe4,
+        'AltLeft': 0xffe9, 'AltRight': 0xffea, 'MetaLeft': 0xffeb, 'MetaRight': 0xffec, 'Space': 0x0020,
+        // Map Digit keys to their base ASCII (prevents Shift+1 sending '!')
+        'Digit1': 0x31, 'Digit2': 0x32, 'Digit3': 0x33, 'Digit4': 0x34, 'Digit5': 0x35,
+        'Digit6': 0x36, 'Digit7': 0x37, 'Digit8': 0x38, 'Digit9': 0x39, 'Digit0': 0x30,
+        // Map alphabet keys
+        'KeyA': 0x61, 'KeyB': 0x62, 'KeyC': 0x63, 'KeyD': 0x64, 'KeyE': 0x65, 'KeyF': 0x66, 'KeyG': 0x67,
+        'KeyH': 0x68, 'KeyI': 0x69, 'KeyJ': 0x6a, 'KeyK': 0x6b, 'KeyL': 0x6c, 'KeyM': 0x6d, 'KeyN': 0x6e,
+        'KeyO': 0x6f, 'KeyP': 0x70, 'KeyQ': 0x71, 'KeyR': 0x72, 'KeyS': 0x73, 'KeyT': 0x74, 'KeyU': 0x75,
+        'KeyV': 0x76, 'KeyW': 0x77, 'KeyX': 0x78, 'KeyY': 0x79, 'KeyZ': 0x7a,
+        // Punctuations (using e.code ensures we send the base keysym regardless of Shift)
+        'Semicolon': 0x3b, 'Equal': 0x3d, 'Comma': 0x2c, 'Minus': 0x2d, 'Period': 0x2e, 'Slash': 0x2f,
+        'Backquote': 0x60, 'BracketLeft': 0x5b, 'Backslash': 0x5c, 'BracketRight': 0x5d, 'Quote': 0x27
+    };
+
+    let keysym = 0;
+    if (keyMap[code]) {
+        keysym = keyMap[code];
+    } else if (keyMap[key]) {
+        keysym = keyMap[key];
+    } else if (key.length === 1) {
+        keysym = key.charCodeAt(0);
+    } else {
+        return;
+    }
+
+    e.preventDefault();
+    
+    try {
+        ws.send(new Uint8Array([
             4, down ? 1 : 0, 0, 0,
             (keysym >> 24) & 0xff,
             (keysym >> 16) & 0xff,
             (keysym >> 8) & 0xff,
             keysym & 0xff
-        ]);
-        ws.send(msg);
+        ]));
+    } catch (err) {
+        console.error("Failed to send key:", err);
     }
 }
 
@@ -1035,6 +1057,22 @@ function playAudio(data) {
     audioNextTime += buffer.duration;
 }
 
+function rebootVM() {
+    if (!connected || !ws) return;
+    if (confirm('Are you sure you want to reboot the VM?')) {
+        // [255, 2, 1] for system_reset
+        ws.send(new Uint8Array([255, 2, 1]));
+    }
+}
+
+function shutdownVM() {
+    if (!connected || !ws) return;
+    if (confirm('Are you sure you want to shutdown the VM?')) {
+        // [255, 2, 2] for system_powerdown
+        ws.send(new Uint8Array([255, 2, 2]));
+    }
+}
+
 setInterval(() => {
     const now = performance.now();
     const dt = now - lastFpsTime;
@@ -1070,13 +1108,14 @@ connect();
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
         self.vm_info = vm_info
         self.qemu_pid = qemu_pid
         self.audio_enabled = audio_enabled
+        self.qmon_port = qmon_port
     
     async def handle_client(self, reader, writer):
         try:
@@ -1113,7 +1152,7 @@ class VNCWebProxy:
             title = "AnyVM - {} - VNC Viewer".format(self.vm_info)
         
         html_content = VNC_WEB_HTML.replace("<title>AnyVM - VNC Viewer</title>", "<title>{}</title>".format(title))
-        audio_status_js = "<script>const AUDIO_ENABLED = {};</script>".format("true" if self.audio_enabled else "false")
+        audio_status_js = "<script>var AUDIO_ENABLED = {};</script>".format("true" if self.audio_enabled else "false")
         html_content = html_content.replace("<head>", "<head>" + audio_status_js)
         
         body = html_content.encode('utf-8')
@@ -1149,6 +1188,16 @@ class VNCWebProxy:
                 while True:
                     frame = await self.read_ws_frame(reader)
                     if frame is None: break
+                    
+                    # Intercept custom control messages [255, 2, operation]
+                    # 1: system_reset, 2: system_powerdown
+                    if (len(frame) >= 3 and frame[0] == 255 and frame[1] == 2):
+                        operation = frame[2]
+                        if self.qmon_port:
+                            cmd = "system_reset" if operation == 1 else "system_powerdown"
+                            asyncio.create_task(self.send_monitor_command(cmd))
+                        continue
+
                     vnc_writer.write(frame)
                     await vnc_writer.drain()
             except: pass
@@ -1223,14 +1272,26 @@ class VNCWebProxy:
                 if not alive:
                     os._exit(0)
 
+    async def send_monitor_command(self, cmd):
+        if not self.qmon_port:
+            return
+        try:
+            reader, writer = await asyncio.open_connection('localhost', self.qmon_port)
+            writer.write((cmd + "\n").encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+        except:
+            pass
+
     async def run(self):
         server = await asyncio.start_server(self.handle_client, '0.0.0.0', self.web_port)
         asyncio.create_task(self.monitor_qemu())
         async with server: 
             await server.serve_forever()
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False):
-    proxy = VNCWebProxy('localhost', vnc_port, web_port, vm_info, qemu_pid, audio_enabled)
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None):
+    proxy = VNCWebProxy('localhost', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port)
     asyncio.run(proxy.run())
 
 def fatal(msg):
@@ -2061,7 +2122,8 @@ def main():
             vm_info = sys.argv[4]
             qemu_pid = int(sys.argv[5])
             audio_enabled = sys.argv[6] == '1' if len(sys.argv) > 6 else False
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled)
+            qmon_port = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port)
         except Exception:
             pass
         return
@@ -2935,14 +2997,20 @@ def main():
             args_qemu.append("-display")
             args_qemu.append("vnc={}:{}".format(addr, disp))
 
-        # Use USB tablet for absolute mouse positioning to fix offset and speed issues
-        args_qemu.extend(["-device", "usb-tablet"])
+        # Use appropriate input devices for better VNC support
+        if config['arch'] == "aarch64":
+            args_qemu.extend(["-device", "usb-kbd", "-device", "virtio-tablet-pci"])
+        else:
+            args_qemu.extend(["-device", "usb-tablet"])
 
         # Prepare info for VNC Web Proxy
         web_port = get_free_port(start=6080, end=6180)
         if web_port:
             display_arch = config['arch'] if config['arch'] else host_arch
             vm_info = "-".join(filter(None, [config['os'], config['release'], display_arch]))
+            
+            if not config['qmon']:
+                config['qmon'] = str(get_free_port(start=4444, end=4544))
     
     if config['qmon']:
         args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
@@ -2968,7 +3036,8 @@ def main():
                 str(web_port), 
                 vm_info, 
                 str(qemu_pid),
-                '1' if is_audio_enabled else '0'
+                '1' if is_audio_enabled else '0',
+                config['qmon'] if config['qmon'] else ""
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
