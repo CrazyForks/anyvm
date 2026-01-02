@@ -3354,7 +3354,7 @@ def main():
                 
                 ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
-                    timeout_seconds=1,
+                    timeout_seconds=3 if IS_WINDOWS else 1,
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
@@ -3413,7 +3413,7 @@ def main():
                     
                     ret, timed_out = call_with_timeout(
                         ssh_base_cmd + ["exit"],
-                        timeout_seconds=5,
+                        timeout_seconds=3 if IS_WINDOWS else 1,
                         stdout=DEVNULL,
                         stderr=DEVNULL
                     )
