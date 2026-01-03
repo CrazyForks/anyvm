@@ -2386,7 +2386,7 @@ def main():
     releases_cache = {}
     
     def get_releases(repo_slug):
-        cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
+        cache_name = "releases.json"
         cache_path = os.path.join(working_dir_os, cache_name)
         if repo_slug in releases_cache:
             return releases_cache[repo_slug]
