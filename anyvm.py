@@ -1142,7 +1142,7 @@ document.addEventListener('mousedown', function(e) {
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
@@ -1150,6 +1150,7 @@ class VNCWebProxy:
         self.qemu_pid = qemu_pid
         self.audio_enabled = audio_enabled
         self.qmon_port = qmon_port
+        self.error_log_path = error_log_path
     
     async def handle_client(self, reader, writer):
         try:
@@ -1310,12 +1311,28 @@ class VNCWebProxy:
         if not self.qmon_port:
             return
         try:
-            reader, writer = await asyncio.open_connection('localhost', self.qmon_port)
+            reader, writer = await asyncio.open_connection('127.0.0.1', self.qmon_port)
             writer.write((cmd + "\n").encode())
             await writer.drain()
+            # Wait a bit for command to be processed
+            await asyncio.sleep(0.1)
             writer.close()
-            await writer.wait_closed()
-        except:
+            try:
+                await writer.wait_closed()
+            except:
+                pass
+        except Exception as e:
+            # Re-implement log locally as we're in the proxy process
+            t = time.time()
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+            err_msg = "[{}] [VNCProxy] Failed to send monitor command '{}' to 127.0.0.1:{}: {}\n".format(ts, cmd, self.qmon_port, e)
+            print(err_msg.strip())
+            if self.error_log_path:
+                try:
+                    with open(self.error_log_path, 'a') as f:
+                        f.write(err_msg)
+                except:
+                    pass
             pass
 
     async def run(self):
@@ -1324,8 +1341,16 @@ class VNCWebProxy:
         async with server: 
             await server.serve_forever()
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None):
-    proxy = VNCWebProxy('localhost', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port)
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None):
+    if error_log_path:
+        try:
+            with open(error_log_path, 'a') as f:
+                t = time.time()
+                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+                f.write("[{}] [VNCProxy] Proxy starting. VNC: {}, Web: {}, QEMU PID: {}, Monitor Port: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port))
+        except:
+            pass
+    proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path)
     asyncio.run(proxy.run())
 
 def fatal(msg):
@@ -2157,8 +2182,17 @@ def main():
             qemu_pid = int(sys.argv[5])
             audio_enabled = sys.argv[6] == '1' if len(sys.argv) > 6 else False
             qmon_port = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port)
-        except Exception:
+            error_log_path = sys.argv[8] if len(sys.argv) > 8 else None
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path)
+        except Exception as e:
+            # If we have an error log path, try to write to it even if startup fails
+            try:
+                if len(sys.argv) > 8:
+                    with open(sys.argv[8], 'a') as f:
+                        f.write("[ProxyStarter] Fatal error during startup: {}\n".format(e))
+            except:
+                pass
+            print("VNC Proxy startup error: {}".format(e), file=sys.stderr)
             pass
         return
 
@@ -3045,9 +3079,10 @@ def main():
             
             if not config['qmon']:
                 config['qmon'] = str(get_free_port(start=4444, end=4544))
+                debuglog(config['debug'], "Auto-selected QEMU monitor port: {}".format(config['qmon']))
     
     if config['qmon']:
-        args_qemu.extend(["-monitor", "telnet:localhost:{},server,nowait,nodelay".format(config['qmon'])])
+        args_qemu.extend(["-monitor", "tcp:127.0.0.1:{},server,nowait,nodelay".format(config['qmon'])])
 
     # Always provide RNG to guest. Use rng-builtin as a cross-platform source of entropy.
     if config['os'] != "solaris":
@@ -3071,7 +3106,8 @@ def main():
                 vm_info, 
                 str(qemu_pid),
                 '1' if is_audio_enabled else '0',
-                config['qmon'] if config['qmon'] else ""
+                config['qmon'] if config['qmon'] else "",
+                os.path.join(output_dir, "{}.vncproxy.err".format(vm_name))
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
