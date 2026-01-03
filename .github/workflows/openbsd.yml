@@ -68,7 +68,10 @@ jobs:
       matrix:
         release: ["7.7", "7.8"]
         arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
+        runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        exclude:
+          - runs: ubuntu-24.04-arm
+            arch: ""
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -85,7 +88,10 @@ jobs:
       matrix:
         release: ["7.7", "7.8"]
         arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
+        runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        exclude:
+          - runs: ubuntu-24.04-arm
+            arch: ""
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -95,4 +101,21 @@ jobs:
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
       sync: "nfs"
-      
+
+
+  testscp-riscv64:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.7", "7.8"]
+        arch: ["riscv64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "scp"

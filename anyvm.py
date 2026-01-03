@@ -80,7 +80,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "solaris": "2.0.0",
     "omnios": "2.0.3",
     "haiku": "0.0.2",
-    "openindiana": "2.0.0"
+    "openindiana": "2.0.1"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2275,7 +2275,7 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
         "-o", "LogLevel=ERROR",
-    ] + sources + ["{}@localhost:".format(ssh_user) + vguest + "/"])
+    ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
     
     if subprocess.call(cmd) != 0:
         log("Warning: SCP sync failed.")
@@ -3023,7 +3023,10 @@ def main():
     if config['nc']:
         net_card = config['nc']
     else:
-        net_card = "e1000"
+        if config['arch'] == "aarch64":
+            net_card = "virtio-net-pci"
+        else:
+            net_card = "e1000"
         if config['os'] == "openbsd" and config['release']:
             release_base = config['release'].split('-')[0]
             if release_base in OPENBSD_E1000_RELEASES:
@@ -3075,20 +3078,28 @@ def main():
                     accel = "kvm"
                 else:
                     log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
-            elif platform.system() == "Darwin" and hvf_supported():
-                accel = "hvf"
+            elif platform.system() == "Darwin":
+                # On Apple Silicon, HVF is available if we're on aarch64 host AND the system supports it
+                if host_arch == "aarch64" and hvf_supported():
+                     accel = "hvf"
+                else:
+                     # Intel Mac trying to run aarch64 -> TCG, or HVF not supported
+                     accel = "tcg"
         
         if config['cputype']:
             cpu = config['cputype']
         else:
-            cpu = "cortex-a72"
-            
-        if accel == "kvm":
-            cpu = "host"
+            if accel in ["kvm", "hvf"]:
+                cpu = "host"
+            elif config['os'] == "openbsd":
+                # OpenBSD fails with "FP exception in kernel" on cpu=max
+                cpu = "neoverse-n1"
+            else:
+                cpu = "max"
         
-        vga_type = config['vga'] if config['vga'] else "virtio-gpu"
-        if vga_type == "virtio":
-            vga_type = "virtio-gpu"
+        vga_type = config['vga'] if config['vga'] else "virtio-gpu-pci"
+        if vga_type in ["virtio", "virtio-gpu"]:
+            vga_type = "virtio-gpu-pci"
         
         args_qemu.extend([
             "-machine", "virt,accel={},gic-version=3,usb=on".format(accel),
@@ -3114,8 +3125,15 @@ def main():
             "-machine", machine_opts,
             "-cpu", cpu_opts,
             "-device", "qemu-xhci",
-            "-device", "{},netdev=net0".format(net_card),
-            "-kernel", "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin",
+            "-device", "{},netdev=net0".format(net_card)
+        ])
+        
+        uboot_bin = "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin"
+        if not os.path.exists(uboot_bin):
+            fatal("RISC-V u-boot binary not found at {}.\nPlease install it: sudo apt-get install u-boot-qemu".format(uboot_bin))
+            
+        args_qemu.extend([
+            "-kernel", uboot_bin,
             "-device", "virtio-balloon-pci"
         ])
     else:
@@ -3229,7 +3247,11 @@ def main():
         disp = port - 5900
         # Add audio support if the vnc driver is available
         if check_qemu_audio_backend(qemu_bin, "vnc"):
-            args_qemu.extend(["-device", "intel-hda", "-device", "hda-duplex"])
+            if config['arch'] == "aarch64":
+                 # Use usb-audio on aarch64 to avoid intel-hda driver issues
+                 args_qemu.extend(["-device", "usb-audio,audiodev=vnc_audio"])
+            else:
+                 args_qemu.extend(["-device", "intel-hda", "-device", "hda-duplex"])
             args_qemu.extend(["-audiodev", "vnc,id=vnc_audio"])
             args_qemu.append("-display")
             args_qemu.append("vnc={}:{},audiodev=vnc_audio".format(addr, disp))
@@ -3358,7 +3380,7 @@ def main():
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  User {}\n  HostName localhost\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  User {}\n  HostName 127.0.0.1\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     vm_user,
@@ -3649,7 +3671,7 @@ def main():
             
             ssh_base_cmd.extend([
                 "-p", str(config['sshport']),
-                "{}@localhost".format(vm_user)
+                "{}@127.0.0.1".format(vm_user)
             ])
             
             boot_timeout_seconds = 600  # 10 minutes
