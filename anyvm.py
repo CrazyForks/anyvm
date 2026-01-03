@@ -3768,6 +3768,9 @@ def main():
             
             qemu_elapsed = time.time() - qemu_start_time
             debuglog(config['debug'], "VM Ready! Boot took {:.2f} seconds. Connect with: ssh {}".format(qemu_elapsed, vm_name))
+            if config.get('os') == 'openindiana' and platform.system() == 'Darwin' and platform.machine() == 'arm64':
+                debuglog(config['debug'], "Waiting for OpenIndiana to finish booting...")
+                time.sleep(5)
             
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
