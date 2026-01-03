@@ -3125,8 +3125,15 @@ def main():
             "-machine", machine_opts,
             "-cpu", cpu_opts,
             "-device", "qemu-xhci",
-            "-device", "{},netdev=net0".format(net_card),
-            "-kernel", "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin",
+            "-device", "{},netdev=net0".format(net_card)
+        ])
+        
+        uboot_bin = "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin"
+        if not os.path.exists(uboot_bin):
+            fatal("RISC-V u-boot binary not found at {}.\nPlease install it: sudo apt-get install u-boot-qemu".format(uboot_bin))
+            
+        args_qemu.extend([
+            "-kernel", uboot_bin,
             "-device", "virtio-balloon-pci"
         ])
     else:
