@@ -3023,7 +3023,10 @@ def main():
     if config['nc']:
         net_card = config['nc']
     else:
-        net_card = "e1000"
+        if config['arch'] == "aarch64":
+            net_card = "virtio-net-pci"
+        else:
+            net_card = "e1000"
         if config['os'] == "openbsd" and config['release']:
             release_base = config['release'].split('-')[0]
             if release_base in OPENBSD_E1000_RELEASES:
@@ -3075,20 +3078,25 @@ def main():
                     accel = "kvm"
                 else:
                     log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
-            elif platform.system() == "Darwin" and hvf_supported():
-                accel = "hvf"
+            elif platform.system() == "Darwin":
+                # On Apple Silicon, HVF is available if we're on aarch64 host AND the system supports it
+                if host_arch == "aarch64" and hvf_supported():
+                     accel = "hvf"
+                else:
+                     # Intel Mac trying to run aarch64 -> TCG, or HVF not supported
+                     accel = "tcg"
         
         if config['cputype']:
             cpu = config['cputype']
         else:
-            cpu = "cortex-a72"
-            
-        if accel == "kvm":
-            cpu = "host"
+            if accel in ["kvm", "hvf"]:
+                cpu = "host"
+            else:
+                cpu = "max"
         
-        vga_type = config['vga'] if config['vga'] else "virtio-gpu"
-        if vga_type == "virtio":
-            vga_type = "virtio-gpu"
+        vga_type = config['vga'] if config['vga'] else "virtio-gpu-pci"
+        if vga_type in ["virtio", "virtio-gpu"]:
+            vga_type = "virtio-gpu-pci"
         
         args_qemu.extend([
             "-machine", "virt,accel={},gic-version=3,usb=on".format(accel),
@@ -3229,7 +3237,11 @@ def main():
         disp = port - 5900
         # Add audio support if the vnc driver is available
         if check_qemu_audio_backend(qemu_bin, "vnc"):
-            args_qemu.extend(["-device", "intel-hda", "-device", "hda-duplex"])
+            if config['arch'] == "aarch64":
+                 # Use usb-audio on aarch64 to avoid intel-hda driver issues
+                 args_qemu.extend(["-device", "usb-audio,audiodev=vnc_audio"])
+            else:
+                 args_qemu.extend(["-device", "intel-hda", "-device", "hda-duplex"])
             args_qemu.extend(["-audiodev", "vnc,id=vnc_audio"])
             args_qemu.append("-display")
             args_qemu.append("vnc={}:{},audiodev=vnc_audio".format(addr, disp))
