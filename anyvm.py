@@ -3091,6 +3091,9 @@ def main():
         else:
             if accel in ["kvm", "hvf"]:
                 cpu = "host"
+            elif config['os'] == "openbsd":
+                # OpenBSD fails with "FP exception in kernel" on cpu=max
+                cpu = "neoverse-n1"
             else:
                 cpu = "max"
         
