@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         release: ["13.2", "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "15.0"]
-        arch: ["aarch64", "", "riscv64"]
+        arch: ["aarch64", ""]
         runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
         exclude:
           - release: 12.4
@@ -34,18 +34,8 @@ jobs:
             arch: aarch64
           - release: 14.0
             arch: aarch64
-          - release: 14.0
-            arch: riscv64
-          - release: 14.1
-            arch: riscv64
-          - release: 13.2
-            arch: riscv64
-          - release: 13.3
-            arch: riscv64
           - runs: ubuntu-24.04-arm
             arch: ""
-          - runs: ubuntu-24.04-arm
-            arch: "riscv64"
 
 
     uses: ./.github/workflows/testrun.yml
@@ -82,3 +72,20 @@ jobs:
       arch: ${{ matrix.arch }}
       sync: nfs
    
+  testscp-riscv64:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["13.4", "13.5", "14.2", "14.3", "15.0"]
+        arch: ["riscv64"]
+        runs: ["ubuntu-24.04"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: freebsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: scp
