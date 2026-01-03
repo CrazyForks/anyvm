@@ -211,24 +211,28 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             border-color: rgba(34, 197, 94, 0.4);
         }
         #status.reconnecting {
+            position: fixed;
+            z-index: 5000;
             top: 50%;
             left: 50%;
-            right: auto;
             transform: translate(-50%, -50%);
-            padding: 20px 40px;
-            font-size: 18px;
-            background: rgba(15, 23, 42, 0.85);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5),
-                        0 0 0 100vmax rgba(0, 0, 0, 0.4);
-            border: 1px solid #475569 !important;
+            padding: 30px 60px;
+            font-size: 20px;
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7),
+                        0 0 0 100vmax rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(71, 85, 105, 0.5) !important;
             color: #f1f5f9 !important;
-            border-radius: 12px;
+            border-radius: 16px;
             font-weight: 500;
             pointer-events: none;
             text-align: center;
             line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
         #screen {
             background: #000;
@@ -245,7 +249,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             height: auto;
             transition: filter 0.5s ease;
             outline: none; /* Hide focus outline on canvas */
-            cursor: none;
+            cursor: default;
         }
         #screen:fullscreen {
             width: auto; /* Managed by JS for integer scaling */
@@ -262,6 +266,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         }
         #screen.disconnected {
             filter: grayscale(100%) brightness(0.7);
+            cursor: auto;
         }
         .error { color: #f87171 !important; border-color: #7f1d1d !important; }
         .toolbar {
@@ -417,9 +422,9 @@ VNC_WEB_HTML = """<!DOCTYPE html>
     <div id="container">
         <canvas id="screen" tabindex="0"></canvas>
     </div>
+    <div id="status">Connecting...</div>
     <div class="toolbar top">
-        <div class="toolbar-group">
-             <div id="status">Connecting...</div>
+        <div class="toolbar-group" style="display: none;" id="status-container">
         </div>
         <div class="toolbar-group">
             <button id="btn-f1" onclick="sendCtrlAltF(1)" title="Ctrl+Alt+F1">Ctrl+Alt-F1</button>
@@ -524,8 +529,12 @@ function connect() {
             return;
         }
         status.textContent = 'Connected, negotiating...';
-        status.classList.remove('error');
-        status.classList.remove('reconnecting');
+        status.classList.remove('error', 'reconnecting');
+        const statusContainer = document.getElementById('status-container');
+        if (statusContainer) {
+            statusContainer.style.display = 'flex';
+            statusContainer.appendChild(status);
+        }
         canvas.classList.remove('disconnected');
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
@@ -538,15 +547,17 @@ function connect() {
     };
     
     ws.onclose = () => {
-        status.className = 'error reconnecting';
-        status.classList.remove('connected');
+        status.classList.add('reconnecting');
+        document.body.appendChild(status);
+        const statusContainer = document.getElementById('status-container');
+        if (statusContainer) statusContainer.style.display = 'none';
         canvas.classList.add('disconnected');
         connected = false;
         if (updateInterval) clearInterval(updateInterval);
         
         let timeLeft = 5;
         const updateStatus = () => {
-            status.innerHTML = `<span style="color: #3b82f6; font-weight: 600;">Disconnected</span><br><span style="font-size: 13px; color: #94a3b8; font-weight: 400;">Retrying in ${timeLeft}s...</span>`;
+            status.innerHTML = `<span style="color: #3b82f6; font-weight: 600;">Disconnected</span><span style="font-size: 13px; color: #94a3b8; font-weight: 400;">Retrying in ${timeLeft}s...</span>`;
         };
         
         updateStatus();
@@ -689,6 +700,21 @@ function connect() {
                         const enc = view.getInt32(8);
                         offset += 12;
                         
+                        // Detect VM software cursor by looking for small updates near host mouse position
+                        if (isCheckingCursor && !cursorDetected) {
+                            if (performance.now() - checkStartTime > 120) {
+                                isCheckingCursor = false;
+                            } else {
+                                const isSmall = w <= 64 && h <= 64;
+                                const isNear = x < lastMouseX + 32 && x + w > lastMouseX - 32 &&
+                                               y < lastMouseY + 32 && y + h > lastMouseY - 32;
+                                if (isSmall && isNear) {
+                                    cursorDetected = true;
+                                    canvas.style.cursor = 'none';
+                                }
+                            }
+                        }
+                        
                         if (enc === 0) {
                             const pixelBytes = w * h * 4;
                             if (buffer.length < offset + pixelBytes) { complete = false; break; }
@@ -777,8 +803,10 @@ function connect() {
     }
     
     let lastMouseX = 0, lastMouseY = 0, lastButtons = 0;
+    let isCheckingCursor = false, cursorDetected = false, checkStartTime = 0;
     
     canvas.addEventListener('mousemove', sendMouse);
+    canvas.addEventListener('mouseenter', sendMouse);
     canvas.addEventListener('mousedown', (e) => {
         canvas.focus();
         sendMouse(e);
@@ -788,6 +816,14 @@ function connect() {
     
     function sendMouse(e) {
         if (!connected) return;
+        
+        if (e.type === 'mouseenter') {
+            isCheckingCursor = true;
+            checkStartTime = performance.now();
+            cursorDetected = false;
+            canvas.style.cursor = 'default';
+        }
+        
         e.preventDefault();
         
         const rect = canvas.getBoundingClientRect();
