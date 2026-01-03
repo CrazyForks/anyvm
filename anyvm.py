@@ -1195,6 +1195,9 @@ class VNCWebProxy:
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/html; charset=utf-8\r\n"
             "Content-Length: {}\r\n"
+            "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+            "Pragma: no-cache\r\n"
+            "Expires: 0\r\n"
             "Connection: close\r\n"
             "\r\n".format(len(body))
         ).encode('utf-8') + body
