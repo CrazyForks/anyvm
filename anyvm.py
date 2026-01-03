@@ -2275,7 +2275,7 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
         "-o", "LogLevel=ERROR",
-    ] + sources + ["{}@localhost:".format(ssh_user) + vguest + "/"])
+    ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
     
     if subprocess.call(cmd) != 0:
         log("Warning: SCP sync failed.")
@@ -3373,7 +3373,7 @@ def main():
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  User {}\n  HostName localhost\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  User {}\n  HostName 127.0.0.1\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     vm_user,
@@ -3664,7 +3664,7 @@ def main():
             
             ssh_base_cmd.extend([
                 "-p", str(config['sshport']),
-                "{}@localhost".format(vm_user)
+                "{}@127.0.0.1".format(vm_user)
             ])
             
             boot_timeout_seconds = 600  # 10 minutes
