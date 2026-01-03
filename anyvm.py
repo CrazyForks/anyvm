@@ -192,22 +192,23 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             border: 1px solid #334155;
         }
         #status {
-            position: fixed;
-            top: 20px;
-            right: 20px;
             color: #94a3b8;
-            font-size: 12px;
-            z-index: 100;
-            background: rgba(15, 23, 42, 0.8);
-            backdrop-filter: blur(4px);
-            padding: 6px 12px;
-            border-radius: 20px;
-            border: 1px solid #334155;
-            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            font-size: 10px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            padding: 2px 10px;
+            border-radius: 99px;
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(71, 85, 105, 0.4);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
         }
         #status.connected {
             color: #4ade80;
-            border-color: #065f46;
+            background: rgba(20, 83, 45, 0.3);
+            border-color: rgba(34, 197, 94, 0.4);
         }
         #status.reconnecting {
             top: 50%;
@@ -238,12 +239,13 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             image-rendering: crisp-edges;
             -ms-interpolation-mode: nearest-neighbor;
             
-            max-width: 95vw;
-            max-height: 85vh;
+            max-width: calc(100vw - 40px);
+            max-height: calc(100vh - 100px);
             width: auto;
             height: auto;
             transition: filter 0.5s ease;
             outline: none; /* Hide focus outline on canvas */
+            cursor: none;
         }
         #screen:fullscreen {
             width: auto; /* Managed by JS for integer scaling */
@@ -264,37 +266,71 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         .error { color: #f87171 !important; border-color: #7f1d1d !important; }
         .toolbar {
             position: fixed;
-            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%) translateY(0);
+            bottom: 0;
             display: flex;
+            align-items: center;
             gap: 8px;
-            z-index: 100;
+            z-index: 1000;
             background: rgba(15, 23, 42, 0.4);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
-            padding: 8px 12px;
-            border-radius: 10px;
-            border: 1px solid rgba(51, 65, 85, 0.4);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            transition: all 0.3s ease;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            padding: 6px 16px;
+            border-radius: 12px 12px 0 0;
+            border: 1px solid rgba(51, 65, 85, 0.5);
+            border-bottom: none;
+            box-shadow: 0 -4px 15px rgba(0, 0, 0, 0.3);
+            transition: transform 0.4s cubic-bezier(0.19, 1, 0.22, 1), background 0.3s ease;
+        }
+        .toolbar.auto-hide {
+            transform: translateX(-50%) translateY(calc(100% - 6px));
+        }
+        .toolbar::before {
+            content: '';
+            position: absolute;
+            top: -20px;
+            left: 0;
+            right: 0;
+            height: 20px;
+        }
+        .toolbar.top {
+            top: 0;
+            bottom: auto;
+            transform: translateX(-50%) translateY(0);
+            border-radius: 0 0 12px 12px;
+            border-top: none;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+        }
+        .toolbar.top.auto-hide {
+            transform: translateX(-50%) translateY(calc(-100% + 6px));
+        }
+        .toolbar.top::before {
+            top: auto;
+            bottom: -20px;
         }
         .toolbar-group {
             display: flex;
+            align-items: center;
             gap: 6px;
             border-right: 1px solid rgba(71, 85, 105, 0.3);
             padding-right: 8px;
             margin-right: 4px;
+        }
+        .toolbar.top button {
+            padding: 4px 12px;
+            font-size: 11px;
         }
         .toolbar-group:last-child {
             border-right: none;
             padding-right: 0;
             margin-right: 0;
         }
-        .toolbar:hover {
-            background: rgba(15, 23, 42, 0.85);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border-color: #334155;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
+        .toolbar.auto-hide:hover {
+            transform: translateX(-50%) translateY(0);
+            background: rgba(15, 23, 42, 0.9);
+            border-color: rgba(59, 130, 246, 0.5);
+            box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.5);
         }
         button {
             background: rgba(51, 65, 85, 0.3);
@@ -307,8 +343,11 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             font-weight: 500;
             transition: all 0.2s ease;
             display: flex;
+            flex-direction: row !important;
             align-items: center;
-            gap: 6px;
+            justify-content: center;
+            gap: 8px;
+            white-space: nowrap;
         }
         button:hover {
             background: #1e293b;
@@ -346,45 +385,67 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
         }
         #stats {
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            color: #94a3b8;
-            font-size: 11px;
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            z-index: 100;
-            background: rgba(15, 23, 42, 0.7);
-            backdrop-filter: blur(4px);
-            padding: 4px 10px;
-            border-radius: 4px;
-            border: 1px solid #334155;
-            pointer-events: none;
             display: flex;
-            gap: 12px;
+            gap: 8px;
+            align-items: center;
         }
-        #stats span { color: #f1f5f9; font-weight: 600; }
+        .stat-pill {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(71, 85, 105, 0.4);
+            padding: 2px 10px;
+            border-radius: 99px;
+            color: #94a3b8;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .stat-label { opacity: 0.5; font-size: 9px; }
+        .stat-value { 
+            color: #f1f5f9; 
+            font-weight: 700; 
+            display: inline-block;
+            min-width: 25px;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
-    <div id="stats">
-        <div>FPS: <span id="fps-val">0</span></div>
-        <div>Latency: <span id="lat-val">0</span>ms</div>
-    </div>
-    <div id="status">Connecting...</div>
     <div id="container">
         <canvas id="screen" tabindex="0"></canvas>
     </div>
-    <div class="toolbar">
+    <div class="toolbar top">
+        <div class="toolbar-group">
+             <div id="status">Connecting...</div>
+        </div>
         <div class="toolbar-group">
             <button id="btn-f1" onclick="sendCtrlAltF(1)" title="Ctrl+Alt+F1">Ctrl+Alt-F1</button>
             <button id="btn-f2" onclick="sendCtrlAltF(2)" title="Ctrl+Alt+F2">Ctrl+Alt-F2</button>
             <button id="btn-f3" onclick="sendCtrlAltF(3)" title="Ctrl+Alt+F3">Ctrl+Alt-F3</button>
             <button id="btn-f4" onclick="sendCtrlAltF(4)" title="Ctrl+Alt+F4">Ctrl+Alt-F4</button>
         </div>
+        <div class="toolbar-group" style="border-right: none; padding-right: 0; margin-right: 0;">
+            <div id="stats">
+                <div class="stat-pill"><span class="stat-label">FPS</span><span id="fps-val" class="stat-value">0</span></div>
+                <div class="stat-pill"><span class="stat-label">LAT</span><span id="lat-val" class="stat-value">0</span><span class="stat-label">MS</span></div>
+            </div>
+        </div>
+    </div>
+    <div class="toolbar">
+        <div class="toolbar-group">
+            <button id="btn-sticky-ctrl" onclick="toggleSticky('ControlLeft', 0xffe3, this)" title="Sticky Ctrl">Ctrl</button>
+            <button id="btn-sticky-alt" onclick="toggleSticky('AltLeft', 0xffe9, this)" title="Sticky Alt">Alt</button>
+            <button id="btn-sticky-meta" onclick="toggleSticky('MetaLeft', 0xffeb, this)" title="Sticky Meta">
+                <span id="meta-btn-content">Opt</span>
+            </button>
+        </div>
         <div class="toolbar-group">
             <button onclick="sendCtrlAltDel()">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                CAD
+                Ctrl + Alt + Del
             </button>
         </div>
         <div class="toolbar-group">
@@ -427,6 +488,7 @@ const status = document.getElementById('status');
 
 let ws;
 let connected = false;
+let stickyStates = {};
 let fbWidth = 800, fbHeight = 600;
 let pendingUpdate = false;
 let updateInterval = null;
@@ -837,6 +899,12 @@ function sendKey(e, down) {
         else if (code === 'F4') setDesktopActive(4);
     }
 
+    // If releasing a key that is sticky, keep it down in VNC
+    if (!down && stickyStates[code]) {
+        e.preventDefault();
+        return;
+    }
+
     const keyMap = {
         // Special keys
         'Backspace': 0xff08, 'Tab': 0xff09, 'Enter': 0xff0d, 'Escape': 0xff1b, 'Delete': 0xffff,
@@ -895,6 +963,18 @@ function setDesktopActive(n) {
     }
 }
 
+function toggleSticky(code, keysym, btn) {
+    if (!ws) return;
+    stickyStates[code] = !stickyStates[code];
+    if (stickyStates[code]) {
+        btn.classList.add('active');
+        ws.send(new Uint8Array([4, 1, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]));
+    } else {
+        btn.classList.remove('active');
+        ws.send(new Uint8Array([4, 0, 0, 0, (keysym>>24)&0xff, (keysym>>16)&0xff, (keysym>>8)&0xff, keysym&0xff]));
+    }
+}
+
 function sendCtrlAltDel() {
     if (!connected || !ws) return;
     const keys = [0xffe3, 0xffe9, 0xffff];
@@ -950,6 +1030,40 @@ function handleResize() {
         canvas.style.width = "";
         canvas.style.height = "";
     }
+
+    // Smart Toolbar visibility using ResizeObserver for maximum reliability
+    const updateToolbars = () => {
+        const toolbars = document.querySelectorAll('.toolbar');
+        const container = document.getElementById('container');
+        if (!container) return;
+        
+        const rect = container.getBoundingClientRect();
+        const threshold = 48; // Compact threshold for reserved space (100/2)
+
+        toolbars.forEach(tb => {
+            const isTop = tb.classList.contains('top');
+            const space = isTop ? rect.top : (window.innerHeight - rect.bottom);
+            
+            if (space < threshold) {
+                tb.classList.add('auto-hide');
+            } else {
+                tb.classList.remove('auto-hide');
+            }
+        });
+    };
+
+    // Use ResizeObserver to detect any change in container or layout
+    if (window.toolbarObserver) window.toolbarObserver.disconnect();
+    window.toolbarObserver = new ResizeObserver(() => {
+        updateToolbars();
+        // Secondary check to catch delayed browser layout shifts
+        setTimeout(updateToolbars, 100);
+    });
+    window.toolbarObserver.observe(document.body);
+    window.toolbarObserver.observe(document.getElementById('container'));
+    
+    // Immediate check
+    updateToolbars();
 }
 
 document.addEventListener('fullscreenchange', handleResize);
@@ -1100,7 +1214,7 @@ setInterval(() => {
     const dt = now - lastFpsTime;
     if (dt >= 500) {
         const fps = Math.round((frameCount * 1000) / dt);
-        fpsVal.textContent = fps;
+        document.getElementById('fps-val').textContent = fps;
         frameCount = 0;
         lastFpsTime = now;
     }
@@ -1113,6 +1227,25 @@ setInterval(() => {
 }, 500);
 
 setDesktopActive(1);
+// OS Detection for Meta Key Label
+const metaContent = document.getElementById('meta-btn-content');
+const isWin = navigator.userAgent.includes('Windows');
+const isMac = navigator.userAgent.includes('Macintosh');
+
+if (isWin) {
+    metaContent.style.display = 'flex';
+    metaContent.style.alignItems = 'center';
+    metaContent.style.gap = '8px';
+    metaContent.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 12h18M12 3v18"/></svg> <span>Win</span>';
+    document.getElementById('btn-sticky-meta').title = "Sticky Windows Key";
+} else if (isMac) {
+    metaContent.style.display = 'flex';
+    metaContent.style.alignItems = 'center';
+    metaContent.style.gap = '8px';
+    metaContent.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3z"/></svg> <span>Mac</span>';
+    document.getElementById('btn-sticky-meta').title = "Sticky Command Key";
+}
+
 if (!AUDIO_ENABLED) {
     const btn = document.getElementById('btn-audio');
     if (btn) {
