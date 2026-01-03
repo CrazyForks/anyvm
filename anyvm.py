@@ -3352,13 +3352,13 @@ def main():
             global_identity_block = ""
             if hostid_file:
                 # Apply the VM key to all SSH hosts (requested behavior).
-                global_identity_block = "Host *\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
+                global_identity_block = "Host *\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
                     hostid_file,
                 )
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  User {}\n  HostName localhost\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  User {}\n  HostName localhost\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     vm_user,
