@@ -25,7 +25,7 @@ jobs:
         os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
         arch: ["aarch64", "x86_64"]
         runs: ["macos-latest"]
-        sync: ["scp"]
+        sync: ["scp", "rsync"]
         exclude:
           - os: solaris
             arch: aarch64
@@ -44,6 +44,7 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
+      sleep: "sleep 5;"
       
       
       

@@ -73,14 +73,14 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.0.4",
+    "freebsd": "2.0.5",
     "openbsd": "2.0.0",
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
     "omnios": "2.0.3",
     "haiku": "0.0.2",
-    "openindiana": "2.0.1"
+    "openindiana": "2.0.2"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2200,34 +2200,148 @@ fi
     if not mounted:
         log("Warning: Failed to mount shared folder via NFS.")
 
-def sync_rsync(ssh_cmd, vhost, vguest, os_name):
-    """Syncs a host directory to the guest using rsync (Pull mode)."""
+def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name):
+    """Syncs a host directory to the guest using rsync (Push mode)."""
     host_rsync = find_rsync()
-    if IS_WINDOWS and not host_rsync:
+    if not host_rsync:
         log("Warning: rsync not found on host. Install rsync to use rsync sync mode.")
         return
 
-    log("Syncing via rsync: {} -> {}".format(vhost, vguest))
-    rsync_path_arg = '--rsync-path="{}"'.format(host_rsync.replace("\\", "/"))
-    
-    mount_script = """
-mkdir -p "{vguest}"
-if command -v rsync >/dev/null 2>&1; then
-  rsync -avrtopg --delete {rsync_path} host:"{vhost}/" "{vguest}/"
-else
-  echo "Error: rsync not found in guest."
-  exit 1
-fi
-""".format(vguest=vguest, vhost=vhost, rsync_path=rsync_path_arg)
+    # 1. Ensure destination directory exists in guest
+    try:
+        # Use a simpler check for directory existence and creation
+        p = subprocess.Popen(ssh_cmd + ["mkdir -p \"{}\"".format(vguest)], stdout=DEVNULL, stderr=DEVNULL)
+        p.wait(timeout=10)
+    except Exception:
+        pass
 
+    log("Syncing via rsync: {} -> {}".format(vhost, vguest))
+    
+    if not ssh_cmd or len(ssh_cmd) < 2:
+        return
+
+    # Extract destination from ssh_cmd (last element)
+    remote_host = ssh_cmd[-1]
+    
+    # On Windows, rsync -e commands are often executed by a mini-sh (part of msys2/git-bash).
+    # Using /dev/null is often safer than NUL in that context.
+    # We find the identity file path and port from the original ssh_cmd
+    ssh_port = "22"
+    id_file = None
+    i = 0
+    while i < len(ssh_cmd):
+        if ssh_cmd[i] == "-p" and i + 1 < len(ssh_cmd):
+            ssh_port = ssh_cmd[i+1]
+        elif ssh_cmd[i] == "-i" and i + 1 < len(ssh_cmd):
+            id_file = ssh_cmd[i+1].replace("\\", "/")
+        i += 1
+
+    # 0. Manage known_hosts file in output_dir
+    kh_path = os.path.join(output_dir, "{}.knownhosts".format(vm_name))
+    try:
+        # Clear or create the file
+        open(kh_path, 'w').close()
+    except Exception:
+        pass
+
+    # Find absolute path to ssh, prioritizing bundled tools
+    ssh_cmd_base = "ssh"
+    if IS_WINDOWS and host_rsync:
+        rsync_dir = os.path.dirname(os.path.abspath(host_rsync))
+        # Search relative to rsync executable: 
+        # C:\ProgramData\chocolatey\bin\rsync.exe -> ../lib/rsync/tools/bin/ssh.exe
+        search_dirs = [
+            rsync_dir, 
+            os.path.join(rsync_dir, "..", "tools", "bin"),
+            os.path.join(rsync_dir, "..", "lib", "rsync", "tools", "bin"),
+            os.path.join(rsync_dir, "tools", "bin")
+        ]
+        for d in search_dirs:
+            candidate = os.path.join(d, "ssh.exe")
+            if os.path.exists(candidate):
+                # Use normalized Windows path with forward slashes. 
+                # This is more compatible than /c/ style on various Windows rsync ports.
+                clean_path = os.path.normpath(candidate).replace("\\", "/")
+                ssh_cmd_base = '"{}"'.format(clean_path)
+                debuglog(True, "Using bundled SSH for rsync: {}".format(clean_path))
+                break
+    
+    if ssh_cmd_base == "ssh":
+        debuglog(True, "Using system 'ssh' command for rsync.")
+
+    # Helper for path fields inside the -e string. 
+    # Must be absolute for Windows SSH but handle separators correctly.
+    # Build a minimal, robust SSH string for rsync -e
+    # On Windows, within the rsync -e command string, we use Drive:/Path/Style
+    # but wrap them in quotes if they contain spaces or colons.
+    def to_ssh_path(p):
+        if IS_WINDOWS:
+            return os.path.abspath(p).replace("\\", "/")
+        return p
+
+    # Build a minimal, robust SSH string for rsync -e
+    # -T: Disable pseudo-terminal, -q: quiet, -o BatchMode=yes: no password prompt
+    ssh_parts = [
+        ssh_cmd_base,
+        "-T", "-q",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=\"{}\"".format(to_ssh_path(kh_path)),
+        "-p", ssh_port
+    ]
+    if id_file:
+        ssh_parts.extend(["-i", "\"{}\"".format(to_ssh_path(id_file))])
+    
+    ssh_opts_str = " ".join(ssh_parts)
+    
+    # Normalize source path for rsync to avoid "double remote" error on Windows.
+    # We use a RELATIVE path here because relative paths don't have colons,
+    # thus preventing rsync from mistaking the drive letter for a remote hostname.
+    if IS_WINDOWS:
+        try:
+            # Try to get relative path from current working directory
+            src = os.path.relpath(vhost).replace("\\", "/")
+        except ValueError:
+            # Cross-drive case: we use absolute path with forward slashes. 
+            # Note: Native Windows rsync might still struggle here if it sees a colon.
+            src = to_ssh_path(vhost)
+    else:
+        src = vhost
+
+    if os.path.isdir(vhost) and not src.endswith('/'):
+        src += "/"
+    
+    # Build rsync command
+    # -a: archive, -v: verbose, -r: recursive, -t: times, -o: owner, -p: perms, -g: group, -L: follow symlinks
+    # --blocking-io: Essential for Windows SSH pipes.
+    cmd = [host_rsync, "-avrtopg", "-L", "--blocking-io", "--delete", "-e", ssh_opts_str]
+    
+    # Specify remote rsync path as it might not be in default non-interactive PATH.
+    # These MUST come before the source/destination arguments.
+    if os_name == "freebsd":
+        cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
+    elif os_name in ["openindiana", "solaris", "omnios"]:
+        cmd.extend(["--rsync-path", "/usr/bin/rsync"])
+        
+    # Source and Destination come last
+    cmd.extend([src, "{}:{}".format(remote_host, vguest)])
+    
+    debuglog(True, "Full rsync command: {}".format(" ".join(cmd)))
+    
     synced = False
-    for _ in range(10):
-        p_sync = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
-        p_sync.communicate(input=mount_script.encode('utf-8'))
-        if p_sync.returncode == 0:
-            synced = True
-            break
-        log("Rsync sync failed, retrying...")
+    # Attempt sync with retries
+    for i in range(10):
+        try:
+            # On Windows, Popen with explicit wait works best for rsync child processes
+            p = subprocess.Popen(cmd)
+            p.wait()
+            if p.returncode == 0:
+                synced = True
+                break
+        except Exception as e:
+            debuglog(True, "Rsync execution error: {}".format(e))
+            
+        log("Rsync sync failed, retrying ({})...".format(i+1))
         time.sleep(2)
     
     if not synced:
@@ -3822,7 +3936,7 @@ Host host
                         if config['sync'] == 'nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
                         elif config['sync'] == 'rsync':
-                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'])
+                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name)
                         elif config['sync'] == 'scp':
                             sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user)
                         else:
