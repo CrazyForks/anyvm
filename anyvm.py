@@ -80,7 +80,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "solaris": "2.0.0",
     "omnios": "2.0.3",
     "haiku": "0.0.2",
-    "openindiana": "2.0.1"
+    "openindiana": "2.0.2"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
