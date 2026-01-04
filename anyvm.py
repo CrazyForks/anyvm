@@ -660,8 +660,9 @@ function connect() {
                         
                         const setEncodings = new Uint8Array([
                             2, 0,
-                            0, 1,
-                            0, 0, 0, 0
+                            0, 2,
+                            0, 0, 0, 0,
+                            255, 255, 255, 33 // DesktopSize pseudo-encoding (-223)
                         ]);
                         ws.send(setEncodings);
                         
@@ -699,6 +700,11 @@ function connect() {
                         const h = view.getUint16(6);
                         const enc = view.getInt32(8);
                         offset += 12;
+
+                        if (enc === -223) { // VM resolution changed
+                            location.reload();
+                            return;
+                        }
                         
                         // Detect VM software cursor by looking for small updates near host mouse position
                         if (isCheckingCursor && !cursorDetected) {
