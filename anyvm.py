@@ -441,6 +441,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
     </div>
     <div class="toolbar">
         <div class="toolbar-group">
+            <button id="btn-sticky-shift" onclick="toggleSticky('ShiftLeft', 0xffe1, this)" title="Sticky Shift">Shift</button>
             <button id="btn-sticky-ctrl" onclick="toggleSticky('ControlLeft', 0xffe3, this)" title="Sticky Ctrl">Ctrl</button>
             <button id="btn-sticky-alt" onclick="toggleSticky('AltLeft', 0xffe9, this)" title="Sticky Alt">Alt</button>
             <button id="btn-sticky-meta" onclick="toggleSticky('MetaLeft', 0xffeb, this)" title="Sticky Meta">
@@ -920,16 +921,17 @@ function connect() {
 document.addEventListener('keydown', e => sendKey(e, true));
 document.addEventListener('keyup', e => sendKey(e, false));
 
+// Track which keysym was sent for each physical code to ensure consistent keyup
+const pressedKeysyms = {};
+
 function sendKey(e, down) {
     if (!ws) return;
     
-    // Captured keys that we handle via code-to-keysym mapping
     const code = e.code;
     const key = e.key;
 
     // Support Ctrl+V (Windows/Linux) or Cmd+V (Mac) for pasting
     if ((e.ctrlKey || e.metaKey) && (key === 'v' || key === 'V' || code === 'KeyV')) {
-        // We let the 'paste' event handle this to avoid permission prompts where possible
         return;
     }
 
@@ -948,7 +950,6 @@ function sendKey(e, down) {
     }
 
     const keyMap = {
-        // Special keys
         'Backspace': 0xff08, 'Tab': 0xff09, 'Enter': 0xff0d, 'Escape': 0xff1b, 'Delete': 0xffff,
         'Home': 0xff50, 'End': 0xff57, 'PageUp': 0xff55, 'PageDown': 0xff56,
         'ArrowLeft': 0xff51, 'ArrowUp': 0xff52, 'ArrowRight': 0xff53, 'ArrowDown': 0xff54, 'Insert': 0xff63,
@@ -956,39 +957,56 @@ function sendKey(e, down) {
         'F7': 0xffc4, 'F8': 0xffc5, 'F9': 0xffc6, 'F10': 0xffc7, 'F11': 0xffc8, 'F12': 0xffc9,
         'ShiftLeft': 0xffe1, 'ShiftRight': 0xffe2, 'ControlLeft': 0xffe3, 'ControlRight': 0xffe4,
         'AltLeft': 0xffe9, 'AltRight': 0xffea, 'MetaLeft': 0xffeb, 'MetaRight': 0xffec, 'Space': 0x0020,
-        // Map Digit keys to their base ASCII (prevents Shift+1 sending '!')
-        'Digit1': 0x31, 'Digit2': 0x32, 'Digit3': 0x33, 'Digit4': 0x34, 'Digit5': 0x35,
-        'Digit6': 0x36, 'Digit7': 0x37, 'Digit8': 0x38, 'Digit9': 0x39, 'Digit0': 0x30,
-        // Map alphabet keys
-        'KeyA': 0x61, 'KeyB': 0x62, 'KeyC': 0x63, 'KeyD': 0x64, 'KeyE': 0x65, 'KeyF': 0x66, 'KeyG': 0x67,
-        'KeyH': 0x68, 'KeyI': 0x69, 'KeyJ': 0x6a, 'KeyK': 0x6b, 'KeyL': 0x6c, 'KeyM': 0x6d, 'KeyN': 0x6e,
-        'KeyO': 0x6f, 'KeyP': 0x70, 'KeyQ': 0x71, 'KeyR': 0x72, 'KeyS': 0x73, 'KeyT': 0x74, 'KeyU': 0x75,
-        'KeyV': 0x76, 'KeyW': 0x77, 'KeyX': 0x78, 'KeyY': 0x79, 'KeyZ': 0x7a,
-        // Punctuations (using e.code ensures we send the base keysym regardless of Shift)
-        'Semicolon': 0x3b, 'Equal': 0x3d, 'Comma': 0x2c, 'Minus': 0x2d, 'Period': 0x2e, 'Slash': 0x2f,
-        'Backquote': 0x60, 'BracketLeft': 0x5b, 'Backslash': 0x5c, 'BracketRight': 0x5d, 'Quote': 0x27
+        'Shift': 0xffe1, 'Control': 0xffe3, 'Alt': 0xffe9, 'Meta': 0xffeb
     };
 
     let keysym = 0;
-    if (keyMap[code]) {
-        keysym = keyMap[code];
-    } else if (keyMap[key]) {
-        keysym = keyMap[key];
-    } else if (key.length === 1) {
-        keysym = key.charCodeAt(0);
+    if (down) {
+        // Prioritize specific control keys
+        if (keyMap[code]) {
+            keysym = keyMap[code];
+        } else if (keyMap[key]) {
+            keysym = keyMap[key];
+        } else if (key.length === 1) {
+            let char = key;
+            const softShift = stickyStates['ShiftLeft'] || stickyStates['ShiftRight'];
+            if (softShift && !e.shiftKey) {
+                // If software Shift is on but physical is not, escalate letters to uppercase.
+                // This is necessary because VNC servers often interpret keysyms literally.
+                if (char >= 'a' && char <= 'z') char = char.toUpperCase();
+                else if (char >= 'A' && char <= 'Z') char = char.toLowerCase(); // Caps lock inverse? No, stick to shift logic.
+            }
+            
+            keysym = char.charCodeAt(0);
+            // If Ctrl or Alt is down, we want the base keysym (e.g. 'c' for Ctrl+C)
+            if ((e.ctrlKey || e.altKey || e.metaKey) && keysym < 32) {
+                if (keysym >= 1 && keysym <= 26) keysym += 96;
+            }
+        }
+        
+        if (keysym) {
+            pressedKeysyms[code] = keysym;
+        }
     } else {
-        return;
+        keysym = pressedKeysyms[code];
+        delete pressedKeysyms[code];
+        
+        // Fallback for keyup if keydown was missed
+        if (!keysym) {
+            if (keyMap[code]) keysym = keyMap[code];
+            else if (keyMap[key]) keysym = keyMap[key];
+            else if (key.length === 1) keysym = key.charCodeAt(0);
+        }
     }
+
+    if (!keysym) return;
 
     e.preventDefault();
     
     try {
         ws.send(new Uint8Array([
             4, down ? 1 : 0, 0, 0,
-            (keysym >> 24) & 0xff,
-            (keysym >> 16) & 0xff,
-            (keysym >> 8) & 0xff,
-            keysym & 0xff
+            (keysym >> 24) & 0xff, (keysym >> 16) & 0xff, (keysym >> 8) & 0xff, keysym & 0xff
         ]));
     } catch (err) {
         console.error("Failed to send key:", err);
