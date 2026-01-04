@@ -2201,33 +2201,55 @@ fi
         log("Warning: Failed to mount shared folder via NFS.")
 
 def sync_rsync(ssh_cmd, vhost, vguest, os_name):
-    """Syncs a host directory to the guest using rsync (Pull mode)."""
+    """Syncs a host directory to the guest using rsync (Push mode)."""
     host_rsync = find_rsync()
-    if IS_WINDOWS and not host_rsync:
+    if not host_rsync:
         log("Warning: rsync not found on host. Install rsync to use rsync sync mode.")
         return
 
-    log("Syncing via rsync: {} -> {}".format(vhost, vguest))
-    rsync_path_arg = '--rsync-path="{}"'.format(host_rsync.replace("\\", "/"))
-    
-    mount_script = """
-mkdir -p "{vguest}"
-if command -v rsync >/dev/null 2>&1; then
-  rsync -avrtopg --delete {rsync_path} host:"{vhost}/" "{vguest}/"
-else
-  echo "Error: rsync not found in guest."
-  exit 1
-fi
-""".format(vguest=vguest, vhost=vhost, rsync_path=rsync_path_arg)
+    # Ensure destination directory exists in guest
+    try:
+        # Use a simpler check for directory existence and creation
+        p = subprocess.Popen(ssh_cmd + ["mkdir -p \"{}\"".format(vguest)], stdout=DEVNULL, stderr=DEVNULL)
+        p.wait()
+    except Exception:
+        pass
 
+    log("Syncing via rsync: {} -> {}".format(vhost, vguest))
+    
+    if not ssh_cmd or len(ssh_cmd) < 2:
+        return
+
+    # Extract destination and SSH options
+    remote_host = ssh_cmd[-1]
+    ssh_options = ssh_cmd[:-1]
+    
+    # Build the SSH command string for rsync -e
+    # Note: On Windows, shlex.quote may use single quotes which some rsync versions don't like,
+    # but for Git Bash rsync it's typically fine.
+    ssh_opts_str = " ".join(shlex.quote(x) for x in ssh_options)
+    
+    # Normalize source path for rsync
+    src = vhost.replace("\\", "/")
+    if os.path.isdir(vhost) and not src.endswith('/'):
+        src += "/"
+    
+    # Build rsync command
+    # -a: archive, -v: verbose, -z: compress, -r: recursive, -t: times, -o: owner, -p: perms, -g: group
+    # We use -L to follow symlinks on the host.
+    cmd = [host_rsync, "-avrtopg", "-L", "--delete", "-e", ssh_opts_str, src, "{}:{}".format(remote_host, vguest)]
+    
     synced = False
-    for _ in range(10):
-        p_sync = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
-        p_sync.communicate(input=mount_script.encode('utf-8'))
-        if p_sync.returncode == 0:
-            synced = True
-            break
-        log("Rsync sync failed, retrying...")
+    # Attempt sync with retries
+    for i in range(10):
+        try:
+            if subprocess.call(cmd) == 0:
+                synced = True
+                break
+        except Exception as e:
+            debuglog(True, "Rsync error: {}".format(e))
+            
+        log("Rsync sync failed, retrying ({})...".format(i+1))
         time.sleep(2)
     
     if not synced:
