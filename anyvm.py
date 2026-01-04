@@ -2314,14 +2314,18 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name):
     # Build rsync command
     # -a: archive, -v: verbose, -r: recursive, -t: times, -o: owner, -p: perms, -g: group, -L: follow symlinks
     # --blocking-io: Essential for Windows SSH pipes.
-    cmd = [host_rsync, "-avrtopg", "-L", "--blocking-io", "--delete", "-e", ssh_opts_str, src, "{}:{}".format(remote_host, vguest)]
+    cmd = [host_rsync, "-avrtopg", "-L", "--blocking-io", "--delete", "-e", ssh_opts_str]
     
-    # Specify remote rsync path as it might not be in default non-interactive PATH
+    # Specify remote rsync path as it might not be in default non-interactive PATH.
+    # These MUST come before the source/destination arguments.
     if os_name == "freebsd":
         cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])
         
+    # Source and Destination come last
+    cmd.extend([src, "{}:{}".format(remote_host, vguest)])
+    
     debuglog(True, "Full rsync command: {}".format(" ".join(cmd)))
     
     synced = False
