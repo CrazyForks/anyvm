@@ -44,6 +44,7 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
+      sleep: "sleep 5;"
       
       
       

@@ -37,6 +37,11 @@ on:
         required: false
         type: string
         default: "/mnt/host"
+      sleep:
+        description: "sleep for  test"
+        required: false
+        type: string
+        default: ""
 
 
 
@@ -88,18 +93,18 @@ jobs:
         python anyvm.py --debug --data-dir ../test_output --os "${{ inputs.os }}" --release "${{ inputs.release }}" --arch "${{ inputs.arch }}" -d -v "${mountdir}:${{ inputs.vmpath }}" --ssh-port 10022 --ssh-name "testname" -p 20022:22 --nc "${{ inputs.nc }}" --sync "${{ inputs.sync }}"
         # We use the ssh port as an alias to the vm, so we can use 'ssh $port' to login
         echo "===============test 1"
-        sleep 2
+        ${{ inputs.sleep }}
         ssh -v 10022 ls -lah ${{ inputs.vmpath }}
         echo "===============test 2"
-        sleep 2
+        ${{ inputs.sleep }}
         ssh -v 10022 ls ${{ inputs.vmpath }} | grep justcheck.txt
-        sleep 2
+        ${{ inputs.sleep }}
         ssh -v 10022 ls -lah ${{ inputs.vmpath }} | grep '.dotfile'
         echo "===============test 3"
-        sleep 2
+        ${{ inputs.sleep }}
         ssh -v testname ls ${{ inputs.vmpath }} | grep justcheck.txt
         echo "===============test 4"
-        sleep 2
+        ${{ inputs.sleep }}
         ssh -v -p 20022 -o StrictHostKeyChecking=accept-new ${{ inputs.user }}@localhost ls ${{ inputs.vmpath }} | grep justcheck.txt
     
 
