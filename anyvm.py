@@ -79,7 +79,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
     "omnios": "2.0.3",
-    "haiku": "0.0.2",
+    "haiku": "2.0.0",
     "openindiana": "2.0.3"
 }
 
