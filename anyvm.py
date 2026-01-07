@@ -2852,6 +2852,8 @@ def main():
     }
 
     ssh_passthrough = []
+    cpu_specified = False
+
 
     script_home = os.path.dirname(os.path.abspath(__file__))
     working_dir = os.path.join(script_home, "output")
@@ -2888,6 +2890,7 @@ def main():
             i += 1
         elif arg == "--cpu":
             config['cpu'] = args[i+1]
+            cpu_specified = True
             i += 1
         elif arg == "--cpu-type":
             config['cputype'] = args[i+1]
@@ -3437,6 +3440,41 @@ def main():
                   serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
                   debuglog(config['debug'], "Switched serial to TCP for VNC Console: " + serial_arg)
     
+    # Acceleration determination
+    accel = "tcg"
+    if config['arch'] == "aarch64":
+        if host_arch == "aarch64":
+            if os.path.exists("/dev/kvm"):
+                if os.access("/dev/kvm", os.R_OK | os.W_OK):
+                    accel = "kvm"
+                else:
+                    log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
+            elif platform.system() == "Darwin" and hvf_supported():
+                accel = "hvf"
+    elif config['arch'] == "riscv64":
+        accel = "tcg"
+    else: # x86_64
+        if host_arch in ["x86_64", "amd64"]:
+            if IS_WINDOWS:
+                if config['whpx']:
+                    accel = "whpx"
+            elif os.path.exists("/dev/kvm"):
+                if os.access("/dev/kvm", os.R_OK | os.W_OK):
+                    accel = "kvm"
+                else:
+                    log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
+            elif platform.system() == "Darwin":
+                accel = "hvf"
+
+    # CPU optimization for TCG
+    if not cpu_specified and accel == "tcg":
+        try:
+            if int(config['cpu']) > 2:
+                debuglog(config['debug'], "TCG mode detected and no CPU count specified, limiting to 2 cores for performance optimization.")
+                config['cpu'] = "2"
+        except (ValueError, TypeError):
+            pass
+
     # Disk type selection
     if config['disktype']:
         disk_if = config['disktype']
@@ -3536,21 +3574,6 @@ def main():
         if not os.path.exists(vars_path):
             create_sized_file(vars_path, 64)
 
-        accel = "tcg"
-        if host_arch == "aarch64":
-            if os.path.exists("/dev/kvm"):
-                if os.access("/dev/kvm", os.R_OK | os.W_OK):
-                    accel = "kvm"
-                else:
-                    log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
-            elif platform.system() == "Darwin":
-                # On Apple Silicon, HVF is available if we're on aarch64 host AND the system supports it
-                if host_arch == "aarch64" and hvf_supported():
-                     accel = "hvf"
-                else:
-                     # Intel Mac trying to run aarch64 -> TCG, or HVF not supported
-                     accel = "tcg"
-        
         if config['cputype']:
             cpu = config['cputype']
         else:
@@ -3605,19 +3628,6 @@ def main():
         ])
     else:
         # x86_64
-        accel = "tcg"
-        if host_arch in ["x86_64", "amd64"]:
-             if IS_WINDOWS:
-                 if config['whpx']:
-                     accel = "whpx"
-             elif os.path.exists("/dev/kvm"):
-                 if os.access("/dev/kvm", os.R_OK | os.W_OK):
-                     accel = "kvm"
-                 else:
-                     log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
-             elif platform.system() == "Darwin":
-                 accel = "hvf"
-        
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
         
         if accel in ["kvm", "whpx", "hvf"]:
