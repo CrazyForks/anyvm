@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import struct
+import collections
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -170,6 +171,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
 <head>
     <meta charset="utf-8">
     <title>AnyVM - VNC Viewer</title>
+    <placeholder_scripts>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { 
@@ -182,6 +184,8 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             flex-direction: column;
             justify-content: center;
             align-items: center;
+            color: #f1f5f9;
+            direction: ltr;
         }
         #container {
             position: relative;
@@ -190,7 +194,21 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             overflow: hidden;
             background: #000;
             border: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            width: fit-content;
+            height: fit-content;
         }
+        #terminal-container {
+            position: absolute;
+            top: 20px;
+            bottom: 20px;
+            left: 15px;
+            right: 15px;
+            display: none;
+            background: transparent;
+        }
+        .xterm-rows { font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace !important; }
         #status {
             color: #94a3b8;
             font-size: 10px;
@@ -421,12 +439,13 @@ VNC_WEB_HTML = """<!DOCTYPE html>
 <body>
     <div id="container">
         <canvas id="screen" tabindex="0"></canvas>
+        <div id="terminal-container"></div>
     </div>
     <div id="status">Connecting...</div>
     <div class="toolbar top">
         <div class="toolbar-group" style="display: none;" id="status-container">
         </div>
-        <div class="toolbar-group">
+        <div class="toolbar-group" id="vnc-only-fkeys">
             <button id="btn-f1" onclick="sendCtrlAltF(1)" title="Ctrl+Alt+F1">Ctrl+Alt-F1</button>
             <button id="btn-f2" onclick="sendCtrlAltF(2)" title="Ctrl+Alt+F2">Ctrl+Alt-F2</button>
             <button id="btn-f3" onclick="sendCtrlAltF(3)" title="Ctrl+Alt+F3">Ctrl+Alt-F3</button>
@@ -434,13 +453,18 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         </div>
         <div class="toolbar-group" style="border-right: none; padding-right: 0; margin-right: 0;">
             <div id="stats">
-                <div class="stat-pill"><span class="stat-label">FPS</span><span id="fps-val" class="stat-value">0</span></div>
                 <div class="stat-pill"><span class="stat-label">LAT</span><span id="lat-val" class="stat-value">0</span><span class="stat-label">MS</span></div>
+                <div class="stat-pill"><span class="stat-label">FPS</span><span id="fps-val" class="stat-value">0</span></div>
+            </div>
+            <!-- Timestamp Toggle (Console Mode Only) -->
+            <div id="timestamp-toggle" style="display: none; align-items: center; gap: 6px; margin-left: 10px;">
+                <input type="checkbox" id="cb-timestamp" onchange="toggleTimestamp(this)" style="cursor: pointer;">
+                <label for="cb-timestamp" style="font-size: 11px; cursor: pointer; user-select: none;">Timestamp</label>
             </div>
         </div>
     </div>
     <div class="toolbar">
-        <div class="toolbar-group">
+        <div class="toolbar-group" id="vnc-only-sticky">
             <button id="btn-sticky-shift" onclick="toggleSticky('ShiftLeft', 0xffe1, this)" title="Sticky Shift">Shift</button>
             <button id="btn-sticky-ctrl" onclick="toggleSticky('ControlLeft', 0xffe3, this)" title="Sticky Ctrl">Ctrl</button>
             <button id="btn-sticky-alt" onclick="toggleSticky('AltLeft', 0xffe9, this)" title="Sticky Alt">Alt</button>
@@ -499,6 +523,9 @@ let fbWidth = 800, fbHeight = 600;
 let pendingUpdate = false;
 let updateInterval = null;
 
+// Global UI / Terminal State
+let term = null;
+let fitAddon = null;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let lastLatency = 0;
@@ -506,7 +533,103 @@ let requestStartTime = 0;
 let reconnectTimer = null;
 let countdownInterval = null;
 let isPasting = false;
+let needsTimestamp = true;
+let showTimestamp = false; 
 let audioContext = null;
+
+if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
+    canvas.style.display = 'none';
+    const termContainer = document.getElementById('terminal-container');
+    const mainContainer = document.getElementById('container');
+    
+    termContainer.style.display = 'block';
+    
+    // Initial setup will be refined by handleResize()
+    mainContainer.style.background = '#000';
+    mainContainer.style.overflow = 'hidden';
+    mainContainer.style.position = 'relative';
+    
+    // Layout is managed by handleResize and CSS classes
+    
+    // Show timestamp toggle in console mode and restore preference
+    const tsToggle = document.getElementById('timestamp-toggle');
+    const cbTimestamp = document.getElementById('cb-timestamp');
+    if (tsToggle && typeof showTimestamp !== 'undefined') {
+        tsToggle.style.display = 'flex';
+        // Restore from localStorage
+        const stored = localStorage.getItem('anyvm_show_timestamp');
+        if (stored !== null) {
+            showTimestamp = (stored === 'true');
+            if (cbTimestamp) cbTimestamp.checked = showTimestamp;
+        }
+    }
+
+    const vncSticky = document.getElementById('vnc-only-sticky');
+    if (vncSticky) vncSticky.style.display = 'none';
+    const vncFkeys = document.getElementById('vnc-only-fkeys');
+    if (vncFkeys) vncFkeys.style.display = 'none';
+
+    window.initTerminal = function() {
+        if (term) return;
+        try {
+            if (typeof Terminal !== 'undefined') {
+                term = new Terminal({
+                    cursorBlink: true,
+                    theme: {
+                        background: '#000000',
+                        foreground: '#f1f5f9',
+                        cursor: '#3b82f6',
+                        selectionBackground: 'rgba(59, 130, 246, 0.3)',
+                        black: '#000000', // Ensure ANSI black matches terminal background
+                        brightBlack: '#444444',
+                    },
+                    fontSize: 14,
+                    fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace"
+                });
+                fitAddon = new FitAddon.FitAddon();
+                term.loadAddon(fitAddon);
+                term.open(termContainer);
+                
+                // Delay fit and focus to ensure DOM is ready and dimensions are accurate
+                setTimeout(() => {
+                    if (fitAddon) fitAddon.fit();
+                    term.focus();
+                }, 100);
+
+                // Add resize listener for responsive layout
+                window.addEventListener('resize', () => {
+                    if (fitAddon) fitAddon.fit();
+                });
+                
+                // Delay binding onData to prevent terminal response loops (like CPR)
+                // when processing historical buffer on page load/refresh.
+                setTimeout(() => {
+                    term.onData(data => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(new TextEncoder().encode(data));
+                        }
+                    });
+                }, 1000);
+            } else {
+                termContainer.innerHTML = '<div style="color: #f87171; padding: 20px; font-family: sans-serif;">Error: xterm.js not loaded. Serial output will appear as plain text below.</div><pre id="fallback-term" style="color: #f1f5f9; padding: 20px; white-space: pre-wrap; font-family: monospace; height: 100%; overflow: auto;"></pre>';
+            }
+        } catch (e) { console.error(e); }
+    };
+}
+
+
+function toggleTimestamp(cb) {
+    showTimestamp = cb.checked;
+    localStorage.setItem('anyvm_show_timestamp', showTimestamp);
+    location.reload();
+}
+
+function getTimeStr() {
+    if (!showTimestamp) return "";
+    const now = new Date();
+    const f = (n) => n.toString().padStart(2, '0');
+    return `[${f(now.getHours())}:${f(now.getMinutes())}:${f(now.getSeconds())}.${now.getMilliseconds().toString().padStart(3, '0')}] `;
+}
 let audioNextTime = 0;
 let audioEnabled = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -525,11 +648,18 @@ function connect() {
     let buffer = new Uint8Array(0);
     
     ws.onopen = () => {
-        if (canvas.classList.contains('disconnected')) {
+        if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
+            window.initTerminal();
+            connected = true;
+            setTimeout(() => { if (term) term.focus(); }, 200);
+        } else {
+            canvas.focus();
+        }
+        if (!IS_CONSOLE_VNC && canvas.classList.contains('disconnected')) {
             location.reload();
             return;
         }
-        status.textContent = 'Connected, negotiating...';
+        status.textContent = IS_CONSOLE_VNC ? 'Connected to Serial' : 'Connected, negotiating...';
         status.classList.remove('error', 'reconnecting');
         const statusContainer = document.getElementById('status-container');
         if (statusContainer) {
@@ -589,6 +719,40 @@ function connect() {
     
     ws.onmessage = (e) => {
         const data = new Uint8Array(e.data);
+        if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
+            if (term) {
+                try {
+                    const text = new TextDecoder().decode(data);
+                    const parts = text.split(/(\\r?\\n)/);
+                    
+                    for (const part of parts) {
+                        if (part === '\\n' || part === '\\r\\n') {
+                            if (needsTimestamp) {
+                                 term.write(getTimeStr());
+                                 needsTimestamp = false;
+                            }
+                            term.write(part);
+                            needsTimestamp = true;
+                        } else if (part.length > 0) {
+                            if (needsTimestamp) {
+                                term.write(getTimeStr() + part);
+                                needsTimestamp = false;
+                            } else {
+                                term.write(part);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("Decoder error:", e);
+                    term.write(data); // Fallback: write raw data if decode fails
+                }
+                term.scrollToBottom();
+            } else {
+                const fb = document.getElementById('fallback-term');
+                if (fb) fb.textContent += new TextDecoder().decode(data);
+            }
+            return;
+        }
         buffer = concatBuffers(buffer, data);
         processBuffer();
     };
@@ -926,6 +1090,7 @@ const pressedKeysyms = {};
 
 function sendKey(e, down) {
     if (!ws) return;
+    if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) return;
     
     const code = e.code;
     const key = e.key;
@@ -1063,27 +1228,72 @@ function toggleFullscreen() {
     if (document.fullscreenElement) {
         document.exitFullscreen();
     } else {
-        canvas.requestFullscreen();
+        if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
+            document.getElementById('terminal-container').requestFullscreen();
+        } else {
+            canvas.requestFullscreen();
+        }
     }
 }
 
+function updateToolbars() {
+    const container = document.getElementById('container');
+    if (!container) return;
+    
+    const rect = container.getBoundingClientRect();
+    const threshold = 48; // Compact threshold for reserved space (100/2)
+
+    document.querySelectorAll('.toolbar').forEach(tb => {
+        const isTop = tb.classList.contains('top');
+        const space = isTop ? rect.top : (window.innerHeight - rect.bottom);
+        
+        if (space < threshold) {
+            tb.classList.add('auto-hide');
+        } else {
+            tb.classList.remove('auto-hide');
+        }
+    });
+}
+
 function handleResize() {
-    // Always force disable smoothing for maximum sharpness
+    if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
+        const container = document.getElementById('container');
+        if (container && !document.fullscreenElement) {
+            const vw = window.innerWidth - 80;
+            const vh = window.innerHeight - 160;
+            const ratio = 1280 / 800;
+            
+            let w = 1280;
+            let h = 800;
+            
+            if (w > vw) { w = vw; h = w / ratio; }
+            if (h > vh) { h = vh; w = h * ratio; }
+            
+            container.style.width = Math.floor(w) + 'px';
+            container.style.height = Math.floor(h) + 'px';
+        } else if (container && document.fullscreenElement) {
+            container.style.width = '100vw';
+            container.style.height = '100vh';
+        }
+        
+        // Use a small timeout to ensure absolute child dimensions are recalculated by the browser
+        setTimeout(() => {
+            if (fitAddon) fitAddon.fit();
+            updateToolbars();
+        }, 50);
+        return;
+    }
+    
+    // VNC Mode resize
     ctx.imageSmoothingEnabled = false;
     ctx.webkitImageSmoothingEnabled = false;
     ctx.mozImageSmoothingEnabled = false;
 
     if (document.fullscreenElement === canvas) {
         const dpr = window.devicePixelRatio || 1;
-        // Calculate based on PHYSICAL pixels to handle multi-monitor high-DPI
         const physicalWidth = window.innerWidth * dpr;
         const physicalHeight = window.innerHeight * dpr;
-        
-        const scaleX = Math.floor(physicalWidth / fbWidth);
-        const scaleY = Math.floor(physicalHeight / fbHeight);
-        const scale = Math.max(1, Math.min(scaleX, scaleY));
-        
-        // Map physical dimensions back to CSS pixels
+        const scale = Math.max(1, Math.min(Math.floor(physicalWidth / fbWidth), Math.floor(physicalHeight / fbHeight)));
         canvas.style.width = (fbWidth * scale / dpr) + "px";
         canvas.style.height = (fbHeight * scale / dpr) + "px";
     } else {
@@ -1091,38 +1301,16 @@ function handleResize() {
         canvas.style.height = "";
     }
 
-    // Smart Toolbar visibility using ResizeObserver for maximum reliability
-    const updateToolbars = () => {
-        const toolbars = document.querySelectorAll('.toolbar');
-        const container = document.getElementById('container');
-        if (!container) return;
-        
-        const rect = container.getBoundingClientRect();
-        const threshold = 48; // Compact threshold for reserved space (100/2)
-
-        toolbars.forEach(tb => {
-            const isTop = tb.classList.contains('top');
-            const space = isTop ? rect.top : (window.innerHeight - rect.bottom);
-            
-            if (space < threshold) {
-                tb.classList.add('auto-hide');
-            } else {
-                tb.classList.remove('auto-hide');
-            }
+    // Use ResizeObserver for reliability if not already set
+    if (!window.toolbarObserver) {
+        window.toolbarObserver = new ResizeObserver(() => {
+            updateToolbars();
+            setTimeout(updateToolbars, 100);
         });
-    };
-
-    // Use ResizeObserver to detect any change in container or layout
-    if (window.toolbarObserver) window.toolbarObserver.disconnect();
-    window.toolbarObserver = new ResizeObserver(() => {
-        updateToolbars();
-        // Secondary check to catch delayed browser layout shifts
-        setTimeout(updateToolbars, 100);
-    });
-    window.toolbarObserver.observe(document.body);
-    window.toolbarObserver.observe(document.getElementById('container'));
+        window.toolbarObserver.observe(document.body);
+        window.toolbarObserver.observe(document.getElementById('container'));
+    }
     
-    // Immediate check
     updateToolbars();
 }
 
@@ -1149,6 +1337,10 @@ async function pasteText() {
 
 async function doPaste(text) {
     if (!text || !ws) return;
+    if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
+        ws.send(new TextEncoder().encode(text));
+        return;
+    }
     // Release any existing modifiers first
     [0xffe1, 0xffe2, 0xffe3, 0xffe4, 0xffe9, 0xffea].forEach(k => {
         ws.send(new Uint8Array([4, 0, 0, 0, (k>>24)&0xff, (k>>16)&0xff, (k>>8)&0xff, k&0xff]));
@@ -1316,17 +1508,34 @@ if (!AUDIO_ENABLED) {
 }
 connect();
 
-// Focus management: blur buttons after click and focus canvas when clicking on it
+// Focus management: ensure keyboard input always goes to terminal or canvas
 document.addEventListener('mousedown', function(e) {
-    if (e.target.tagName === 'BUTTON' || e.target.closest('button')) {
-        // Let the click happen, then blur
-        setTimeout(() => {
-            if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
-                document.activeElement.blur();
-            }
-        }, 100);
+    const isInteractive = e.target.closest('input, label, button');
+    
+    if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC && term) {
+        // In serial mode, always refocus terminal unless clicking the checkbox
+        if (!e.target.closest('#timestamp-toggle')) {
+            setTimeout(() => term.focus(), 10);
+        }
+    } else {
+        // In VNC mode
+        if (e.target.id === 'screen') {
+            canvas.focus();
+        } else if (isInteractive) {
+            // Briefly allow button/input interaction, then return focus to canvas
+            setTimeout(() => {
+                const active = document.activeElement;
+                if (active && (active.tagName === 'BUTTON' || (active.tagName === 'INPUT' && active.id !== 'cb-timestamp'))) {
+                    active.blur();
+                    canvas.focus();
+                }
+            }, 100);
+        }
     }
 });
+
+// Initialize toolbars and layout
+handleResize();
 </script>
 </body>
 </html>
@@ -1335,7 +1544,7 @@ document.addEventListener('mousedown', function(e) {
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
@@ -1344,6 +1553,10 @@ class VNCWebProxy:
         self.audio_enabled = audio_enabled
         self.qmon_port = qmon_port
         self.error_log_path = error_log_path
+        self.is_console_vnc = is_console_vnc
+        self.clients = set()
+        self.serial_buffer = collections.deque(maxlen=1024 * 100) # 100KB binary buffer (optimized for refresh speed)
+        self.serial_writer = None
     
     async def handle_client(self, reader, writer):
         try:
@@ -1379,8 +1592,20 @@ class VNCWebProxy:
         if self.vm_info:
             title = "AnyVM - {} - VNC Viewer".format(self.vm_info)
         
+        terminal_scripts = ""
+        if self.is_console_vnc:
+            terminal_scripts = """
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+"""
         html_content = VNC_WEB_HTML.replace("<title>AnyVM - VNC Viewer</title>", "<title>{}</title>".format(title))
-        audio_status_js = "<script>var AUDIO_ENABLED = {};</script>".format("true" if self.audio_enabled else "false")
+        html_content = html_content.replace("<placeholder_scripts>", terminal_scripts)
+        
+        audio_status_js = "<script>var AUDIO_ENABLED = {}; var IS_CONSOLE_VNC = {};</script>".format(
+            "true" if self.audio_enabled else "false",
+            "true" if self.is_console_vnc else "false"
+        )
         html_content = html_content.replace("<head>", "<head>" + audio_status_js)
         
         body = html_content.encode('utf-8')
@@ -1409,11 +1634,56 @@ class VNCWebProxy:
         )
         writer.write(response.encode())
         await writer.drain()
-        
-        try:
-            vnc_reader, vnc_writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
-        except:
+
+        if self.is_console_vnc:
+            # Track client queue for broadcasting
+            client_queue = asyncio.Queue()
+            self.clients.add(client_queue)
+            
+            # Send initial historical buffer
+            if self.serial_buffer:
+                await self.send_ws_frame(writer, b"".join(self.serial_buffer))
+            
+            async def ws_to_serial_bridge():
+                try:
+                    while True:
+                        frame = await self.read_ws_frame(reader)
+                        if frame is None: break
+                        
+                        if (len(frame) >= 3 and frame[0] == 255 and frame[1] == 2):
+                            operation = frame[2]
+                            if self.qmon_port:
+                                cmd = "system_reset" if operation == 1 else "system_powerdown"
+                                asyncio.create_task(self.send_monitor_command(cmd))
+                            continue
+
+                        if self.serial_writer:
+                            self.serial_writer.write(frame)
+                            await self.serial_writer.drain()
+                except: pass
+            
+            async def serial_out_to_ws_bridge():
+                try:
+                    while True:
+                        data = await client_queue.get()
+                        await self.send_ws_frame(writer, data)
+                except: pass
+            
+            try:
+                await asyncio.gather(ws_to_serial_bridge(), serial_out_to_ws_bridge())
+            finally:
+                self.clients.remove(client_queue)
             return
+
+        # Regular VNC logic below
+        vnc_reader, vnc_writer = None, None
+        for i in range(10):
+            try:
+                vnc_reader, vnc_writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
+                break
+            except:
+                if i == 9: return
+                await asyncio.sleep(0.5)
         async def ws_to_vnc():
             try:
                 while True:
@@ -1530,23 +1800,61 @@ class VNCWebProxy:
                 except:
                     pass
             pass
+    async def serial_worker(self):
+        """Persistent serial bridge to collect output and broadcast to clients."""
+        while True:
+            writer = None
+            try:
+                reader, writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
+                self.serial_writer = writer
+                if self.error_log_path:
+                    try:
+                        with open(self.error_log_path, 'a') as f:
+                            f.write("[SerialWorker] Connected to QEMU serial port.\n")
+                    except: pass
+                
+                while True:
+                    data = await reader.read(65536)
+                    if not data: break
+                    self.serial_buffer.append(data)
+                    # Broadcast to all connected clients
+                    for q in list(self.clients):
+                        try:
+                            q.put_nowait(data)
+                        except asyncio.QueueFull:
+                            pass # Or handle accordingly
+                
+            except Exception:
+                pass
+            finally:
+                self.serial_writer = None
+                if writer:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except: pass
+                await asyncio.sleep(1)
 
     async def run(self):
+        # Start serial worker if in console mode
+        if self.is_console_vnc:
+            asyncio.create_task(self.serial_worker())
+            
         server = await asyncio.start_server(self.handle_client, '0.0.0.0', self.web_port)
         asyncio.create_task(self.monitor_qemu())
         async with server: 
             await server.serve_forever()
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None):
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False):
     if error_log_path:
         try:
             with open(error_log_path, 'a') as f:
                 t = time.time()
                 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
-                f.write("[{}] [VNCProxy] Proxy starting. VNC: {}, Web: {}, QEMU PID: {}, Monitor Port: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port))
+                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc))
         except:
             pass
-    proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path)
+    proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc)
     asyncio.run(proxy.run())
 
 def fatal(msg):
@@ -2493,7 +2801,8 @@ def main():
             audio_enabled = sys.argv[6] == '1' if len(sys.argv) > 6 else False
             qmon_port = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
             error_log_path = sys.argv[8] if len(sys.argv) > 8 else None
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path)
+            is_console_vnc = sys.argv[9] == '1' if len(sys.argv) > 9 else False
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc)
         except Exception as e:
             # If we have an error log path, try to write to it even if startup fails
             try:
@@ -2655,6 +2964,8 @@ def main():
     if config['debug']:
         debuglog(True, "Debug logging enabled")
 
+    is_vnc_console = (config.get('vnc') == "console")
+
     if not config['os']:
         print_usage()
         fatal("Missing required argument: --os")
@@ -2702,6 +3013,7 @@ def main():
         config['arch'] = ""
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
+
 
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
@@ -3073,7 +3385,7 @@ def main():
     serial_chardev_def = None
     serial_log_file = None
 
-    if config['console']:
+    if config['console'] and not is_vnc_console:
         serial_arg = "mon:stdio"
     else:
         if not config['serialport']:
@@ -3109,6 +3421,21 @@ def main():
     
     if not qemu_bin:
         fatal("QEMU binary '{}' not found. Please install QEMU or check PATH.".format(bin_name))
+
+    # Late detection of VNC Console requirement based on actual binary
+    # If we are running a non-x86_64 QEMU (e.g. aarch64, riscv), default to VNC console
+    if "x86_64" not in bin_name:
+         if config.get('vnc') != 'off' and not config.get('vnc') and not is_vnc_console:
+             debuglog(config['debug'], "Auto-enabling VNC Console for non-x86 arch ({})".format(bin_name))
+             config['vnc'] = 'console'
+             is_vnc_console = True
+             
+             # If we previously defaulted to stdio, we must switch to TCP serial
+             if serial_arg == "mon:stdio":
+                  if not config['serialport']:
+                       config['serialport'] = str(get_free_port(start=7000, end=9000))
+                  serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
+                  debuglog(config['debug'], "Switched serial to TCP for VNC Console: " + serial_arg)
     
     # Disk type selection
     if config['disktype']:
@@ -3256,7 +3583,9 @@ def main():
                 args_qemu.extend(["-global", "virtio-gpu-pci.xres={}".format(res_parts[0])])
                 args_qemu.extend(["-global", "virtio-gpu-pci.yres={}".format(res_parts[1])])
     elif config['arch'] == "riscv64":
-        machine_opts = "virt,accel=tcg,graphics=off,usb=on,acpi=off"
+        machine_opts = "virt,accel=tcg,usb=on,acpi=off"
+        if not is_vnc_console:
+             machine_opts += ",graphics=off"
         cpu_opts = "rv64"
         
         args_qemu.extend([
@@ -3376,15 +3705,15 @@ def main():
     web_port = None
     if config['vnc'] != "off":
         try:
-            start_disp = int(config['vnc']) if config['vnc'] else 0
+            start_disp = int(config['vnc']) if (config['vnc'] and not is_vnc_console) else 0
         except ValueError:
             start_disp = 0
         port = get_free_port(start=5900 + start_disp, end=5900 + 100)
         if port is None:
             fatal("No available VNC display ports")
         disp = port - 5900
-        # Add audio support if the vnc driver is available
-        if check_qemu_audio_backend(qemu_bin, "vnc"):
+        # Add audio support if the vnc driver is available (and not in console-only mode)
+        if not is_vnc_console and check_qemu_audio_backend(qemu_bin, "vnc"):
             if config['arch'] == "aarch64":
                  # Use usb-audio on aarch64 to avoid intel-hda driver issues
                  args_qemu.extend(["-device", "usb-audio,audiodev=vnc_audio"])
@@ -3398,10 +3727,11 @@ def main():
             args_qemu.append("vnc={}:{}".format(addr, disp))
 
         # Use appropriate input devices for better VNC support
-        if config['arch'] == "aarch64":
-            args_qemu.extend(["-device", "usb-kbd", "-device", "virtio-tablet-pci"])
-        else:
-            args_qemu.extend(["-device", "usb-tablet"])
+        if not is_vnc_console:
+            if config['arch'] == "aarch64":
+                args_qemu.extend(["-device", "usb-kbd", "-device", "virtio-tablet-pci"])
+            else:
+                args_qemu.extend(["-device", "usb-tablet"])
 
         # Prepare info for VNC Web Proxy
         web_port = get_free_port(start=6080, end=6180)
@@ -3433,13 +3763,14 @@ def main():
                 sys.executable, 
                 os.path.abspath(__file__), 
                 '--internal-vnc-proxy', 
-                str(port), 
+                str(config['serialport'] if is_vnc_console else port), 
                 str(web_port), 
                 vm_info, 
                 str(qemu_pid),
                 '1' if is_audio_enabled else '0',
                 config['qmon'] if config['qmon'] else "",
-                os.path.join(output_dir, "{}.vncproxy.err".format(vm_name))
+                os.path.join(output_dir, "{}.vncproxy.err".format(vm_name)),
+                '1' if is_vnc_console else '0'
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
