@@ -2853,6 +2853,8 @@ def main():
 
     ssh_passthrough = []
     cpu_specified = False
+    serial_user_specified = False
+    vnc_user_specified = False
 
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -2930,6 +2932,7 @@ def main():
             i += 1
         elif arg == "--vnc":
             config['vnc'] = args[i+1]
+            vnc_user_specified = True
             i += 1
         elif arg in ["--res", "--resolution"]:
             config['resolution'] = args[i+1]
@@ -2951,6 +2954,7 @@ def main():
             config['whpx'] = True
         elif arg == "--serial":
             config['serialport'] = args[i+1]
+            serial_user_specified = True
             i += 1
         elif arg == "--enable-ipv6":
             config['enable_ipv6'] = True
@@ -3384,13 +3388,15 @@ def main():
     else:
         addr = "127.0.0.1"
 
-    serial_bind_addr = "0.0.0.0" if config['public'] else "127.0.0.1"
+    if serial_user_specified:
+        serial_bind_addr = "0.0.0.0" if config['public'] else "127.0.0.1"
+    else:
+        serial_bind_addr = "127.0.0.1"
+
     serial_chardev_def = None
     serial_log_file = None
 
-    if config['console'] and not is_vnc_console:
-        serial_arg = "mon:stdio"
-    else:
+    if is_vnc_console or serial_user_specified:
         if not config['serialport']:
             serial_port = get_free_port(start=7000, end=9000)
             if not serial_port:
@@ -3413,6 +3419,10 @@ def main():
              serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
 
         debuglog(config['debug'],"Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
+    elif config['console']:
+        serial_arg = "mon:stdio"
+    else:
+        serial_arg = "none"
 
     # QEMU Construction
     bin_name = "qemu-system-x86_64"
@@ -3425,20 +3435,30 @@ def main():
     if not qemu_bin:
         fatal("QEMU binary '{}' not found. Please install QEMU or check PATH.".format(bin_name))
 
-    # Late detection of VNC Console requirement based on actual binary
-    # If we are running a non-x86_64 QEMU (e.g. aarch64, riscv), default to VNC console
-    if "x86_64" not in bin_name:
-         if config.get('vnc') != 'off' and not config.get('vnc') and not is_vnc_console:
-             debuglog(config['debug'], "Auto-enabling VNC Console for non-x86 arch ({})".format(bin_name))
-             config['vnc'] = 'console'
-             is_vnc_console = True
+    # VNC Console Auto-detection logic:
+    vnc_val = config.get('vnc', '')
+    auto_reason = None
+    
+    if not vnc_val and not is_vnc_console:
+        if config['os'] == "openindiana":
+            # Rule for OpenIndiana: Default to 'console' if not specified.
+            auto_reason = "OpenIndiana (requires console for login display)"
+        elif "x86_64" not in bin_name:
+            # Rule for non-x86 architectures: Default to 'console' if not specified.
+            auto_reason = "non-x86 arch ({})".format(bin_name)
              
-             # If we previously defaulted to stdio, we must switch to TCP serial
-             if serial_arg == "mon:stdio":
-                  if not config['serialport']:
-                       config['serialport'] = str(get_free_port(start=7000, end=9000))
-                  serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
-                  debuglog(config['debug'], "Switched serial to TCP for VNC Console: " + serial_arg)
+    if auto_reason:
+         debuglog(config['debug'], "Auto-enabling VNC Console: " + auto_reason)
+         config['vnc'] = 'console'
+         is_vnc_console = True
+         
+         # If we previously defaulted to stdio or disabled serial, we must switch to TCP serial
+         if serial_arg in ["mon:stdio", "none"]:
+              if not config['serialport']:
+                   config['serialport'] = str(get_free_port(start=7000, end=9000))
+              # In auto-enabling case, serial_bind_addr is already 127.0.0.1 because serial_user_specified is False
+              serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
+              debuglog(config['debug'], "Switched serial to TCP for VNC Console: " + serial_arg)
     
     # Acceleration determination
     accel = "tcg"
@@ -3463,8 +3483,11 @@ def main():
                     accel = "kvm"
                 else:
                     log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
-            elif platform.system() == "Darwin":
-                accel = "hvf"
+            elif platform.system() == "Darwin" and hvf_supported():
+                if config['os'] != "haiku":
+                    accel = "tcg"
+                else:
+                    accel = "hvf"
 
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":
@@ -3514,6 +3537,11 @@ def main():
         "-netdev", netdev_args,
         "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
     ])
+
+    rtc_base = "utc"
+    if config['os'] in ["windows", "haiku"]:
+        rtc_base = "localtime"
+    args_qemu.extend(["-rtc", "base={},clock=host,driftfix=slew".format(rtc_base)])
 
     if config['snapshot']:
         args_qemu.append("-snapshot")
@@ -3651,6 +3679,9 @@ def main():
             "-vga", vga_type
         ])
 
+        if accel == "kvm":
+            args_qemu.extend(["-global", "kvm-pit.lost_tick_policy=delay"])
+
         if config['resolution']:
             res_parts = config['resolution'].lower().split('x')
             if len(res_parts) == 2:
@@ -3722,6 +3753,14 @@ def main():
         if port is None:
             fatal("No available VNC display ports")
         disp = port - 5900
+
+        # Determine if VNC should listen on 0.0.0.0 or 127.0.0.1
+        # It should only listen on 0.0.0.0 if user specified --vnc (and it's not off/console) AND --public is set.
+        if vnc_user_specified and config['vnc'] not in ["off", "console"]:
+            vnc_addr = addr  # Uses "" if --public else "127.0.0.1"
+        else:
+            vnc_addr = "127.0.0.1"
+
         # Add audio support if the vnc driver is available (and not in console-only mode)
         if not is_vnc_console and check_qemu_audio_backend(qemu_bin, "vnc"):
             if config['arch'] == "aarch64":
@@ -3731,10 +3770,10 @@ def main():
                  args_qemu.extend(["-device", "intel-hda", "-device", "hda-duplex"])
             args_qemu.extend(["-audiodev", "vnc,id=vnc_audio"])
             args_qemu.append("-display")
-            args_qemu.append("vnc={}:{},audiodev=vnc_audio".format(addr, disp))
+            args_qemu.append("vnc={}:{},audiodev=vnc_audio".format(vnc_addr, disp))
         else:
             args_qemu.append("-display")
-            args_qemu.append("vnc={}:{}".format(addr, disp))
+            args_qemu.append("vnc={}:{}".format(vnc_addr, disp))
 
         # Use appropriate input devices for better VNC support
         if not is_vnc_console:
@@ -3752,6 +3791,8 @@ def main():
             if not config['qmon']:
                 config['qmon'] = str(get_free_port(start=4444, end=4544))
                 debuglog(config['debug'], "Auto-selected QEMU monitor port: {}".format(config['qmon']))
+    else:
+        args_qemu.extend(["-display", "none"])
     
     if config['qmon']:
         args_qemu.extend(["-monitor", "tcp:127.0.0.1:{},server,nowait,nodelay".format(config['qmon'])])
