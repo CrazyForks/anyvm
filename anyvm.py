@@ -284,7 +284,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
         }
         #screen.disconnected {
             filter: grayscale(100%) brightness(0.7);
-            cursor: auto;
+            cursor: auto !important;
         }
         .error { color: #f87171 !important; border-color: #7f1d1d !important; }
         .toolbar {
