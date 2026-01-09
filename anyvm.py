@@ -2396,11 +2396,8 @@ def sync_vm_time(config, ssh_base_cmd):
         # Try common BSD NTP tools with rdate fallback
         sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
     elif guest_os == 'omnios':
-        # OmniOS specific: rdate to time.nist.gov was confirmed to work in previous runs.
-        major_ntp = ntp_servers.split()[0]
-        sync_cmd = ("rdate time.nist.gov || /usr/bin/rdate time.nist.gov || /usr/sbin/rdate time.nist.gov || "
-                    "/usr/sbin/ntp-setdate {0} || /usr/lib/inet/ntpdate -u {0} || /usr/sbin/ntpdate -u {0} || ntpdate -u {0} || "
-                    "/usr/lib/inet/sntp -s {0} || /usr/bin/sntp -s {0} || sntp -s {0}").format(major_ntp)
+        # OmniOS: chrony is the preferred and often only functional tool.
+        sync_cmd = "chronyc -a makestep || (svcadm enable chrony && sleep 2 && chronyc -a makestep)"
     elif guest_os in ['solaris', 'openindiana']:
         # General Solaris-like systems
         sync_cmd = "ntpdate -u {0} || sntp -sS {0}".format(ntp_servers)
