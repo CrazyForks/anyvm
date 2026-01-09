@@ -841,6 +841,8 @@ function connect() {
                         ctx.imageSmoothingEnabled = false;
                         ctx.webkitImageSmoothingEnabled = false;
                         
+                        handleResize();
+
                         // Request updates as fast as possible
                         requestUpdate(false);
                     } else break;
@@ -1289,16 +1291,45 @@ function handleResize() {
     ctx.webkitImageSmoothingEnabled = false;
     ctx.mozImageSmoothingEnabled = false;
 
+    let currentW = fbWidth;
     if (document.fullscreenElement === canvas) {
         const dpr = window.devicePixelRatio || 1;
         const physicalWidth = window.innerWidth * dpr;
         const physicalHeight = window.innerHeight * dpr;
         const scale = Math.max(1, Math.min(Math.floor(physicalWidth / fbWidth), Math.floor(physicalHeight / fbHeight)));
-        canvas.style.width = (fbWidth * scale / dpr) + "px";
+        currentW = (fbWidth * scale / dpr);
+        canvas.style.width = currentW + "px";
         canvas.style.height = (fbHeight * scale / dpr) + "px";
     } else {
-        canvas.style.width = "";
-        canvas.style.height = "";
+        // VNC Scaling logic: scale up if smaller than area, cap at 1280x800
+        const vw = window.innerWidth - 60;
+        const vh = window.innerHeight - 120;
+        const maxW = 1280;
+        const maxH = 800;
+
+        const targetW = Math.min(vw, maxW);
+        const targetH = Math.min(vh, maxH);
+
+        const canvasRatio = fbWidth / fbHeight;
+        const targetRatio = targetW / targetH;
+
+        let w, h;
+        if (targetRatio > canvasRatio) {
+            h = targetH;
+            w = h * canvasRatio;
+        } else {
+            w = targetW;
+            h = w / canvasRatio;
+        }
+
+        currentW = Math.floor(w);
+        canvas.style.width = currentW + "px";
+        canvas.style.height = Math.floor(h) + "px";
+    }
+
+    if (connected && status) {
+        const zoom = (currentW / fbWidth).toFixed(1);
+        status.textContent = `Connected: ${fbWidth}X${fbHeight} (${zoom}X)`;
     }
 
     // Use ResizeObserver for reliability if not already set
@@ -1913,6 +1944,8 @@ Options:
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
+  --sync-time [off]      Synchronize VM time using NTP inside the guest after boot.
+                         (Default: enabled for DragonFlyBSD/Solaris family, disabled otherwise).
   --                     Send all following args to the final ssh command (executes inside the VM).
   --help, -h             Show this help message.
 
@@ -2313,6 +2346,91 @@ def call_with_timeout(cmd, timeout_seconds, **popen_kwargs):
     except Exception:
         pass
     return None, True
+
+def sync_vm_time(config, ssh_base_cmd):
+    """Synchronizes VM time using NTP-like commands inside the guest."""
+    guest_os = config.get('os', '').lower()
+    debug = config.get('debug')
+    
+    def get_guest_time():
+        try:
+            # Try to get date with milliseconds
+            cmd = "date '+%Y-%m-%d %H:%M:%S.%3N'"
+            if guest_os in ['freebsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
+                cmd = "date '+%Y-%m-%d %H:%M:%S.000'"
+            
+            p = subprocess.Popen(ssh_base_cmd + [cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, _ = p.communicate()
+            if p.returncode == 0:
+                return out.decode('utf-8', errors='replace').strip()
+        except:
+            pass
+        return "unknown"
+
+    def format_host_time(t):
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int((t % 1) * 1000))
+
+    host_now = time.time()
+    log("Host time:           {}".format(format_host_time(host_now)))
+
+    time_before = get_guest_time()
+    log("VM time before sync: {}".format(time_before))
+
+    log("Syncing VM time for OS: {}".format(guest_os))
+    # Construct NTP-like sync commands based on OS
+    ntp_servers = "pool.ntp.org time.google.com"
+    sync_cmd = ""
+    
+    if guest_os == 'openbsd':
+        # OpenBSD uses rdate -n for SNTP sync
+        major_ntp = ntp_servers.split()[0]
+        sync_cmd = "rdate -n {0} || rdate {0}".format(major_ntp)
+    elif guest_os == 'dragonflybsd':
+        # DragonflyBSD specific: dntpd is the native daemon and was confirmed to work.
+        sync_cmd = ("/usr/sbin/dntpd -s || dntpd -s || "
+                    "/usr/sbin/ntpd -g -q || ntpd -g -q || /usr/sbin/ntpd -s || ntpd -s || "
+                    "/usr/sbin/ntpdate -u {0} || /usr/bin/ntpdate -u {0} || "
+                    "/usr/sbin/ntpdig -S {0} || /usr/bin/ntpdig -S {0} || "
+                    "/usr/sbin/rdate time.nist.gov || /usr/bin/rdate time.nist.gov || rdate time.nist.gov").format(ntp_servers)
+    elif guest_os in ['freebsd', 'netbsd']:
+        # Try common BSD NTP tools with rdate fallback
+        sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
+    elif guest_os == 'omnios':
+        # OmniOS specific: rdate to time.nist.gov was confirmed to work in previous runs.
+        major_ntp = ntp_servers.split()[0]
+        sync_cmd = ("rdate time.nist.gov || /usr/bin/rdate time.nist.gov || /usr/sbin/rdate time.nist.gov || "
+                    "/usr/sbin/ntp-setdate {0} || /usr/lib/inet/ntpdate -u {0} || /usr/sbin/ntpdate -u {0} || ntpdate -u {0} || "
+                    "/usr/lib/inet/sntp -s {0} || /usr/bin/sntp -s {0} || sntp -s {0}").format(major_ntp)
+    elif guest_os in ['solaris', 'openindiana']:
+        # General Solaris-like systems
+        sync_cmd = "ntpdate -u {0} || sntp -sS {0}".format(ntp_servers)
+    elif guest_os == 'haiku':
+        # Haiku uses Time --update to sync with configured NTP servers
+        sync_cmd = "Time --update || ntpdate -u {0}".format(ntp_servers)
+    else:
+        # Linux default: try common tool chain
+        sync_cmd = "ntpdate -u {0} || sntp -sS {0} || chronyc -a makestep || timeout 5 pulse-sync || (timedatectl set-ntp false && timedatectl set-ntp true)".format(ntp_servers)
+
+    full_cmd = sync_cmd
+    debuglog(debug, "Attempting NTP sync inside VM...")
+    debuglog(debug, "NTP Sync Command: {}".format(full_cmd))
+    
+    try:
+        # Increase timeout for NTP as network might be slow initially
+        ret, timed_out = call_with_timeout(
+            ssh_base_cmd + [full_cmd],
+            timeout_seconds=15,
+            stdout=None if debug else DEVNULL,
+            stderr=None if debug else DEVNULL
+        )
+        log("NTP sync finished (ret={}, timeout={})".format(ret, timed_out))
+    except Exception as e:
+        log("NTP sync failed with exception: {}".format(e))
+        pass
+
+    time_after = get_guest_time()
+    log("VM time after sync:  {}".format(time_after))
+    log("Host time:           {}".format(format_host_time(time.time())))
 
 def create_sized_file(path, size_mb):
     """Creates a zero-filled file of size_mb."""
@@ -2848,7 +2966,8 @@ def main():
         'cachedir': "",
         'vga': "",
         'resolution': "1280x800",
-        'snapshot': False
+        'snapshot': False,
+        'synctime': None
     }
 
     ssh_passthrough = []
@@ -2966,6 +3085,12 @@ def main():
             i += 1
         elif arg == "--snapshot":
             config['snapshot'] = True
+        elif arg == "--sync-time":
+            if i + 1 < len(args) and args[i+1] == "off":
+                config['synctime'] = False
+                i += 1
+            else:
+                config['synctime'] = True
         i += 1
 
     if config['debug']:
@@ -3388,41 +3513,39 @@ def main():
     else:
         addr = "127.0.0.1"
 
+    # Ensure serial port is allocated for background logging and VNC console
+    if not config['serialport']:
+        serial_port = get_free_port(start=7000, end=9000)
+        if not serial_port:
+            fatal("No free serial ports available")
+        config['serialport'] = str(serial_port)
+
     if serial_user_specified:
         serial_bind_addr = "0.0.0.0" if config['public'] else "127.0.0.1"
     else:
         serial_bind_addr = "127.0.0.1"
 
-    serial_chardev_def = None
-    serial_log_file = None
+    # Always prepare serial log file
+    serial_log_file = os.path.join(output_dir, "{}.serial.log".format(vm_name))
+    if os.path.exists(serial_log_file):
+        try:
+            os.remove(serial_log_file)
+        except:
+            pass
+    
+    serial_chardev_id = "serial0"
+    serial_chardev_def = "socket,id={},host={},port={},server=on,wait=off,logfile={}".format(
+        serial_chardev_id, serial_bind_addr, config['serialport'], serial_log_file)
+    
+    # Default to using this log-enabled chardev
+    serial_arg = "chardev:{}".format(serial_chardev_id)
 
-    if is_vnc_console or serial_user_specified:
-        if not config['serialport']:
-            serial_port = get_free_port(start=7000, end=9000)
-            if not serial_port:
-                fatal("No free serial ports available")
-            config['serialport'] = str(serial_port)
-        
-        if config['debug']:
-             serial_log_file = os.path.join(output_dir, "{}.serial.log".format(vm_name))
-             if os.path.exists(serial_log_file):
-                 try:
-                     os.remove(serial_log_file)
-                 except:
-                     pass
-             
-             serial_chardev_id = "serial0"
-             serial_chardev_def = "socket,id={},host={},port={},server=on,wait=off,logfile={}".format(
-                 serial_chardev_id, serial_bind_addr, config['serialport'], serial_log_file)
-             serial_arg = "chardev:{}".format(serial_chardev_id)
-        else:
-             serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
-
-        debuglog(config['debug'],"Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
-    elif config['console']:
+    if config['console']:
+        # For foreground console mode, prioritize stdio interaction
         serial_arg = "mon:stdio"
-    else:
-        serial_arg = "none"
+    
+    debuglog(config['debug'], "Serial console logging to: " + serial_log_file)
+    debuglog(config['debug'], "Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
 
     # QEMU Construction
     bin_name = "qemu-system-x86_64"
@@ -3452,13 +3575,10 @@ def main():
          config['vnc'] = 'console'
          is_vnc_console = True
          
-         # If we previously defaulted to stdio or disabled serial, we must switch to TCP serial
-         if serial_arg in ["mon:stdio", "none"]:
-              if not config['serialport']:
-                   config['serialport'] = str(get_free_port(start=7000, end=9000))
-              # In auto-enabling case, serial_bind_addr is already 127.0.0.1 because serial_user_specified is False
-              serial_arg = "tcp:{}:{},server,nowait".format(serial_bind_addr, config['serialport'])
-              debuglog(config['debug'], "Switched serial to TCP for VNC Console: " + serial_arg)
+         # If we previously defaulted to stdio, we must switch back to the log-enabled chardev for VNC compatibility
+         if serial_arg == "mon:stdio":
+              serial_arg = "chardev:{}".format(serial_chardev_id)
+              debuglog(config['debug'], "Switched serial back to chardev for VNC Console compatibility: " + serial_arg)
     
     # Acceleration determination
     accel = "tcg"
@@ -4288,6 +4408,18 @@ def main():
             
             qemu_elapsed = time.time() - qemu_start_time
             debuglog(config['debug'], "VM Ready! Boot took {:.2f} seconds. Connect with: ssh {}".format(qemu_elapsed, vm_name))
+            
+            # Sync VM time with host if requested
+            should_sync = config['synctime']
+            if should_sync is None:
+                # Default behavior: Only sync for DragonFlyBSD and Solaris family
+                if config['os'] in ['dragonflybsd', 'solaris', 'omnios', 'openindiana']:
+                    should_sync = True
+                else:
+                    should_sync = False
+            
+            if should_sync:
+                sync_vm_time(config, ssh_base_cmd)
             
             # Post-boot config: Setup reverse SSH config inside VM
             current_user = getpass.getuser()
