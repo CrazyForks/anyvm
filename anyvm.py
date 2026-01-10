@@ -79,7 +79,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
-    "omnios": "2.0.3",
+    "omnios": "2.0.4",
     "haiku": "2.0.0",
     "openindiana": "2.0.3"
 }
