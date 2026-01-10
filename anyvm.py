@@ -2971,6 +2971,7 @@ def main():
     cpu_specified = False
     serial_user_specified = False
     vnc_user_specified = False
+    arch_specified = False
 
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -3002,6 +3003,7 @@ def main():
             i += 1
         elif arg == "--arch":
             config['arch'] = args[i+1].lower()
+            arch_specified = True
             i += 1
         elif arg == "--mem":
             config['mem'] = args[i+1]
@@ -3170,18 +3172,20 @@ def main():
     # Fetch release info
     releases_cache = {}
     
-    def get_releases(repo_slug):
+    def get_releases(repo_slug, force_refresh=False):
         cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
         cache_path = os.path.join(working_dir_os, cache_name)
-        if repo_slug in releases_cache:
+        if not force_refresh and repo_slug in releases_cache:
             return releases_cache[repo_slug]
-        if os.path.exists(cache_path):
+        if not force_refresh and os.path.exists(cache_path):
             try:
                 with open(cache_path, 'r') as f:
                     releases_cache[repo_slug] = json.load(f)
                     return releases_cache[repo_slug]
             except ValueError:
                 pass
+        
+        debuglog(config['debug'], "Fetching fresh releases for {} (force_refresh={})".format(repo_slug, force_refresh))
         
         gh_headers = {
             "Accept": "application/vnd.github+json",
@@ -3246,6 +3250,29 @@ def main():
                         debuglog(config['debug'], "Candidate URL (xz) exists!")
                         use_this_builder = True
                         found_zst_link = candidate_url_xz
+                    elif config['arch'] == "aarch64" and not arch_specified:
+                        # Fallback to x86_64 if aarch64 failed and arch was not user-specified
+                        log("No aarch64 image found for {} {} in {}. Trying x86_64 fallback...".format(config['os'], config['release'], search_repo))
+                        config['arch'] = "" # Empty string means x86_64 in anyvm
+                        # Sync VM arch for debug logging later
+                        debuglog(config['debug'], "Fallback to x86_64 due to missing aarch64 asset")
+                        target_zst_fallback = "{}-{}.qcow2.zst".format(config['os'], config['release'])
+                        candidate_url_fallback = "https://github.com/{}/releases/download/{}/{}".format(search_repo, tag, target_zst_fallback)
+                        debuglog(config['debug'], "Checking fallback x86_64 URL: {}".format(candidate_url_fallback))
+                        if check_url_exists(candidate_url_fallback, config['debug']):
+                            debuglog(config['debug'], "Fallback x86_64 URL exists!")
+                            use_this_builder = True
+                            found_zst_link = candidate_url_fallback
+                        else:
+                            target_xz_fallback = target_zst_fallback.replace('.zst', '.xz')
+                            candidate_url_xz_fallback = "https://github.com/{}/releases/download/{}/{}".format(search_repo, tag, target_xz_fallback)
+                            debuglog(config['debug'], "Checking fallback x86_64 URL (xz): {}".format(candidate_url_xz_fallback))
+                            if check_url_exists(candidate_url_xz_fallback, config['debug']):
+                                debuglog(config['debug'], "Fallback x86_64 URL (xz) exists!")
+                                use_this_builder = True
+                                found_zst_link = candidate_url_xz_fallback
+                            else:
+                                debuglog(config['debug'], "Candidate URL not found (including fallback), falling back to full search")
                     else:
                         debuglog(config['debug'], "Candidate URL not found, falling back to full search")
             else:
@@ -3292,41 +3319,60 @@ def main():
                 target_tag = config['builder']
                 if not target_tag.startswith('v'):
                     target_tag = "v" + target_tag
+                
+                def filter_releases(data, tag):
+                    return [r for r in data if r.get('tag_name') == tag]
+                
                 debuglog(config['debug'], "Filtering releases for tag: {}".format(target_tag))
-                releases_data = [r for r in releases_data if r.get('tag_name') == target_tag]
+                filtered = filter_releases(releases_data, target_tag)
+                
+                if not filtered:
+                    debuglog(config['debug'], "Builder version {} not found in cache. Refreshing...".format(target_tag))
+                    releases_data = get_releases(builder_repo, force_refresh=True)
+                    if not releases_data:
+                         fatal("Unsupported OS: {}. Builder repository {} not found or inaccessible.".format(config['os'], builder_repo))
+                    filtered = filter_releases(releases_data, target_tag)
+                
+                releases_data = filtered
                 if not releases_data:
-                    fatal("Builder version {} not found in repository {}.".format(target_tag, builder_repo))
+                    fatal("Builder version {} not found in repository {} even after refresh.".format(target_tag, builder_repo))
         else:
             releases_data = []
 
         published_at = ""
         # Find release version if not provided
         if not config['release']:
-            for r in releases_data:
-                #log(r)
-                for asset in r.get('assets', []):
-                    u = asset.get('browser_download_url', '')
-                    #log(u)
-                    if u.endswith("qcow2.zst") or u.endswith("qcow2.xz"):
-                        if config['arch'] and config['arch'] != "x86_64" and config['arch'] not in u:
-                            continue
-                        # Extract version roughly
-                        filename=u.split('/')[-1]
-                        filename= removesuffix(filename, ".qcow2.zst")
-                        filename= removesuffix(filename, ".qcow2.xz")
-                        parts = filename.split('-')
-                        if len(parts) > 1:
-                            ver = parts[1]
-                            debuglog(config['debug'], "Candidate release found: {} from asset {}".format(ver, filename))
-                            if published_at and published_at > r.get('published_at', ''):
+            def find_latest_release(data, arch):
+                p_at = ""
+                found_v = ""
+                for r in data:
+                    for asset in r.get('assets', []):
+                        u = asset.get('browser_download_url', '')
+                        if u.endswith("qcow2.zst") or u.endswith("qcow2.xz"):
+                            if arch and arch != "x86_64" and arch not in u:
                                 continue
-                            if not published_at:
-                                published_at = r.get('published_at', '')
-                                config['release'] = ver
-                            elif cmp_version(ver, config['release']) > 0:
-                                published_at = r.get('published_at', '')
-                                config['release'] = ver
-                                debuglog(config['debug'],"Updated latest release to: " + config['release'])
+                            filename=u.split('/')[-1]
+                            filename= removesuffix(filename, ".qcow2.zst")
+                            filename= removesuffix(filename, ".qcow2.xz")
+                            parts = filename.split('-')
+                            if len(parts) > 1:
+                                ver = parts[1]
+                                debuglog(config['debug'], "Candidate release found: {} from asset {}".format(ver, filename))
+                                if p_at and p_at > r.get('published_at', ''):
+                                    continue
+                                if not p_at or cmp_version(ver, found_v) > 0:
+                                    p_at = r.get('published_at', '')
+                                    found_v = ver
+                return found_v, p_at
+
+            config['release'], published_at = find_latest_release(releases_data, config['arch'])
+            
+            if not config['release'] and config['arch'] == "aarch64" and not arch_specified:
+                debuglog(config['debug'], "No aarch64 release found, searching for x86_64 fallback release...")
+                config['release'], published_at = find_latest_release(releases_data, "")
+                if config['release']:
+                    log("No aarch64 release found for {}. Falling back to x86_64.".format(config['os']))
+                    config['arch'] = ""
 
 
         log("Using release: " + config['release'])
@@ -3360,6 +3406,26 @@ def main():
                     releases_data = repo_releases
                     zst_link = link
                     break
+            
+            # If still no link and we are on aarch64 and it wasn't specified, fallback to x86_64 full search
+            if not zst_link and config['arch'] == "aarch64" and not arch_specified:
+                log("No aarch64 image found in any repository. Trying x86_64 fallback search...")
+                config['arch'] = "" # x86_64
+                target_zst_fallback = "{}-{}.qcow2.zst".format(config['os'], config['release'])
+                target_xz_fallback = "{}-{}.qcow2.xz".format(config['os'], config['release'])
+                
+                searched = set()
+                for repo in search_repos:
+                    if repo in searched:
+                        continue
+                    searched.add(repo)
+                    repo_releases = releases_data if repo == builder_repo else get_releases(repo)
+                    link = find_image_link(repo_releases, target_zst_fallback, target_xz_fallback)
+                    if link:
+                        builder_repo = repo
+                        releases_data = repo_releases
+                        zst_link = link
+                        break
 
         if not zst_link:
             fatal("Cannot find the image link.")
