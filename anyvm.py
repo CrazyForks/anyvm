@@ -3172,18 +3172,20 @@ def main():
     # Fetch release info
     releases_cache = {}
     
-    def get_releases(repo_slug):
+    def get_releases(repo_slug, force_refresh=False):
         cache_name = "{}-releases.json".format(repo_slug.replace("/", "_"))
         cache_path = os.path.join(working_dir_os, cache_name)
-        if repo_slug in releases_cache:
+        if not force_refresh and repo_slug in releases_cache:
             return releases_cache[repo_slug]
-        if os.path.exists(cache_path):
+        if not force_refresh and os.path.exists(cache_path):
             try:
                 with open(cache_path, 'r') as f:
                     releases_cache[repo_slug] = json.load(f)
                     return releases_cache[repo_slug]
             except ValueError:
                 pass
+        
+        debuglog(config['debug'], "Fetching fresh releases for {} (force_refresh={})".format(repo_slug, force_refresh))
         
         gh_headers = {
             "Accept": "application/vnd.github+json",
@@ -3317,10 +3319,23 @@ def main():
                 target_tag = config['builder']
                 if not target_tag.startswith('v'):
                     target_tag = "v" + target_tag
+                
+                def filter_releases(data, tag):
+                    return [r for r in data if r.get('tag_name') == tag]
+                
                 debuglog(config['debug'], "Filtering releases for tag: {}".format(target_tag))
-                releases_data = [r for r in releases_data if r.get('tag_name') == target_tag]
+                filtered = filter_releases(releases_data, target_tag)
+                
+                if not filtered:
+                    debuglog(config['debug'], "Builder version {} not found in cache. Refreshing...".format(target_tag))
+                    releases_data = get_releases(builder_repo, force_refresh=True)
+                    if not releases_data:
+                         fatal("Unsupported OS: {}. Builder repository {} not found or inaccessible.".format(config['os'], builder_repo))
+                    filtered = filter_releases(releases_data, target_tag)
+                
+                releases_data = filtered
                 if not releases_data:
-                    fatal("Builder version {} not found in repository {}.".format(target_tag, builder_repo))
+                    fatal("Builder version {} not found in repository {} even after refresh.".format(target_tag, builder_repo))
         else:
             releases_data = []
 
