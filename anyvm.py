@@ -20,6 +20,7 @@ import base64
 import hashlib
 import struct
 import collections
+import ssl
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -62,6 +63,41 @@ except ImportError:
         input_func = input
 
 IS_WINDOWS = (os.name == 'nt')
+
+# Handle SSL certificate verification on Windows (especially Arm64/minimal installs).
+if IS_WINDOWS:
+    try:
+        # Try to use Windows Certificate Store directly to avoid dependency on certifi.
+        def _create_windows_context():
+            ctx = ssl.create_default_context()
+            try:
+                # ROOT and CA stores contain the trusted anchors on Windows.
+                for storename in ["ROOT", "CA"]:
+                    for cert, encoding, trust in ssl.enum_certificates(storename):
+                        if encoding == "x509_asn":
+                            try:
+                                # Convert DER to PEM and load into context.
+                                ctx.load_verify_locations(cdata=ssl.DER_cert_to_PEM_cert(cert))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            return ctx
+        
+        # Test if it works, then set as default context creator for urllib.
+        _test_ctx = _create_windows_context()
+        ssl._create_default_https_context = _create_windows_context
+    except Exception:
+        # Fallback to certifi if available, then to unverified as a last resort.
+        try:
+            import certifi
+            os.environ['SSL_CERT_FILE'] = certifi.where()
+        except ImportError:
+            try:
+                if hasattr(ssl, '_create_unverified_context'):
+                    ssl._create_default_https_context = ssl._create_unverified_context
+            except Exception:
+                pass
 
 try:
     DEVNULL = subprocess.DEVNULL  # Python 3.3+
@@ -3522,10 +3558,37 @@ def main():
                 
                 log("Extracting " + ova_file)
                 extract_start_time = time.time()
+                
+                def cmd_exists(cmd):
+                    test_cmd = [cmd, '--version']
+                    try:
+                        startupinfo = None
+                        if IS_WINDOWS:
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        subprocess.call(test_cmd, stdout=DEVNULL, stderr=DEVNULL, startupinfo=startupinfo)
+                        return True
+                    except:
+                        return False
+
                 if ova_file.endswith('.zst'):
+                    if not cmd_exists('zstd'):
+                        msg = "Error: 'zstd' command not found. This is required to extract the image.\n"
+                        if IS_WINDOWS:
+                            msg += "Please install it via winget: winget install facebook.zstd\n"
+                        else:
+                            msg += "Please install it via your package manager (e.g. apt install zstd, brew install zstd)\n"
+                        fatal(msg)
                     if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
                         fatal("zstd extraction failed")
                 elif ova_file.endswith('.xz'):
+                    if not cmd_exists('xz'):
+                        msg = "Error: 'xz' command not found. This is required to extract the image.\n"
+                        if IS_WINDOWS:
+                            msg += "Please install it via winget: winget install Tukaani.XZ\n"
+                        else:
+                            msg += "Please install it via your package manager (e.g. apt install xz-utils, brew install xz)\n"
+                        fatal(msg)
                     with open(qcow_name, 'wb') as f:
                         if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
                             fatal("xz extraction failed")
