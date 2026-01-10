@@ -728,10 +728,10 @@ function connect() {
                         term.write(data);
                     } else {
                         const text = decoder.decode(data);
-                        const parts = text.split(/(\r?\n)/);
+                        const parts = text.split(/(\\r?\\n)/);
                         
                         for (const part of parts) {
-                            if (part === '\n' || part === '\r\n') {
+                            if (part === '\\n' || part === '\\r\\n') {
                                 if (needsTimestamp) {
                                      term.write(getTimeStr());
                                      needsTimestamp = false;
