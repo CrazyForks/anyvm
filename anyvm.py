@@ -378,6 +378,11 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             color: #f1f5f9;
             transform: translateY(-1px);
         }
+        button.danger:hover {
+            border-color: #ef4444 !important;
+            background: rgba(239, 68, 68, 0.1) !important;
+            color: #ef4444 !important;
+        }
         .toolbar:hover button {
             background: rgba(51, 65, 85, 0.8);
             color: #f1f5f9;
@@ -495,9 +500,13 @@ VNC_WEB_HTML = """<!DOCTYPE html>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 Reboot
             </button>
-            <button onclick="shutdownVM()" title="Shutdown">
+            <button onclick="shutdownVM()" title="Shutdown (ACPI)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
                 Shutdown
+            </button>
+            <button class="danger" onclick="forceShutdownVM()" title="Force Kill VM (Direct Quit)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path></svg>
+                Force Quit
             </button>
         </div>
         <button onclick="toggleFullscreen()">
@@ -1492,9 +1501,17 @@ function rebootVM() {
 
 function shutdownVM() {
     if (!connected || !ws) return;
-    if (confirm('Are you sure you want to shutdown the VM?')) {
+    if (confirm('Are you sure you want to send a ACPI shutdown signal to the VM?')) {
         // [255, 2, 2] for system_powerdown
         ws.send(new Uint8Array([255, 2, 2]));
+    }
+}
+
+function forceShutdownVM() {
+    if (!connected || !ws) return;
+    if (confirm('DANGER: This will immediately KILL the VM process. Unsaved data will be lost. Continue?')) {
+        // [255, 2, 3] for quit
+        ws.send(new Uint8Array([255, 2, 3]));
     }
 }
 
@@ -1687,11 +1704,20 @@ class VNCWebProxy:
                         frame = await self.read_ws_frame(reader)
                         if frame is None: break
                         
-                        if (len(frame) >= 3 and frame[0] == 255 and frame[1] == 2):
+                        if frame[0] == 255 and frame[1] == 2 and len(frame) >= 3:
                             operation = frame[2]
                             if self.qmon_port:
-                                cmd = "system_reset" if operation == 1 else "system_powerdown"
-                                asyncio.create_task(self.send_monitor_command(cmd))
+                                if operation == 1:
+                                    cmd = "system_reset"
+                                elif operation == 2:
+                                    cmd = "system_powerdown"
+                                elif operation == 3:
+                                    cmd = "quit"
+                                else:
+                                    cmd = None
+                                
+                                if cmd:
+                                    asyncio.create_task(self.send_monitor_command(cmd))
                             continue
 
                         if self.serial_writer:
@@ -1729,11 +1755,20 @@ class VNCWebProxy:
                     
                     # Intercept custom control messages [255, 2, operation]
                     # 1: system_reset, 2: system_powerdown
-                    if (len(frame) >= 3 and frame[0] == 255 and frame[1] == 2):
+                    if frame[0] == 255 and frame[1] == 2 and len(frame) >= 3:
                         operation = frame[2]
                         if self.qmon_port:
-                            cmd = "system_reset" if operation == 1 else "system_powerdown"
-                            asyncio.create_task(self.send_monitor_command(cmd))
+                            if operation == 1:
+                                cmd = "system_reset"
+                            elif operation == 2:
+                                cmd = "system_powerdown"
+                            elif operation == 3:
+                                cmd = "quit"
+                            else:
+                                cmd = None
+                            
+                            if cmd:
+                                asyncio.create_task(self.send_monitor_command(cmd))
                         continue
 
                     vnc_writer.write(frame)
