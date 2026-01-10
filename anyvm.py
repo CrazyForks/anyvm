@@ -74,12 +74,12 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.0.5",
+    "freebsd": "2.0.7",
     "openbsd": "2.0.0",
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.3",
     "solaris": "2.0.0",
-    "omnios": "2.0.3",
+    "omnios": "2.0.4",
     "haiku": "2.0.0",
     "openindiana": "2.0.3"
 }
@@ -536,6 +536,8 @@ let isPasting = false;
 let needsTimestamp = true;
 let showTimestamp = false; 
 let audioContext = null;
+let isConnecting = true;
+const decoder = new TextDecoder();
 
 if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
     canvas.style.display = 'none';
@@ -603,13 +605,12 @@ if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
                 
                 // Delay binding onData to prevent terminal response loops (like CPR)
                 // when processing historical buffer on page load/refresh.
-                setTimeout(() => {
-                    term.onData(data => {
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.send(new TextEncoder().encode(data));
-                        }
-                    });
-                }, 1000);
+                term.onData(data => {
+                    if (isConnecting) return;
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(new TextEncoder().encode(data));
+                    }
+                });
             } else {
                 termContainer.innerHTML = '<div style="color: #f87171; padding: 20px; font-family: sans-serif;">Error: xterm.js not loaded. Serial output will appear as plain text below.</div><pre id="fallback-term" style="color: #f1f5f9; padding: 20px; white-space: pre-wrap; font-family: monospace; height: 100%; overflow: auto;"></pre>';
             }
@@ -651,7 +652,8 @@ function connect() {
         if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
             window.initTerminal();
             connected = true;
-            setTimeout(() => { if (term) term.focus(); }, 200);
+            isConnecting = true;
+            setTimeout(() => { isConnecting = false; if (term) term.focus(); }, 1000);
         } else {
             canvas.focus();
         }
@@ -722,23 +724,27 @@ function connect() {
         if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
             if (term) {
                 try {
-                    const text = new TextDecoder().decode(data);
-                    const parts = text.split(/(\\r?\\n)/);
-                    
-                    for (const part of parts) {
-                        if (part === '\\n' || part === '\\r\\n') {
-                            if (needsTimestamp) {
-                                 term.write(getTimeStr());
-                                 needsTimestamp = false;
-                            }
-                            term.write(part);
-                            needsTimestamp = true;
-                        } else if (part.length > 0) {
-                            if (needsTimestamp) {
-                                term.write(getTimeStr() + part);
-                                needsTimestamp = false;
-                            } else {
+                    if (!showTimestamp) {
+                        term.write(data);
+                    } else {
+                        const text = decoder.decode(data);
+                        const parts = text.split(/(\\r?\\n)/);
+                        
+                        for (const part of parts) {
+                            if (part === '\\n' || part === '\\r\\n') {
+                                if (needsTimestamp) {
+                                     term.write(getTimeStr());
+                                     needsTimestamp = false;
+                                }
                                 term.write(part);
+                                needsTimestamp = true;
+                            } else if (part.length > 0) {
+                                if (needsTimestamp) {
+                                    term.write(getTimeStr() + part);
+                                    needsTimestamp = false;
+                                } else {
+                                    term.write(part);
+                                }
                             }
                         }
                     }
