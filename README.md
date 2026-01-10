@@ -73,7 +73,8 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Linux x86_64 | ✅ | ✅ | ✅ |
 | Linux aarch64 (arm64)  | ❌ | ✅ | ❌ |
 | MacOS Apple silicon  | ✅ | ✅ | ❌ |
-| Windows x86_64 | ✅ | ❌ | ❌ |
+| Windows x86_64 Native | ✅ | ❌ | ❌ |
+| Windows x86_64 WSL | ✅ | ✅ | ✅ |
 
 ## 6. Install dependencies
 
