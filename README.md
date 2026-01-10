@@ -31,16 +31,16 @@ anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU o
 ## 2. Quick start (local)
 
 ```bash
-python anyvm.py --os freebsd
-python anyvm.py --os freebsd --release 14.3
-python anyvm.py --os freebsd --release 14.3 --arch aarch64
-python anyvm.py --os openbsd --release 7.5 --arch aarch64
-python anyvm.py --os solaris
+python3 anyvm.py --os freebsd
+python3 anyvm.py --os freebsd --release 14.3
+python3 anyvm.py --os freebsd --release 14.3 --arch aarch64
+python3 anyvm.py --os openbsd --release 7.5 --arch aarch64
+python3 anyvm.py --os solaris
 
-python anyvm.py --os freebsd --release 14.3 --arch riscv64
+python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
 
 # Run a command inside the VM (everything after `--` is sent to the VM via ssh):
-python anyvm.py --os freebsd -- uname -a
+python3 anyvm.py --os freebsd -- uname -a
 ```
 
 ## 3. Run in a Docker container
@@ -133,127 +133,127 @@ AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's
 
 ## 9. CLI options (with examples)
 
-All examples below use `python anyvm.py ...`. You can also run `python anyvm.py --help` to see the built-in help.
+All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.py --help` to see the built-in help.
 
 ### Required
 
 - `--os <name>`: Target guest OS (required).
   - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `solaris` / `omnios` / `openindiana` / `haiku`
   - Example:
-    - `python anyvm.py --os freebsd`
+    - `python3 anyvm.py --os freebsd`
 
 ### Release / arch / resources
 
 - `--release <ver>`: Guest release version. If omitted, anyvm auto-selects an available release.
-  - Example: `python anyvm.py --os freebsd --release 14.3`
+  - Example: `python3 anyvm.py --os freebsd --release 14.3`
 
 - `--arch <arch>`: Guest architecture.
   - Common values: `x86_64` / `aarch64` / `riscv64`
-  - Example: `python anyvm.py --os openbsd --release 7.5 --arch aarch64`
+  - Example: `python3 anyvm.py --os openbsd --release 7.5 --arch aarch64`
 
 - `--mem <MB>`: Memory size in MB (default: 2048).
-  - Example: `python anyvm.py --os freebsd --mem 4096`
+  - Example: `python3 anyvm.py --os freebsd --mem 4096`
 
 - `--cpu <num>`: vCPU count (default: all host cores).
-  - Example: `python anyvm.py --os freebsd --cpu 4`
+  - Example: `python3 anyvm.py --os freebsd --cpu 4`
 
 - `--cpu-type <type>`: QEMU CPU model (e.g. `host`, `cortex-a72`).
-  - Example: `python anyvm.py --os openbsd --arch aarch64 --cpu-type cortex-a72`
+  - Example: `python3 anyvm.py --os openbsd --arch aarch64 --cpu-type cortex-a72`
 
 ### Images / builders
 
 - `--builder <ver>`: Pin a specific builder version (used to download matching cloud images).
-  - Example: `python anyvm.py --os netbsd --builder 2.0.1`
+  - Example: `python3 anyvm.py --os netbsd --builder 2.0.1`
 
 - `--qcow2 <path>`: Use a local qcow2 image (skip downloading).
-  - Example: `python anyvm.py --os freebsd --qcow2 .\\output\\freebsd\\freebsd-14.3.qcow2`
+  - Example: `python3 anyvm.py --os freebsd --qcow2 .\\output\\freebsd\\freebsd-14.3.qcow2`
 
 - `--snapshot`: Enable QEMU snapshot mode. Changes made to the disk are not saved. 
   - Works with `--cache-dir` to run directly from the cache without copying to the data directory.
-  - Example: `python anyvm.py --os freebsd --snapshot`
+  - Example: `python3 anyvm.py --os freebsd --snapshot`
 
 ### Networking (user-mode networking / slirp)
 
 - `--ssh-port <port>` / `--sshport <port>`: Host port forwarded to guest SSH (`:22`). If omitted, anyvm auto-picks a free port.
-  - Example: `python anyvm.py --os freebsd --ssh-port 10022`
+  - Example: `python3 anyvm.py --os freebsd --ssh-port 10022`
 
 - `--ssh-name <name>`: Add an extra SSH alias name for convenience (so you can `ssh <name>`).
-  - Example: `python anyvm.py --os freebsd --ssh-name myvm`
+  - Example: `python3 anyvm.py --os freebsd --ssh-name myvm`
 
 - `--host-ssh-port <port>`: The host SSH port as reachable from the guest (default: 22). Used for generating a `Host host` entry inside the guest.
-  - Example: `python anyvm.py --os freebsd --host-ssh-port 2222`
+  - Example: `python3 anyvm.py --os freebsd --host-ssh-port 2222`
 
 - `-p <mapping>`: Additional port forwards (repeatable).
   - Form 1: `host:guest` (TCP by default)
-    - Example: `python anyvm.py --os freebsd -p 8080:80`
+    - Example: `python3 anyvm.py --os freebsd -p 8080:80`
   - Form 2: `tcp:host:guest`
-    - Example: `python anyvm.py --os freebsd -p tcp:8443:443`
+    - Example: `python3 anyvm.py --os freebsd -p tcp:8443:443`
   - Form 3: `udp:host:guest`
-    - Example: `python anyvm.py --os freebsd -p udp:5353:5353`
+    - Example: `python3 anyvm.py --os freebsd -p udp:5353:5353`
 
 - `--public`: Listen on `0.0.0.0` for forwarded ports instead of `127.0.0.1`.
-  - Example: `python anyvm.py --os freebsd --public -p 8080:80`
+  - Example: `python3 anyvm.py --os freebsd --public -p 8080:80`
 
 - `--enable-ipv6`: Enable IPv6 in QEMU user networking (slirp).
   - Default: IPv6 is disabled (anyvm adds `ipv6=off` to `-netdev user,...`).
-  - Example: `python anyvm.py --os freebsd --enable-ipv6`
+  - Example: `python3 anyvm.py --os freebsd --enable-ipv6`
 
 
 ### Shared folders (-v) and sync mode (--sync)
 
 - `-v <host:guest>`: Add a shared/synced folder mapping (repeatable).
-  - Linux/macOS example: `python anyvm.py --os freebsd -v $(pwd):/data`
-  - Windows example: `python anyvm.py --os freebsd -v D:\\data:/data`
+  - Linux/macOS example: `python3 anyvm.py --os freebsd -v $(pwd):/data`
+  - Windows example: `python3 anyvm.py --os freebsd -v D:\\data:/data`
 
 - `--sync <mode>`: Sync mechanism used for `-v`.
   - Supported: `sshfs` (default), `nfs`, `rsync`, `scp`
   - Examples:
-    - `python anyvm.py --os freebsd --sync rsync -v $(pwd):/data`
-    - `python anyvm.py --os solaris --sync scp -v D:\\data:/data`
+    - `python3 anyvm.py --os freebsd --sync rsync -v $(pwd):/data`
+    - `python3 anyvm.py --os solaris --sync scp -v D:\\data:/data`
 
 ### Console / display / debugging
 
 - `--console` / `-c`: Run in the foreground (console mode).
-  - Example: `python anyvm.py --os freebsd --console`
+  - Example: `python3 anyvm.py --os freebsd --console`
 
 - `--detach` / `-d`: Run in the background (do not auto-enter SSH).
-  - Example: `python anyvm.py --os freebsd --detach`
+  - Example: `python3 anyvm.py --os freebsd --detach`
 
 - `--serial <port>`: Expose the guest serial console via a host TCP port (if omitted, auto-select starting at 7000).
-  - Example: `python anyvm.py --os freebsd --serial 7000`
+  - Example: `python3 anyvm.py --os freebsd --serial 7000`
 
 - `--vnc <display>`: Enable VNC (e.g. `0` means `:0` / port 5900). 
   - **VNC Web UI**: Enabled by default starting at port `6080` (auto-increments if busy). Use `--vnc off` to disable.
-  - Example: `python anyvm.py --os freebsd --vnc 0`
+  - Example: `python3 anyvm.py --os freebsd --vnc 0`
 
 - `--mon <port>`: Expose the QEMU monitor via telnet on localhost.
-  - Example: `python anyvm.py --os freebsd --mon 4444`
+  - Example: `python3 anyvm.py --os freebsd --mon 4444`
 
 - `--debug`: Enable verbose debug logging.
-  - Example: `python anyvm.py --os freebsd --debug`
+  - Example: `python3 anyvm.py --os freebsd --debug`
 
 ### Boot / platform
 
 - `--uefi`: Enable UEFI boot (FreeBSD enables this implicitly).
-  - Example: `python anyvm.py --os freebsd --uefi`
+  - Example: `python3 anyvm.py --os freebsd --uefi`
 
 - `--disktype <type>`: Disk interface type (e.g. `virtio`, `ide`).
-  - Example: `python anyvm.py --os dragonflybsd --disktype ide`
+  - Example: `python3 anyvm.py --os dragonflybsd --disktype ide`
 
 - `--whpx`: (Windows) Attempt to use WHPX acceleration.
-  - Example: `python anyvm.py --os freebsd --whpx`
+  - Example: `python3 anyvm.py --os freebsd --whpx`
 
 ### Data directory
 
 - `--data-dir <dir>` / `--workingdir <dir>`: Directory used to store images and caches (default: `./output`).
-  - Example: `python anyvm.py --os freebsd --data-dir .\\output`
+  - Example: `python3 anyvm.py --os freebsd --data-dir .\\output`
 
 ### Run a command inside the VM
 
 - `-- <cmd...>`: Everything after `--` is passed through to the final `ssh` invocation and executed inside the VM.
   - Examples:
-    - `python anyvm.py --os freebsd -- uname -a`
-    - `python anyvm.py --os freebsd -- sh -lc "id; uname -a"`
+    - `python3 anyvm.py --os freebsd -- uname -a`
+    - `python3 anyvm.py --os freebsd -- sh -lc "id; uname -a"`
 
 
 
