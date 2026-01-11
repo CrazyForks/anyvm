@@ -20,6 +20,7 @@ import base64
 import hashlib
 import struct
 import collections
+import ssl
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -63,6 +64,41 @@ except ImportError:
 
 IS_WINDOWS = (os.name == 'nt')
 
+# Handle SSL certificate verification on Windows (especially Arm64/minimal installs).
+if IS_WINDOWS:
+    try:
+        # Try to use Windows Certificate Store directly to avoid dependency on certifi.
+        def _create_windows_context():
+            ctx = ssl.create_default_context()
+            try:
+                # ROOT and CA stores contain the trusted anchors on Windows.
+                for storename in ["ROOT", "CA"]:
+                    for cert, encoding, trust in ssl.enum_certificates(storename):
+                        if encoding == "x509_asn":
+                            try:
+                                # Convert DER to PEM and load into context.
+                                ctx.load_verify_locations(cdata=ssl.DER_cert_to_PEM_cert(cert))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            return ctx
+        
+        # Test if it works, then set as default context creator for urllib.
+        _test_ctx = _create_windows_context()
+        ssl._create_default_https_context = _create_windows_context
+    except Exception:
+        # Fallback to certifi if available, then to unverified as a last resort.
+        try:
+            import certifi
+            os.environ['SSL_CERT_FILE'] = certifi.where()
+        except ImportError:
+            try:
+                if hasattr(ssl, '_create_unverified_context'):
+                    ssl._create_default_https_context = ssl._create_unverified_context
+            except Exception:
+                pass
+
 try:
     DEVNULL = subprocess.DEVNULL  # Python 3.3+
 except AttributeError:
@@ -78,10 +114,10 @@ DEFAULT_BUILDER_VERSIONS = {
     "openbsd": "2.0.0",
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.3",
-    "solaris": "2.0.0",
+    "solaris": "2.0.3",
     "omnios": "2.0.4",
     "haiku": "2.0.0",
-    "openindiana": "2.0.3"
+    "openindiana": "2.0.4"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2439,9 +2475,12 @@ def sync_vm_time(config, ssh_base_cmd):
     elif guest_os == 'omnios':
         # OmniOS: chrony is the preferred and often only functional tool.
         sync_cmd = "chronyc -a makestep || (svcadm enable chrony && sleep 2 && chronyc -a makestep)"
-    elif guest_os in ['solaris', 'openindiana']:
-        # General Solaris-like systems
+    elif guest_os == 'solaris':
+        # Oracle Solaris: Typically has ntpdate in /usr/sbin
         sync_cmd = "ntpdate -u {0} || sntp -sS {0}".format(ntp_servers)
+    elif guest_os == 'openindiana':
+        # OpenIndiana: Use ntpdate for time sync.
+        sync_cmd = "/usr/sbin/ntpdate -u {0} || /usr/bin/ntpdate -u {0} || ntpdate -u {0}".format(ntp_servers)
     elif guest_os == 'haiku':
         # Haiku uses Time --update to sync with configured NTP servers
         sync_cmd = "Time --update || ntpdate -u {0}".format(ntp_servers)
@@ -2865,21 +2904,45 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
         sources = [vhost]
 
     # SCP command to push files
-    # Added -O option for legacy protocol support
-    cmd = [
-        "scp", "-r", "-q", "-O",
-        "-P", str(sshport),
-    ]
-    if hostid_file:
-        cmd.extend(["-i", hostid_file])
+    # We use a retry loop because initial connections might be flaky on some OSs.
+    synced = False
+    for i in range(5):
+        # Added -O option for legacy protocol support as a fallback if needed
+        # but try modern SFTP-based protocol first on some attempts.
+        mode_desc = "Standard (SFTP)"
+        cmd = [
+            "scp", "-r", "-q",
+            "-P", str(sshport),
+        ]
+        if i % 2 == 1:
+            cmd.append("-O")
+            mode_desc = "Legacy (SCP)"
+            
+        if hostid_file:
+            cmd.extend(["-i", hostid_file])
+            
+        cmd.extend([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=10",
+        ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
         
-    cmd.extend([
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
-        "-o", "LogLevel=ERROR",
-    ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
-    
-    if subprocess.call(cmd) != 0:
+        debuglog(True, "SCP Attempt {} ({}): Executing sync...".format(i + 1, mode_desc))
+        try:
+            ret = subprocess.call(cmd)
+            if ret == 0:
+                debuglog(True, "SCP Attempt {} successful.".format(i + 1))
+                synced = True
+                break
+            else:
+                debuglog(True, "SCP Attempt {} failed with return code {}.".format(i + 1, ret))
+        except Exception as e:
+            debuglog(True, "SCP Attempt {} encounterd exception: {}".format(i + 1, e))
+        
+        time.sleep(2)
+        
+    if not synced:
         log("Warning: SCP sync failed.")
 
 def version_tokens(text):
@@ -3522,10 +3585,37 @@ def main():
                 
                 log("Extracting " + ova_file)
                 extract_start_time = time.time()
+                
+                def cmd_exists(cmd):
+                    test_cmd = [cmd, '--version']
+                    try:
+                        startupinfo = None
+                        if IS_WINDOWS:
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        subprocess.call(test_cmd, stdout=DEVNULL, stderr=DEVNULL, startupinfo=startupinfo)
+                        return True
+                    except:
+                        return False
+
                 if ova_file.endswith('.zst'):
+                    if not cmd_exists('zstd'):
+                        msg = "Error: 'zstd' command not found. This is required to extract the image.\n"
+                        if IS_WINDOWS:
+                            msg += "Please install it via winget: winget install facebook.zstd\n"
+                        else:
+                            msg += "Please install it via your package manager (e.g. apt install zstd, brew install zstd)\n"
+                        fatal(msg)
                     if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
                         fatal("zstd extraction failed")
                 elif ova_file.endswith('.xz'):
+                    if not cmd_exists('xz'):
+                        msg = "Error: 'xz' command not found. This is required to extract the image.\n"
+                        if IS_WINDOWS:
+                            msg += "Please install it via winget: winget install Tukaani.XZ\n"
+                        else:
+                            msg += "Please install it via your package manager (e.g. apt install xz-utils, brew install xz)\n"
+                        fatal(msg)
                     with open(qcow_name, 'wb') as f:
                         if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
                             fatal("xz extraction failed")
