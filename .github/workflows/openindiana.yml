@@ -19,13 +19,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  testsshfs:
+  test:
     strategy:
       fail-fast: false
       matrix:
         release: ["202510"]
         arch: [""]
         runs: ["ubuntu-24.04"]
+        sync: [ "sshfs", "scp", "nfs", "rsync" ]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -35,25 +36,9 @@ jobs:
       os: openindiana
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "sshfs"
-
-  nfs:
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["202510"]
-        arch: [""]
-        runs: ["ubuntu-24.04"]
+      sync: ${{ matrix.sync }}
 
 
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: openindiana
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "nfs"
 
 
 
