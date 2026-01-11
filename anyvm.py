@@ -2925,6 +2925,7 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
             "-o", "LogLevel=ERROR",
+            "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
         ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
         
@@ -4499,6 +4500,8 @@ def main():
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
                 "-o", "LogLevel=ERROR",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
             ]
             if hostid_file:
                 ssh_base_cmd.extend(["-i", hostid_file])
@@ -4613,6 +4616,13 @@ def main():
                     should_sync = False
             
             if should_sync:
+                # On slow emulated systems (like Apple Silicon running x86), 
+                # Solaris/OpenIndiana services might need a moment to settle after SSH becomes responsive
+                # to avoid 'logout without login' audit errors.
+                is_apple_silicon = (platform.system() == 'Darwin' and platform.machine() == 'arm64')
+                if is_apple_silicon and config['os'] == 'openindiana':
+                    log("Apple Silicon detected: waiting 5s for OpenIndiana services to settle...")
+                    time.sleep(5)
                 sync_vm_time(config, ssh_base_cmd)
             
             # Post-boot config: Setup reverse SSH config inside VM
