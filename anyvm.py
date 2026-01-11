@@ -2475,9 +2475,12 @@ def sync_vm_time(config, ssh_base_cmd):
     elif guest_os == 'omnios':
         # OmniOS: chrony is the preferred and often only functional tool.
         sync_cmd = "chronyc -a makestep || (svcadm enable chrony && sleep 2 && chronyc -a makestep)"
-    elif guest_os in ['solaris', 'openindiana']:
-        # General Solaris-like systems
+    elif guest_os == 'solaris':
+        # Oracle Solaris: Typically has ntpdate in /usr/sbin
         sync_cmd = "ntpdate -u {0} || sntp -sS {0}".format(ntp_servers)
+    elif guest_os == 'openindiana':
+        # OpenIndiana: Use ntpdate for time sync.
+        sync_cmd = "/usr/sbin/ntpdate -u {0} || /usr/bin/ntpdate -u {0} || ntpdate -u {0}".format(ntp_servers)
     elif guest_os == 'haiku':
         # Haiku uses Time --update to sync with configured NTP servers
         sync_cmd = "Time --update || ntpdate -u {0}".format(ntp_servers)
@@ -2901,21 +2904,45 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
         sources = [vhost]
 
     # SCP command to push files
-    # Added -O option for legacy protocol support
-    cmd = [
-        "scp", "-r", "-q", "-O",
-        "-P", str(sshport),
-    ]
-    if hostid_file:
-        cmd.extend(["-i", hostid_file])
+    # We use a retry loop because initial connections might be flaky on some OSs.
+    synced = False
+    for i in range(5):
+        # Added -O option for legacy protocol support as a fallback if needed
+        # but try modern SFTP-based protocol first on some attempts.
+        mode_desc = "Standard (SFTP)"
+        cmd = [
+            "scp", "-r", "-q",
+            "-P", str(sshport),
+        ]
+        if i % 2 == 1:
+            cmd.append("-O")
+            mode_desc = "Legacy (SCP)"
+            
+        if hostid_file:
+            cmd.extend(["-i", hostid_file])
+            
+        cmd.extend([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=10",
+        ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
         
-    cmd.extend([
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile={}".format(SSH_KNOWN_HOSTS_NULL),
-        "-o", "LogLevel=ERROR",
-    ] + sources + ["{}@127.0.0.1:".format(ssh_user) + vguest + "/"])
-    
-    if subprocess.call(cmd) != 0:
+        debuglog(True, "SCP Attempt {} ({}): Executing sync...".format(i + 1, mode_desc))
+        try:
+            ret = subprocess.call(cmd)
+            if ret == 0:
+                debuglog(True, "SCP Attempt {} successful.".format(i + 1))
+                synced = True
+                break
+            else:
+                debuglog(True, "SCP Attempt {} failed with return code {}.".format(i + 1, ret))
+        except Exception as e:
+            debuglog(True, "SCP Attempt {} encounterd exception: {}".format(i + 1, e))
+        
+        time.sleep(2)
+        
+    if not synced:
         log("Warning: SCP sync failed.")
 
 def version_tokens(text):
