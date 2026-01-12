@@ -158,9 +158,34 @@ def debuglog(enabled, msg):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
         print("[{}] [DEBUG] {}".format(timestamp, msg))
 
+def is_browser_available():
+    """Returns True if the current environment can likely open a local browser."""
+    try:
+        if IS_WINDOWS:
+            return True
+        # Check for WSL environment
+        if platform.system() == 'Linux':
+            try:
+                if os.path.exists('/proc/version'):
+                    with open('/proc/version', 'r') as f:
+                        if 'microsoft' in f.read().lower():
+                            return True
+            except:
+                pass
+            # Linux: Check if DISPLAY or WAYLAND_DISPLAY is set
+            if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
+                return True
+        elif platform.system() == 'Darwin':
+            # macOS: Check if likely in a GUI session (not over SSH)
+            if not os.environ.get('SSH_CLIENT') and not os.environ.get('SSH_TTY'):
+                return True
+    except:
+        pass
+    return False
+
 def open_vnc_page(web_port):
     """Automatically open the VNC web page in the browser based on environment."""
-    if not web_port:
+    if not web_port or not is_browser_available():
         return
 
     def _open_in_background():
@@ -168,28 +193,13 @@ def open_vnc_page(web_port):
         time.sleep(1)
         url = "http://localhost:{}".format(web_port)
         try:
-            # Check for WSL environment
-            is_wsl = False
-            if platform.system() == 'Linux':
-                try:
-                    if os.path.exists('/proc/version'):
-                        with open('/proc/version', 'r') as f:
-                            if 'microsoft' in f.read().lower():
-                                is_wsl = True
-                except:
-                    pass
-
-            if IS_WINDOWS or is_wsl:
-                # Windows or WSL: Use explorer.exe to open the URL
+            if IS_WINDOWS or (platform.system() == 'Linux' and 'microsoft' in open('/proc/version').read().lower()):
+                # Windows or WSL
                 subprocess.Popen(['explorer.exe', url], shell=IS_WINDOWS)
             elif platform.system() == 'Darwin':
-                # macOS: Open if likely in a GUI session (not over SSH)
-                if not os.environ.get('SSH_CLIENT') and not os.environ.get('SSH_TTY'):
-                    subprocess.Popen(['open', url], stdout=DEVNULL, stderr=DEVNULL)
+                subprocess.Popen(['open', url], stdout=DEVNULL, stderr=DEVNULL)
             elif platform.system() == 'Linux':
-                # Linux: Open if DISPLAY or WAYLAND_DISPLAY is set
-                if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
-                    subprocess.Popen(['xdg-open', url], stdout=DEVNULL, stderr=DEVNULL)
+                subprocess.Popen(['xdg-open', url], stdout=DEVNULL, stderr=DEVNULL)
         except Exception:
             pass
 
@@ -4181,7 +4191,15 @@ def main():
             log("Started QEMU (PID: {})".format(proc.pid))
             
             tail_stop_event = threading.Event()
-            if config['debug'] and serial_log_file:
+            should_tail = config['debug'] and serial_log_file
+            
+            # If we are likely to open a browser for Web VNC/Console, don't tail serial to terminal
+            # to avoid clutter and redundant output.
+            if should_tail and web_port and is_browser_available():
+                should_tail = False
+                debuglog(config['debug'], "Skipping serial terminal tail because Web VNC/Console is available.")
+            
+            if should_tail:
                  t = threading.Thread(target=tail_serial_log, args=(serial_log_file, tail_stop_event))
                  t.daemon = True
                  t.start()
