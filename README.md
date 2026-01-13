@@ -206,8 +206,8 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Linux/macOS example: `python3 anyvm.py --os freebsd -v $(pwd):/data`
   - Windows example: `python3 anyvm.py --os freebsd -v D:\\data:/data`
 
-- `--sync <mode>`: Sync mechanism used for `-v`.
-  - Supported: `sshfs` (default), `nfs`, `rsync`, `scp`
+- `--sync <mode>`: Sync mechanism used for `-v`. Strictly validated.
+  - Supported: `rsync` (default), `sshfs`, `nfs`, `scp`. Empty string also defaults to `rsync`. Any other value will cause an error.
   - Examples:
     - `python3 anyvm.py --os freebsd --sync rsync -v $(pwd):/data`
     - `python3 anyvm.py --os solaris --sync scp -v D:\\data:/data`
