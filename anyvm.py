@@ -2011,7 +2011,7 @@ Options:
                          Format: /host/path:/guest/path
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
-                         Supported: sshfs (default), nfs, rsync, scp.
+                         Supported: rsync (default), sshfs, nfs, scp.
                          Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
   --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids re-download and re-extract).
@@ -2737,7 +2737,7 @@ fi
     if not mounted:
         log("Warning: Failed to mount shared folder via NFS.")
 
-def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name):
+def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=None):
     """Syncs a host directory to the guest using rsync (Push mode)."""
     host_rsync = find_rsync()
     if not host_rsync:
@@ -2860,6 +2860,10 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name):
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])
         
+    if excludes:
+        for ex in excludes:
+            cmd.extend(["--exclude", ex.replace("\\", "/")])
+        
     # Source and Destination come last
     cmd.extend([src, "{}:{}".format(remote_host, vguest)])
     
@@ -2884,7 +2888,7 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name):
     if not synced:
         log("Warning: Failed to sync shared folder via rsync.")
 
-def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
+def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user, excludes=None):
     """Syncs via scp (Push mode from host to guest)."""
     log("Syncing via scp: {} -> {}".format(vhost, vguest))
     
@@ -2903,6 +2907,8 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user):
     if os.path.isdir(vhost):
         try:
             entries = os.listdir(vhost)
+            if excludes:
+                entries = [e for e in entries if e not in excludes]
         except OSError as exc:
             log("Warning: Failed to read {}: {}".format(vhost, exc))
             return
@@ -3061,7 +3067,7 @@ def main():
         'vpaths': [],
         'ports': [],
         'vnc': "",
-        'sync': "sshfs",
+        'sync': "rsync",
         'qmon': "",
         'disktype': "",
         'public': False,
@@ -3174,7 +3180,12 @@ def main():
             config['vga'] = args[i+1]
             i += 1
         elif arg == "--sync":
-            config['sync'] = args[i+1]
+            val = args[i+1].lower()
+            if val == "":
+                val = "rsync"
+            if val not in ["sshfs", "nfs", "rsync", "scp"]:
+                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, scp.".format(val))
+            config['sync'] = val
             i += 1
         elif arg == "--disktype":
             config['disktype'] = args[i+1]
@@ -4691,14 +4702,28 @@ Host host
                         vhost = os.path.abspath(vhost)
                         if not vhost or not vguest:
                             raise ValueError
+                        
+                        excludes = []
+                        for ex_dir in [working_dir, config.get('cachedir')]:
+                            if ex_dir:
+                                try:
+                                    if os.path.commonpath([vhost, ex_dir]) == vhost:
+                                        rel = os.path.relpath(ex_dir, vhost)
+                                        if rel != "." and not rel.startswith(".."):
+                                            excludes.append(rel)
+                                except ValueError:
+                                    pass
+
                         debuglog(config['debug'], "Mounting host dir: {} to guest: {}".format(vhost, vguest))
+                        if excludes:
+                            debuglog(config['debug'], "Excluding paths from sync: {}".format(", ".join(excludes)))
                         
                         if config['sync'] == 'nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
                         elif config['sync'] == 'rsync':
-                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name)
+                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, excludes=excludes)
                         elif config['sync'] == 'scp':
-                            sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user)
+                            sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user, excludes=excludes)
                         else:
                             sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'], config.get('release'))
 

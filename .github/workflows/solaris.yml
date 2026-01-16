@@ -26,6 +26,7 @@ jobs:
         release: ["11.4", "11.4-gcc"]
         arch: [""]
         runs: ["ubuntu-24.04"]
+        sync: ["nfs", "scp"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -35,7 +36,7 @@ jobs:
       os: solaris
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: nfs
+      sync: ${{ matrix.sync }}
 
 
 
