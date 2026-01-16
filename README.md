@@ -31,6 +31,15 @@ anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU o
 ## 2. Quick start (local)
 
 ```bash
+
+#desktop release
+
+python3 anyvm.py --os freebsd  --release 15.0-xfce
+python3 anyvm.py --os freebsd  --release 15.0-gnome
+python3 anyvm.py --os freebsd  --release 15.0-kde6
+
+
+#command line release
 python3 anyvm.py --os freebsd
 python3 anyvm.py --os freebsd --release 14.3
 python3 anyvm.py --os freebsd --release 14.3 --arch aarch64
