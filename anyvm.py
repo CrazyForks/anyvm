@@ -1644,7 +1644,7 @@ handleResize();
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1'):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
@@ -1654,6 +1654,7 @@ class VNCWebProxy:
         self.qmon_port = qmon_port
         self.error_log_path = error_log_path
         self.is_console_vnc = is_console_vnc
+        self.listen_addr = listen_addr
         self.clients = set()
         self.serial_buffer = collections.deque(maxlen=1024 * 100) # 100KB binary buffer (optimized for refresh speed)
         self.serial_writer = None
@@ -1958,21 +1959,21 @@ class VNCWebProxy:
         if self.is_console_vnc:
             asyncio.create_task(self.serial_worker())
             
-        server = await asyncio.start_server(self.handle_client, '0.0.0.0', self.web_port)
+        server = await asyncio.start_server(self.handle_client, self.listen_addr, self.web_port)
         asyncio.create_task(self.monitor_qemu())
         async with server: 
             await server.serve_forever()
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False):
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1'):
     if error_log_path:
         try:
             with open(error_log_path, 'a') as f:
                 t = time.time()
                 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
-                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc))
+                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_addr))
         except:
             pass
-    proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc)
+    proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr)
     asyncio.run(proxy.run())
 
 def fatal(msg):
@@ -2025,6 +2026,9 @@ Options:
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
+  --public-vnc           Listen on 0.0.0.0 for the VNC web interface instead of 127.0.0.1.
+  --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1.
+  --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
   --debug                Enable verbose debug logging.
   --detach, -d           Run QEMU in background.
@@ -3038,7 +3042,8 @@ def main():
             qmon_port = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
             error_log_path = sys.argv[8] if len(sys.argv) > 8 else None
             is_console_vnc = sys.argv[9] == '1' if len(sys.argv) > 9 else False
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc)
+            listen_addr = sys.argv[10] if len(sys.argv) > 10 else '127.0.0.1'
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr)
         except Exception as e:
             # If we have an error log path, try to write to it even if startup fails
             try:
@@ -3085,7 +3090,10 @@ def main():
         'vga': "",
         'resolution': "1280x800",
         'snapshot': False,
-        'synctime': None
+        'synctime': None,
+        'public_vnc': False,
+        'public_ssh': False,
+        'accept_vm_ssh': False
     }
 
     ssh_passthrough = []
@@ -3194,6 +3202,12 @@ def main():
             config['debug'] = True
         elif arg == "--public":
             config['public'] = True
+        elif arg == "--public-vnc":
+            config['public_vnc'] = True
+        elif arg == "--public-ssh":
+            config['public_ssh'] = True
+        elif arg == "--accept-vm-ssh":
+            config['accept_vm_ssh'] = True
         elif arg == "--whpx":
             config['whpx'] = True
         elif arg == "--serial":
@@ -3724,10 +3738,15 @@ def main():
         if not config['sshport']:
             fatal("No free port")
 
-    if config['public']:
-        addr = ""
+    if config['public'] or config['public_ssh']:
+        ssh_addr = ""
     else:
-        addr = "127.0.0.1"
+        ssh_addr = "127.0.0.1"
+        
+    if config['public']:
+        p_addr = ""
+    else:
+        p_addr = "127.0.0.1"
 
     # Ensure serial port is allocated for background logging and VNC console
     if not config['serialport']:
@@ -3848,7 +3867,7 @@ def main():
     netdev_args = "user,id=net0,net=192.168.122.0/24,dhcpstart=192.168.122.50"
     if not config.get('enable_ipv6'):
         netdev_args += ",ipv6=off"
-    netdev_args += ",hostfwd=tcp:{}:{}-:22".format(addr, config['sshport'])
+    netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
     
     # Add custom port mappings
     for p in config['ports']:
@@ -3856,10 +3875,10 @@ def main():
         # Format: host:guest (tcp default), tcp:host:guest, udp:host:guest
         if len(parts) == 2:
             # host:guest -> tcp:addr:host-:guest
-            netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(addr, parts[0], parts[1])
+            netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(p_addr, parts[0], parts[1])
         elif len(parts) == 3:
             # proto:host:guest -> proto:addr:host-:guest
-            netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], addr, parts[1], parts[2])
+            netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], p_addr, parts[1], parts[2])
 
     args_qemu = []
     if serial_chardev_def:
@@ -4157,7 +4176,8 @@ def main():
                 '1' if is_audio_enabled else '0',
                 config['qmon'] if config['qmon'] else "",
                 os.path.join(output_dir, "{}.vncproxy.err".format(vm_name)),
-                '1' if is_vnc_console else '0'
+                '1' if is_vnc_console else '0',
+                '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1'
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
@@ -4225,7 +4245,7 @@ def main():
                 else:
                     os.chmod(ssh_dir, 0o700)
             
-            if vmpub_file and os.path.exists(vmpub_file):
+            if (config.get('sync') == 'sshfs' or config.get('accept_vm_ssh')) and vmpub_file and os.path.exists(vmpub_file):
                 with open(vmpub_file, 'r') as f:
                     pub = f.read()
                 with open(os.path.join(ssh_dir, "authorized_keys"), 'a') as f:
@@ -4663,7 +4683,8 @@ def main():
                     debuglog(config['debug'], "Detected host SSH port {}".format(config['hostsshport']))
             if config['hostsshport']:
                 host_port_line = "  Port {}\n".format(config['hostsshport'])
-            vm_ssh_config = """
+            if config.get('sync') == 'sshfs' or config.get('accept_vm_ssh'):
+                vm_ssh_config = """
 StrictHostKeyChecking=no
 
 Host host
@@ -4671,10 +4692,10 @@ Host host
 {host_port}  User {user}
   ServerAliveInterval 1
 """.format(host_port=host_port_line, user=current_user)
-            
-            p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
-            p.communicate(input=vm_ssh_config.encode('utf-8'))
-            p.wait()
+                
+                p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
+                p.communicate(input=vm_ssh_config.encode('utf-8'))
+                p.wait()
             # OmniOS DNS configuration
             if config['os'] == 'omnios':
                 p = subprocess.Popen(ssh_base_cmd + ["sh"], stdin=subprocess.PIPE)
