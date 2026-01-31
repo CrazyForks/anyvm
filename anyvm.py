@@ -485,6 +485,51 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             min-width: 25px;
             text-align: center;
         }
+        .powered-by {
+            position: fixed;
+            bottom: 12px;
+            right: 16px;
+            font-size: 11px;
+            color: #64748b;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            opacity: 0.6;
+            transition: opacity 0.2s ease;
+            text-decoration: none;
+        }
+        .powered-by:hover {
+            opacity: 1;
+        }
+        .powered-by span {
+            color: #3b82f6;
+            font-weight: 600;
+        }
+        .toolbar-link {
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            color: #94a3b8;
+            opacity: 0.8;
+            transition: all 0.2s ease;
+            padding: 2px 8px;
+            border-radius: 6px;
+            margin-left: 4px;
+        }
+        .toolbar-link:hover {
+            opacity: 1;
+            background: rgba(51, 65, 85, 0.3);
+            color: #f1f5f9;
+        }
+        .toolbar-link span {
+            color: #3b82f6;
+            font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -512,6 +557,11 @@ VNC_WEB_HTML = """<!DOCTYPE html>
                 <input type="checkbox" id="cb-timestamp" onchange="toggleTimestamp(this)" style="cursor: pointer;">
                 <label for="cb-timestamp" style="font-size: 11px; cursor: pointer; user-select: none;">Timestamp</label>
             </div>
+        </div>
+        <div class="toolbar-group" style="border-right: none; padding-right: 0; margin-right: 0;">
+            <a href="https://anyvm.org" target="_blank" class="toolbar-link">
+                <span>AnyVM.org</span>
+            </a>
         </div>
     </div>
     <div class="toolbar">
@@ -559,6 +609,9 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
         </button>
     </div>
+    <a href="https://anyvm.org" target="_blank" class="powered-by">
+        Powered by <span>AnyVM.org</span>
+    </a>
 
 <script>
 var AUDIO_ENABLED = AUDIO_ENABLED || false;
