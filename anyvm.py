@@ -151,6 +151,29 @@ def log(msg):
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
     print("[{}] {}".format(timestamp, msg))
 
+def supports_ansi_color(stream=sys.stdout):
+    """Checks if the stream supports ANSI color sequences."""
+    try:
+        if not hasattr(stream, "isatty") or not stream.isatty():
+            return False
+    except Exception:
+        return False
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    if IS_WINDOWS:
+        if os.environ.get("WT_SESSION"):
+            return True
+        if os.environ.get("ANSICON"):
+            return True
+        if os.environ.get("ConEmuANSI", "").upper() == "ON":
+            return True
+        if os.environ.get("TERM"):
+            return True
+        return False
+    return True
+
 def debuglog(enabled, msg):
     """Conditional debug logger."""
     if enabled:
@@ -1711,6 +1734,8 @@ class VNCWebProxy:
         self.clients = set()
         self.serial_buffer = collections.deque(maxlen=1024 * 100) # 100KB binary buffer (optimized for refresh speed)
         self.serial_writer = None
+        self.stop_event = None # Initialized in run()
+        self.kill_tunnels_func = None
     
     async def handle_client(self, reader, writer):
         try:
@@ -1918,32 +1943,62 @@ class VNCWebProxy:
         except:
             pass
 
-    async def monitor_qemu(self):
+    def monitor_qemu_thread(self, loop):
+        """Thread-based monitor to ensure we catch QEMU exit even if loop is busy."""
         while True:
-            await asyncio.sleep(1)
+            time.sleep(1)
             if self.qemu_pid:
-                pid = self.qemu_pid
-                alive = False
-                try:
-                    if os.name == 'nt':
-                        import ctypes
-                        kernel32 = ctypes.windll.kernel32
-                        h_process = kernel32.OpenProcess(0x1000, False, pid)
-                        if h_process:
-                            exit_code = ctypes.c_ulong()
-                            kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
-                            kernel32.CloseHandle(h_process)
-                            alive = (exit_code.value == 259) # STILL_ACTIVE
-                        else:
-                            alive = False
-                    else:
-                        os.kill(pid, 0)
-                        alive = True
-                except:
-                    alive = False
-                
-                if not alive:
+                if not self.is_pid_alive(self.qemu_pid):
+                    log_msg = "[VNCProxy] QEMU (PID: {}) is no longer running. Exiting.".format(self.qemu_pid)
+                    debuglog(True, log_msg)
+                    if self.error_log_path:
+                        try:
+                            with open(self.error_log_path, 'a') as f:
+                                t = time.time()
+                                ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+                                f.write("[{}] {}\n".format(ts, log_msg))
+                        except: pass
+                    # Force exit the entire proxy process to ensure all threads and tunnels die
+                    if self.kill_tunnels_func:
+                        try: self.kill_tunnels_func()
+                        except: pass
                     os._exit(0)
+                    return
+
+    def is_pid_alive(self, pid):
+        try:
+            if os.name == 'nt':
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                h_process = kernel32.OpenProcess(0x1000, False, pid)
+                if h_process:
+                    exit_code = ctypes.c_ulong()
+                    kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
+                    kernel32.CloseHandle(h_process)
+                    return (exit_code.value == 259) # STILL_ACTIVE
+                return False
+            else:
+                try:
+                    os.kill(pid, 0)
+                    # On Linux, a zombie process still satisfies os.kill(pid, 0)
+                    # Check if it's a zombie if we can
+                    if os.path.exists("/proc/{}/status".format(pid)):
+                        with open("/proc/{}/status".format(pid), 'r') as f:
+                            for line in f:
+                                if line.startswith("State:"):
+                                    if "Z (zombie)" in line:
+                                        return False
+                                    break
+                    return True
+                except OSError as e:
+                    # EPERM (1) means process exists but we can't signal it.
+                    # ESRCH (3) means process does not exist.
+                    import errno
+                    return e.errno == errno.EPERM
+                except:
+                    return False
+        except:
+            return False
 
     async def send_monitor_command(self, cmd):
         if not self.qmon_port:
@@ -2008,26 +2063,278 @@ class VNCWebProxy:
                 await asyncio.sleep(1)
 
     async def run(self):
+        self.stop_event = asyncio.Event()
         # Start serial worker if in console mode
         if self.is_console_vnc:
             asyncio.create_task(self.serial_worker())
             
-        server = await asyncio.start_server(self.handle_client, self.listen_addr, self.web_port)
-        asyncio.create_task(self.monitor_qemu())
-        async with server: 
-            await server.serve_forever()
+        self.server = await asyncio.start_server(self.handle_client, self.listen_addr, self.web_port)
+        # Start the monitor in a background thread
+        t = threading.Thread(target=self.monitor_qemu_thread, args=(asyncio.get_event_loop(),))
+        t.daemon = True
+        t.start()
+        
+        async with self.server: 
+            try:
+                # Wait for the stop event (triggered by QEMU exit)
+                await self.stop_event.wait()
+            except asyncio.CancelledError:
+                pass
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1'):
+def strip_ansi(text):
+    """Removes ANSI escape sequences from text."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', remote_vnc=False, debug=False):
+    # Handle termination signals for immediate cleanup
+    def signal_handler(sig, frame):
+        sys.exit(0)
+
+    if platform.system() != "Windows":
+        import signal
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
     if error_log_path:
         try:
-            with open(error_log_path, 'a') as f:
+            # Clean up old remote file if it exists
+            remote_file = error_log_path.replace(".vncproxy.log", ".remote")
+            if os.path.exists(remote_file):
+                os.remove(remote_file)
+            
+            with open(error_log_path, 'w') as f:
                 t = time.time()
                 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
-                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_addr))
+                remote_vnc_desc = "True" if remote_vnc == "1" else (remote_vnc if remote_vnc else "False")
+                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}, Remote VNC: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_addr, remote_vnc_desc))
         except:
             pass
-    proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr)
-    asyncio.run(proxy.run())
+    
+    tunnel_procs = [] # Track all started tunnel processes
+    
+    def kill_all_tunnels():
+        for p in list(tunnel_procs):
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                    try:
+                        p.wait(timeout=2)
+                    except:
+                        p.kill()
+                except: pass
+            if p in tunnel_procs:
+                tunnel_procs.remove(p)
+
+    if remote_vnc:
+        def tunnel_manager():
+            # Attempt strategies in order
+            data_dir = os.path.dirname(error_log_path) if error_log_path else os.getcwd()
+            sys_name = platform.system().lower()
+            machine = platform.machine().lower()
+
+            # Method 1: Cloudflare
+            cf_bin = "cloudflared" + (".exe" if sys_name == "windows" else "")
+            cf_path = os.path.join(data_dir, cf_bin)
+            
+            # (Download logic omitted here for brevity, assuming it runs first or integrated)
+            # Actually I should keep the download logic
+            if not os.path.exists(cf_path):
+                # ... download logic ...
+                # (I will keep the existing download logic)
+                pass
+
+            strategies = [
+                {
+                    'name': 'Cloudflare',
+                    'cmd': lambda: [cf_path, "tunnel", "--url", "http://127.0.0.1:{}".format(web_port)] if os.path.exists(cf_path) else None,
+                    'regex': r"https://[a-z0-9-]+\.trycloudflare\.com",
+                    'msg': "Open this link to access WebVNC (via Cloudflare): {}"
+                },
+                {
+                    'name': 'Localhost.run',
+                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(web_port), "lx@localhost.run"],
+                    'regex': r"https?://[a-z0-9.-]+\.lhr\.(?:life|proxy\.localhost\.run|localhost\.run)",
+                    'msg': "Open this link to access WebVNC (via Localhost.run): {}"
+                },
+                {
+                    'name': 'Pinggy',
+                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-p", "443", "-R", "80:localhost:{}".format(web_port), "a.pinggy.io"],
+                    'regex': r"https?://[a-z0-9.-]+\.pinggy\.link",
+                    'msg': "Open this link to access WebVNC (via Pinggy): {}"
+                }
+            ]
+
+            # Filter strategies if a specific one is requested
+            if remote_vnc not in [True, "1", "0", False]:
+                req = str(remote_vnc).lower()
+                if "cf" in req or "cloudflare" in req:
+                    strategies = [s for s in strategies if s['name'] == 'Cloudflare']
+                elif "localhost" in req or "lhr" in req:
+                    strategies = [s for s in strategies if s['name'] == 'Localhost.run']
+                elif "pinggy" in req:
+                    strategies = [s for s in strategies if s['name'] == 'Pinggy']
+
+            for strat in strategies:
+                cmd = strat['cmd']()
+                if not cmd: continue
+                
+                log_msg = "Tunnel: Trying {}...".format(strat['name'])
+                debuglog(debug, log_msg)
+                if error_log_path:
+                    try:
+                        with open(error_log_path, 'a') as f:
+                            f.write("[VNCProxy] " + log_msg + "\n")
+                    except: pass
+
+                try:
+                    kwargs = {
+                        "stdin": subprocess.DEVNULL,
+                        "stdout": subprocess.PIPE,
+                        "stderr": subprocess.STDOUT
+                    }
+                    if sys_name == "windows":
+                        kwargs["creationflags"] = 0x08000000 | 0x00000008
+                    
+                    p = subprocess.Popen(cmd, **kwargs)
+                    tunnel_procs.append(p)
+                    
+                    found_url = [None]
+                    
+                    def monitor():
+                        try:
+                            while True:
+                                line = p.stdout.readline()
+                                if not line: break
+                                text = line.decode('utf-8', errors='ignore')
+                                clean_text = strip_ansi(text)
+                                if error_log_path:
+                                    with open(error_log_path, 'a') as f:
+                                        f.write("[{}] {}".format(strat['name'], text))
+                                
+                                match = re.search(strat['regex'], clean_text)
+                                if match:
+                                    found_url[0] = match.group(0)
+                                    msg = strat['msg'].format(found_url[0])
+                                    if error_log_path:
+                                        try:
+                                            with open(error_log_path, 'a') as f:
+                                                f.write("[VNCProxy] " + msg + "\n")
+                                            # Write URL to .remote file
+                                            remote_file = error_log_path.replace(".vncproxy.log", ".remote")
+                                            with open(remote_file, 'w') as f:
+                                                f.write(found_url[0] + "\n")
+                                        except: pass
+                                    debuglog(debug, "Tunnel: {} URL found: {}".format(strat['name'], found_url[0]))
+                                    break
+                                
+                                if "429 Too Many Requests" in text:
+                                    debuglog(debug, "Tunnel: {} failed with 429".format(strat['name']))
+                                    break
+                        except: pass
+
+                    m_thread = threading.Thread(target=monitor)
+                    m_thread.daemon = True
+                    m_thread.start()
+                    
+                    # Wait for URL or process exit
+                    start_wait = time.time()
+                    while time.time() - start_wait < 30:
+                        if found_url[0]:
+                            # Keep process running and return
+                            # Start a new monitor thread for the rest of the output
+                            def follow_output(proc, name, log_path):
+                                try:
+                                    while True:
+                                        line = proc.stdout.readline()
+                                        if not line: break
+                                        if log_path:
+                                            with open(log_path, 'a') as f:
+                                                f.write("[{}] {}".format(name, line.decode('utf-8', errors='ignore')))
+                                except: pass
+                            
+                            f_thread = threading.Thread(target=follow_output, args=(p, strat['name'], error_log_path))
+                            f_thread.daemon = True
+                            f_thread.start()
+                            return
+                        
+                        if p.poll() is not None:
+                            debuglog(debug, "Tunnel: {} process exited early".format(strat['name']))
+                            break
+                        time.sleep(0.5)
+                    
+                    debuglog(debug, "Tunnel: {} failed, killing and trying next...".format(strat['name']))
+                    if error_log_path:
+                        try:
+                            with open(error_log_path, 'a') as f:
+                                f.write("[VNCProxy] Tunnel: {} failed or timed out. Trying next strategy...\n".format(strat['name']))
+                        except: pass
+                    try:
+                        p.kill()
+                        p.wait(timeout=1)
+                    except: pass
+                    if p in tunnel_procs: tunnel_procs.remove(p)
+                    
+                except Exception as e:
+                    err_msg = "Tunnel: Strategy {} failed with error: {}".format(strat['name'], e)
+                    debuglog(debug, err_msg)
+                    if error_log_path:
+                        try:
+                            with open(error_log_path, 'a') as f:
+                                f.write("[VNCProxy] " + err_msg + "\n")
+                        except: pass
+
+        def download_and_run_manager():
+            # Integrated download logic
+            data_dir = os.path.dirname(error_log_path) if error_log_path else os.getcwd()
+            sys_name = platform.system().lower()
+            machine = platform.machine().lower()
+            cf_bin = "cloudflared" + (".exe" if sys_name == "windows" else "")
+            cf_path = os.path.join(data_dir, cf_bin)
+            
+            if not os.path.exists(cf_path):
+                debuglog(debug, "CF Tunnel: cloudflared not found, starting download...")
+                arch_map = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+                cf_arch = arch_map.get(machine, "amd64")
+                base_url = "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+                download_url = ""
+                if sys_name == "windows": download_url = base_url + "cloudflared-windows-{}.exe".format(cf_arch)
+                elif sys_name == "linux": download_url = base_url + "cloudflared-linux-{}".format(cf_arch)
+                elif sys_name == "darwin": download_url = base_url + "cloudflared-darwin-{}.tgz".format(cf_arch)
+                
+                if download_url:
+                    debuglog(debug, "CF Tunnel: downloading from {}".format(download_url))
+                    tmp_file = cf_path + ".tmp" + (".tgz" if sys_name == "darwin" else "")
+                    if download_file(download_url, tmp_file, debug=True):
+                        if sys_name == "darwin":
+                            try:
+                                subprocess.call(["tar", "-xzf", tmp_file, "-C", data_dir])
+                                os.remove(tmp_file)
+                            except: pass
+                        else:
+                            if hasattr(os, 'replace'): os.replace(tmp_file, cf_path)
+                            else: shutil.move(tmp_file, cf_path)
+                        if sys_name != "windows": os.chmod(cf_path, 0o755)
+            
+            tunnel_manager()
+
+        t = threading.Thread(target=download_and_run_manager)
+        t.daemon = True
+        t.start()
+
+    try:
+        proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr)
+        proxy.kill_tunnels_func = kill_all_tunnels
+        asyncio.run(proxy.run())
+    finally:
+        debuglog(debug, "Tunnel: cleaning up all tunnel processes...")
+        kill_all_tunnels()
+        if error_log_path:
+            try:
+                remote_file = error_log_path.replace(".vncproxy.log", ".remote")
+                if os.path.exists(remote_file):
+                    os.remove(remote_file)
+            except: pass
+        debuglog(debug, "Tunnel: stopped")
 
 def fatal(msg):
     print("Error: {}".format(msg), file=sys.stderr)
@@ -2075,6 +2382,8 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
+  --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, or Pinggy.
+                         Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy.
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
@@ -3096,7 +3405,11 @@ def main():
             error_log_path = sys.argv[8] if len(sys.argv) > 8 else None
             is_console_vnc = sys.argv[9] == '1' if len(sys.argv) > 9 else False
             listen_addr = sys.argv[10] if len(sys.argv) > 10 else '127.0.0.1'
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr)
+            remote_vnc_val = sys.argv[11] if len(sys.argv) > 11 else '0'
+            # Correctly parse string values like 'True', 'cf', 'lhr'
+            remote_vnc = remote_vnc_val if remote_vnc_val not in ['0', 'False', 'false', None] else False
+            debug_vnc = sys.argv[12] == '1' if len(sys.argv) > 12 else False
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, remote_vnc=remote_vnc, debug=debug_vnc)
         except Exception as e:
             # If we have an error log path, try to write to it even if startup fails
             try:
@@ -3146,7 +3459,8 @@ def main():
         'synctime': None,
         'public_vnc': False,
         'public_ssh': False,
-        'accept_vm_ssh': False
+        'accept_vm_ssh': False,
+        'remote_vnc': False
     }
 
     ssh_passthrough = []
@@ -3259,6 +3573,17 @@ def main():
             config['public_vnc'] = True
         elif arg == "--public-ssh":
             config['public_ssh'] = True
+        elif arg == "--remote-vnc":
+            if i + 1 < len(args) and not args[i+1].startswith("-"):
+                config['remote_vnc'] = args[i+1]
+                i += 1
+            else:
+                config['remote_vnc'] = True
+            # No i += 1 here as we already incremented if value present, 
+            # and the while loop does a global i += 1 at the end.
+            # However, the current structure has 'i += 1' inside individual elifs or at the bottom.
+            # In ANYVM, most elifs have i += 1, and there is an 'i += 1' at the end of the loop (line 3510).
+            # So if we consume an extra arg, we i += 1. If not, we don't.
         elif arg == "--accept-vm-ssh":
             config['accept_vm_ssh'] = True
         elif arg == "--whpx":
@@ -4228,9 +4553,11 @@ def main():
                 str(qemu_pid),
                 '1' if is_audio_enabled else '0',
                 config['qmon'] if config['qmon'] else "",
-                os.path.join(output_dir, "{}.vncproxy.err".format(vm_name)),
+                os.path.join(output_dir, "{}.vncproxy.log".format(vm_name)),
                 '1' if is_vnc_console else '0',
-                '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1'
+                '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1',
+                str(config['remote_vnc']) if config['remote_vnc'] else '0',
+                '1' if config['debug'] else '0'
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
@@ -4240,21 +4567,28 @@ def main():
                 popen_kwargs['start_new_session'] = True
             
             try:
-                subprocess.Popen(proxy_args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, **popen_kwargs)
+                p = subprocess.Popen(proxy_args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, **popen_kwargs)
                 open_vnc_page(web_port)
-                log("VNC Web UI available at http://localhost:{}".format(web_port))
+                local_url = "http://localhost:{}".format(web_port)
+                display_local_url = local_url
+                if supports_ansi_color():
+                    display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
+                log("VNC Web UI available at {}".format(display_local_url))
+                return p
             except Exception as e:
                 debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
+                return None
 
+    proxy_proc = None
     if config['console']:
         proc = subprocess.Popen(cmd_list)
-        start_vnc_proxy_for_pid(proc.pid)
+        proxy_proc = start_vnc_proxy_for_pid(proc.pid)
         proc.wait()
     else:
         # Background run
         try:
             proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            start_vnc_proxy_for_pid(proc.pid)
+            proxy_proc = start_vnc_proxy_for_pid(proc.pid)
         except OSError as e:
             fatal("Failed to start QEMU: {}".format(e))
 
@@ -4545,27 +4879,6 @@ def main():
                 # Render a final, fully-filled bar so the last frame doesn't look partial.
                 elapsed = last_wait_tick[0] / 100.0
 
-                def supports_ansi_color(stream):
-                    try:
-                        if not hasattr(stream, "isatty") or not stream.isatty():
-                            return False
-                    except Exception:
-                        return False
-                    if os.environ.get("NO_COLOR") is not None:
-                        return False
-                    if os.environ.get("TERM") == "dumb":
-                        return False
-                    if IS_WINDOWS:
-                        if os.environ.get("WT_SESSION"):
-                            return True
-                        if os.environ.get("ANSICON"):
-                            return True
-                        if os.environ.get("ConEmuANSI", "").upper() == "ON":
-                            return True
-                        if os.environ.get("TERM"):
-                            return True
-                        return False
-                    return True
 
                 use_color = supports_ansi_color(sys.stdout)
                 green = "\x1b[32m"
@@ -4642,17 +4955,47 @@ def main():
                 wait_timer_thread.join(0.2)
             finish_wait_timer()
             
+            tunnel_url = None
+            tunnel_service = "Remote"
+            if config['remote_vnc']:
+                # Attempt to find and display the Cloudflare Tunnel URL from the proxy log
+                vnc_log = os.path.join(output_dir, "{}.vncproxy.log".format(vm_name))
+                # Give it a tiny bit of time to settle if it just finished
+                if os.path.exists(vnc_log):
+                    try:
+                        with open(vnc_log, 'r') as f:
+                            log_text = f.read()
+                            match = re.search(r"Open this link to access WebVNC \(via ([^)]+)\): (https?://[^\s]+)", log_text)
+                            if match:
+                                tunnel_service = match.group(1)
+                                tunnel_url = match.group(2)
+                                display_url = tunnel_url
+                                if supports_ansi_color():
+                                    display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
+                                log("Open this link to access WebVNC (via {}): {}".format(tunnel_service, display_url))
+                            else:
+                                # Check for errors
+                                err_match = re.search(r"(?:Cloudflare )?Tunnel Error: (.*)", log_text)
+                                if err_match:
+                                    log("Tunnel Error: {}".format(err_match.group(1)))
+                                else:
+                                    log("Remote Tunnel failed to provide a URL. Check {} for details.".format(vnc_log))
+                    except:
+                        pass
+            
             if not success:
                 # First timeout - kill QEMU and retry once
                 log("Boot timed out after 5 minutes. Killing QEMU and retrying...")
                 terminate_process(proc, "QEMU")
+                if proxy_proc:
+                    terminate_process(proxy_proc, "VNC Proxy")
                 # Wait for old proxy to exit
                 time.sleep(1.5)
                 
                 # Restart QEMU
                 try:
                     proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    start_vnc_proxy_for_pid(proc.pid)
+                    proxy_proc = start_vnc_proxy_for_pid(proc.pid)
                 except OSError as e:
                     fatal("Failed to restart QEMU: {}".format(e))
                 
@@ -4812,28 +5155,89 @@ Host host
                  if config.get('sshname'):
                      log("Or just:  ssh " + str(config['sshname']))
                  if web_port:
-                     log("VNC Web UI: http://localhost:{}".format(web_port))
+                     local_url = "http://localhost:{}".format(web_port)
+                     display_local_url = local_url
+                     if supports_ansi_color():
+                         display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
+                     log("VNC Web UI: {}".format(display_local_url))
+                     if tunnel_url:
+                         display_url = tunnel_url
+                         if supports_ansi_color():
+                             display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
+                         log("WebVNC ({}): {}".format(tunnel_service, display_url))
                  log("======================================")
 
             if not config['detach']:
                 ssh_cmd = ssh_base_cmd + ssh_passthrough
                 debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
                 subprocess.call(ssh_cmd)
-            # Avoid noisy banner when running as PID 1 inside a container
+            # Avoid noisy banner when running as PID 1 inside a container or if QEMU already exited
             if os.getpid() != 1:
-                log("======================================")
-                log("The VM is still running in background.")
-                log("You can login the VM with:  ssh " + vm_name)
-                log("Or just:  ssh " + str(config['sshport']))
-                if config.get('sshname'):
-                    log("Or just:  ssh " + str(config['sshname']))
-                if web_port:
-                    log("VNC Web UI: http://localhost:{}".format(web_port))
-                log("======================================")
+                if not config['detach']:
+                    # Give a moment for QEMU to fully exit if it was powered off
+                    time.sleep(1)
+                if is_pid_alive_main(proc.pid):
+                    log("======================================")
+                    log("The VM is still running in background.")
+                    log("You can login the VM with:  ssh " + vm_name)
+                    log("Or just:  ssh " + str(config['sshport']))
+                    if config.get('sshname'):
+                        log("Or just:  ssh " + str(config['sshname']))
+                    if web_port:
+                        local_url = "http://localhost:{}".format(web_port)
+                        display_local_url = local_url
+                        if supports_ansi_color():
+                            display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
+                        log("VNC Web UI: {}".format(display_local_url))
+                    if tunnel_url:
+                        display_url = tunnel_url
+                        if supports_ansi_color():
+                            display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
+                        log("WebVNC ({}): {}".format(tunnel_service, display_url))
+                    log("======================================")
+                else:
+                    log("VM has exited")
         except KeyboardInterrupt:
             if not config['detach']:
                 terminate_process(proc, "QEMU")
+                if 'proxy_proc' in locals() and proxy_proc:
+                    # On Windows, wait a bit for proxy to exit gracefully via its own monitor
+                    if IS_WINDOWS:
+                        start_wait = time.time()
+                        while time.time() - start_wait < 3:
+                            if proxy_proc.poll() is not None: break
+                            time.sleep(0.5)
+                    terminate_process(proxy_proc, "VNC Proxy")
             raise
+
+def is_pid_alive_main(pid):
+    """Helper for the main process to check PID status (duplicated to avoid circular/proxy dependency issues)"""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            h_process = kernel32.OpenProcess(0x1000, False, pid)
+            if h_process:
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
+                kernel32.CloseHandle(h_process)
+                return (exit_code.value == 259) # STILL_ACTIVE
+            return False
+        else:
+            try:
+                os.kill(pid, 0)
+                if os.path.exists("/proc/{}/status".format(pid)):
+                    with open("/proc/{}/status".format(pid), 'r') as f:
+                        for line in f:
+                            if line.startswith("State:"):
+                                if "Z (zombie)" in line: return False
+                                break
+                return True
+            except OSError as e:
+                import errno
+                return e.errno == errno.EPERM
+            except: return False
+    except: return False
 
 if __name__ == '__main__':
     main()
