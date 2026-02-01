@@ -187,6 +187,10 @@ def debuglog(enabled, msg):
 
 def is_browser_available():
     """Returns True if the current environment can likely open a local browser."""
+    # Always return False in CI environments
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return False
+    
     try:
         if IS_WINDOWS:
             return True
