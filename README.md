@@ -256,13 +256,12 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 - `--disktype <type>`: Disk interface type (e.g. `virtio`, `ide`).
   - Example: `python3 anyvm.py --os dragonflybsd --disktype ide`
 
-- `--whpx`: (Windows) Attempt to use WHPX acceleration.
-  - Example: `python3 anyvm.py --os freebsd --whpx`
+
 
 ### Data directory
 
-- `--data-dir <dir>` / `--workingdir <dir>`: Directory used to store images and caches (default: `./output`).
-  - Example: `python3 anyvm.py --os freebsd --data-dir .\\output`
+- `--data-dir <dir>`: Directory used to store images and caches (default: `./output`).
+  - Example: `python3 anyvm.py --os freebsd --data-dir output`
 
 ### Run a command inside the VM
 
