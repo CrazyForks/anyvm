@@ -4593,9 +4593,6 @@ def main():
                 if supports_ansi_color():
                     display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                 log("VNC Web UI available at {}".format(display_local_url))
-                if config.get('remote_vnc_is_default'):
-                    log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
-                    log("        Use '--remote-vnc off' to disable it.")
                 return p
             except Exception as e:
                 debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
