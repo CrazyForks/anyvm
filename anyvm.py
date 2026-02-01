@@ -149,7 +149,11 @@ def format_command_for_display(cmd_list):
 def log(msg):
     t = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+    if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+        # Clear current line (progress bar) and move cursor to beginning
+        sys.stdout.write("\r\x1b[K")
     print("[{}] {}".format(timestamp, msg))
+    sys.stdout.flush()
 
 def supports_ansi_color(stream=sys.stdout):
     """Checks if the stream supports ANSI color sequences."""
@@ -2384,6 +2388,8 @@ Options:
                          Use "--vnc off" to disable.
   --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, or Pinggy.
                          Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy.
+                         Enabled by default if no local browser is detected (e.g., in Cloud Shell).
+                         Use "--remote-vnc no" to disable.
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
@@ -3373,6 +3379,39 @@ def tail_serial_log(path, stop_event):
         pass
 
 
+def watch_vnc_tunnel_log(log_path, stop_event, is_default_notice=False):
+    """Monitor VNC proxy log and print tunnel URL as soon as it appears."""
+    if not log_path:
+        return
+    start_wait = time.time()
+    while not os.path.exists(log_path):
+        if stop_event.is_set() or (time.time() - start_wait > 30):
+            return
+        time.sleep(0.5)
+        
+    try:
+        with open(log_path, 'r') as f:
+            while not stop_event.is_set():
+                line = f.readline()
+                if not line:
+                    time.sleep(0.5)
+                    continue
+                match = re.search(r"Open this link to access WebVNC \(via ([^)]+)\): (https?://[^\s]+)", line)
+                if match:
+                    service = match.group(1)
+                    url = match.group(2)
+                    display_url = url
+                    if supports_ansi_color():
+                        display_url = "\x1b[32m{}\x1b[0m".format(url)
+                    log("Open this link to access WebVNC (via {}): {}".format(service, display_url))
+                    if is_default_notice:
+                        log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                        log("        Use '--remote-vnc off' to disable it.")
+                    return
+    except Exception:
+        pass
+
+
 def detect_host_ssh_port(sshd_config_path="/etc/ssh/sshd_config"):
     try:
         with open(sshd_config_path, 'r') as f:
@@ -3460,7 +3499,8 @@ def main():
         'public_vnc': False,
         'public_ssh': False,
         'accept_vm_ssh': False,
-        'remote_vnc': False
+        'remote_vnc': None,
+        'remote_vnc_is_default': False
     }
 
     ssh_passthrough = []
@@ -3477,6 +3517,8 @@ def main():
         working_dir = "/tmp/anyvm.org"
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
+        config['remote_vnc'] = True
+        config['remote_vnc_is_default'] = True
 
     # Manual argument parsing
     args = sys.argv[1:]
@@ -3575,7 +3617,11 @@ def main():
             config['public_ssh'] = True
         elif arg == "--remote-vnc":
             if i + 1 < len(args) and not args[i+1].startswith("-"):
-                config['remote_vnc'] = args[i+1]
+                val = args[i+1]
+                if val.lower() in ["no", "off", "false", "0"]:
+                    config['remote_vnc'] = False
+                else:
+                    config['remote_vnc'] = val
                 i += 1
             else:
                 config['remote_vnc'] = True
@@ -3608,10 +3654,20 @@ def main():
                 i += 1
             else:
                 config['synctime'] = True
+        else:
+            log("Warning: Unrecognized argument: {}".format(arg))
         i += 1
 
     if config['debug']:
         debuglog(True, "Debug logging enabled")
+
+    # If remote VNC not explicitly specified, enable it by default if browser is unavailable
+    if config['remote_vnc'] is None:
+        if config['vnc'].lower() != "off" and not is_browser_available():
+            config['remote_vnc'] = True
+            config['remote_vnc_is_default'] = True
+        else:
+            config['remote_vnc'] = False
 
     is_vnc_console = (config.get('vnc') == "console")
 
@@ -4539,6 +4595,8 @@ def main():
     cmd_text = format_command_for_display(cmd_list)
     debuglog(config['debug'], "CMD:\n  " + cmd_text)
 
+    vnc_log_path = os.path.join(output_dir, "{}.vncproxy.log".format(vm_name))
+
     # Function to start (or restart) the VNC Web Proxy monitoring the given QEMU PID
     def start_vnc_proxy_for_pid(qemu_pid):
         if config['vnc'] != "off" and web_port:
@@ -4553,7 +4611,7 @@ def main():
                 str(qemu_pid),
                 '1' if is_audio_enabled else '0',
                 config['qmon'] if config['qmon'] else "",
-                os.path.join(output_dir, "{}.vncproxy.log".format(vm_name)),
+                vnc_log_path,
                 '1' if is_vnc_console else '0',
                 '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1',
                 str(config['remote_vnc']) if config['remote_vnc'] else '0',
@@ -4574,12 +4632,30 @@ def main():
                 if supports_ansi_color():
                     display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                 log("VNC Web UI available at {}".format(display_local_url))
+                
+                # Start tunnel watcher thread if remote VNC is enabled
+                if config.get('remote_vnc'):
+                    t = threading.Thread(target=watch_vnc_tunnel_log, args=(vnc_log_path, tunnel_wait_stop, config.get('remote_vnc_is_default')))
+                    t.daemon = True
+                    t.start()
                 return p
             except Exception as e:
                 debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
                 return None
 
     proxy_proc = None
+    tunnel_wait_stop = threading.Event()
+    
+    # Pre-startup cleanup of VNC tunnel information
+    try:
+        if os.path.exists(vnc_log_path):
+            os.remove(vnc_log_path)
+        remote_file = vnc_log_path.replace(".vncproxy.log", ".remote")
+        if os.path.exists(remote_file):
+            os.remove(remote_file)
+    except:
+        pass
+
     if config['console']:
         proc = subprocess.Popen(cmd_list)
         proxy_proc = start_vnc_proxy_for_pid(proc.pid)
@@ -4951,6 +5027,7 @@ def main():
 
             
             wait_timer_stop.set()
+            tunnel_wait_stop.set()
             if wait_timer_thread:
                 wait_timer_thread.join(0.2)
             finish_wait_timer()
@@ -4972,7 +5049,7 @@ def main():
                                 display_url = tunnel_url
                                 if supports_ansi_color():
                                     display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
-                                log("Open this link to access WebVNC (via {}): {}".format(tunnel_service, display_url))
+                                # Redundant log removed, already handled by watch_vnc_tunnel_log
                             else:
                                 # Check for errors
                                 err_match = re.search(r"(?:Cloudflare )?Tunnel Error: (.*)", log_text)
@@ -5165,6 +5242,9 @@ Host host
                          if supports_ansi_color():
                              display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
                          log("WebVNC ({}): {}".format(tunnel_service, display_url))
+                         if config.get('remote_vnc_is_default'):
+                             log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                             log("        Use '--remote-vnc off' to disable it.")
                  log("======================================")
 
             if not config['detach']:
@@ -5194,6 +5274,9 @@ Host host
                         if supports_ansi_color():
                             display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
                         log("WebVNC ({}): {}".format(tunnel_service, display_url))
+                        if config.get('remote_vnc_is_default'):
+                            log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                            log("        Use '--remote-vnc off' to disable it.")
                     log("======================================")
                 else:
                     log("VM has exited")
