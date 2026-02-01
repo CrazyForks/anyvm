@@ -2384,6 +2384,8 @@ Options:
                          Use "--vnc off" to disable.
   --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, or Pinggy.
                          Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy.
+                         Enabled by default if no local browser is detected (e.g., in Cloud Shell).
+                         Use "--remote-vnc no" to disable.
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
@@ -3460,7 +3462,8 @@ def main():
         'public_vnc': False,
         'public_ssh': False,
         'accept_vm_ssh': False,
-        'remote_vnc': False
+        'remote_vnc': None,
+        'remote_vnc_is_default': False
     }
 
     ssh_passthrough = []
@@ -3477,6 +3480,8 @@ def main():
         working_dir = "/tmp/anyvm.org"
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
+        config['remote_vnc'] = True
+        config['remote_vnc_is_default'] = True
 
     # Manual argument parsing
     args = sys.argv[1:]
@@ -3575,7 +3580,11 @@ def main():
             config['public_ssh'] = True
         elif arg == "--remote-vnc":
             if i + 1 < len(args) and not args[i+1].startswith("-"):
-                config['remote_vnc'] = args[i+1]
+                val = args[i+1]
+                if val.lower() in ["no", "off", "false", "0"]:
+                    config['remote_vnc'] = False
+                else:
+                    config['remote_vnc'] = val
                 i += 1
             else:
                 config['remote_vnc'] = True
@@ -3608,10 +3617,20 @@ def main():
                 i += 1
             else:
                 config['synctime'] = True
+        else:
+            log("Warning: Unrecognized argument: {}".format(arg))
         i += 1
 
     if config['debug']:
         debuglog(True, "Debug logging enabled")
+
+    # If remote VNC not explicitly specified, enable it by default if browser is unavailable
+    if config['remote_vnc'] is None:
+        if config['vnc'].lower() != "off" and not is_browser_available():
+            config['remote_vnc'] = True
+            config['remote_vnc_is_default'] = True
+        else:
+            config['remote_vnc'] = False
 
     is_vnc_console = (config.get('vnc') == "console")
 
@@ -5165,6 +5184,9 @@ Host host
                          if supports_ansi_color():
                              display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
                          log("WebVNC ({}): {}".format(tunnel_service, display_url))
+                         if config.get('remote_vnc_is_default'):
+                             log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                             log("        Use '--remote-vnc off' to disable it.")
                  log("======================================")
 
             if not config['detach']:
@@ -5194,6 +5216,9 @@ Host host
                         if supports_ansi_color():
                             display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
                         log("WebVNC ({}): {}".format(tunnel_service, display_url))
+                        if config.get('remote_vnc_is_default'):
+                            log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                            log("        Use '--remote-vnc off' to disable it.")
                     log("======================================")
                 else:
                     log("VM has exited")

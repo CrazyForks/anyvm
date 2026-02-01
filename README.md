@@ -140,7 +140,7 @@ AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's
   - **Fullscreen**: Toggle fullscreen mode for an immersive experience.
   - **Stats**: Real-time FPS and latency monitoring.
 - **Accessibility**: Available at `http://localhost:6080` by default. If the port is occupied, AnyVM will automatically try the next available port (e.g., 6081, 6082).
-- **Remote Access**: Use `--remote-vnc` to automatically create a public, secure tunnel (via Cloudflare, Localhost.run, or Pinggy) to access your VM's display from anywhere in the world.
+- **Remote Access**: Use `--remote-vnc` to automatically create a public, secure tunnel (via Cloudflare, Localhost.run, or Pinggy) to access your VM's display from anywhere in the world. (In Google Cloud Shell, this is enabled by default; use `--remote-vnc no` to disable).
 
 ## 9. CLI options (with examples)
 
@@ -240,6 +240,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 - `--remote-vnc`: Create a public tunnel for the VNC Web UI using Cloudflare, Localhost.run, or Pinggy.
   - Example: `python3 anyvm.py --os freebsd --remote-vnc`
   - Advanced: Use `cf`, `lhr`, or `pinggy` to specify a service: `python3 anyvm.py --os freebsd --remote-vnc cf`
+  - Disable: Use `no` to disable (e.g., in Google Cloud Shell where it's default): `python3 anyvm.py --os freebsd --remote-vnc no`
 
 - `--mon <port>`: Expose the QEMU monitor via telnet on localhost.
   - Example: `python3 anyvm.py --os freebsd --mon 4444`
