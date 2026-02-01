@@ -4524,7 +4524,8 @@ def main():
                 candidates = [
                     "/usr/share/qemu/OVMF.fd",
                     "/usr/share/OVMF/OVMF_CODE.fd",
-                    "/usr/share/ovmf/OVMF_CODE.fd"
+                    "/usr/share/ovmf/OVMF_CODE.fd",
+                    "/usr/share/edk2/x64/OVMF_CODE.4m.fd"
                 ]
                 efi_src = ""
                 for c in candidates:
