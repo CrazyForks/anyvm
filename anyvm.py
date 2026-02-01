@@ -2155,15 +2155,21 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                 },
                 {
                     'name': 'Localhost.run',
-                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(web_port), "lx@localhost.run"],
+                    'cmd': lambda: ["ssh", "-F", "/dev/null" if sys_name != "windows" else "NUL", "-T", "-o", "StrictHostKeyChecking=no", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(web_port), "lx@localhost.run"],
                     'regex': r"https?://[a-z0-9.-]+\.lhr\.(?:life|proxy\.localhost\.run|localhost\.run)",
                     'msg': "Open this link to access WebVNC (via Localhost.run): {}"
                 },
                 {
                     'name': 'Pinggy',
-                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-p", "443", "-R", "80:localhost:{}".format(web_port), "a.pinggy.io"],
+                    'cmd': lambda: ["ssh", "-F", "/dev/null" if sys_name != "windows" else "NUL", "-T", "-o", "StrictHostKeyChecking=no", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-p", "443", "-R", "80:localhost:{}".format(web_port), "a.pinggy.io"],
                     'regex': r"https?://[a-z0-9.-]+\.pinggy\.link",
                     'msg': "Open this link to access WebVNC (via Pinggy): {}"
+                },
+                {
+                    'name': 'Serveo',
+                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(web_port), "serveo.net"],
+                    'regex': r"https?://[a-z0-9.-]+\.(?:serveo\.net|serveousercontent\.com)",
+                    'msg': "Open this link to access WebVNC (via Serveo): {}"
                 }
             ]
 
@@ -2176,6 +2182,8 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                     strategies = [s for s in strategies if s['name'] == 'Localhost.run']
                 elif "pinggy" in req:
                     strategies = [s for s in strategies if s['name'] == 'Pinggy']
+                elif "serveo" in req:
+                    strategies = [s for s in strategies if s['name'] == 'Serveo']
 
             for strat in strategies:
                 cmd = strat['cmd']()
@@ -2392,8 +2400,8 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
-  --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, or Pinggy.
-                         Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy.
+  --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, Pinggy, or Serveo.
+                         Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy, --remote-vnc serveo.
                          Enabled by default if no local browser is detected (e.g., in Cloud Shell).
                          Use "--remote-vnc no" to disable.
   --remote-vnc-link-file Specify a file to write the remote VNC link to (instead of the default .remote file).
