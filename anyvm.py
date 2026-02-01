@@ -2090,7 +2090,7 @@ def strip_ansi(text):
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     return ansi_escape.sub('', text)
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', remote_vnc=False, debug=False):
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', remote_vnc=False, debug=False, remote_vnc_link_file=None):
     # Handle termination signals for immediate cleanup
     def signal_handler(sig, frame):
         sys.exit(0)
@@ -2101,8 +2101,7 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
         signal.signal(signal.SIGINT, signal_handler)
     if error_log_path:
         try:
-            # Clean up old remote file if it exists
-            remote_file = error_log_path.replace(".vncproxy.log", ".remote")
+            remote_file = remote_vnc_link_file if remote_vnc_link_file else error_log_path.replace(".vncproxy.log", ".remote")
             if os.path.exists(remote_file):
                 os.remove(remote_file)
             
@@ -2189,6 +2188,13 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                         with open(error_log_path, 'a') as f:
                             f.write("[VNCProxy] " + log_msg + "\n")
                     except: pass
+                
+                # Pre-cleanup of the link file if it was specified
+                if remote_vnc_link_file:
+                    try:
+                        if os.path.exists(remote_vnc_link_file):
+                            os.remove(remote_vnc_link_file)
+                    except: pass
 
                 try:
                     kwargs = {
@@ -2224,7 +2230,7 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                                             with open(error_log_path, 'a') as f:
                                                 f.write("[VNCProxy] " + msg + "\n")
                                             # Write URL to .remote file
-                                            remote_file = error_log_path.replace(".vncproxy.log", ".remote")
+                                            remote_file = remote_vnc_link_file if remote_vnc_link_file else error_log_path.replace(".vncproxy.log", ".remote")
                                             with open(remote_file, 'w') as f:
                                                 f.write(found_url[0] + "\n")
                                         except: pass
@@ -2390,6 +2396,7 @@ Options:
                          Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy.
                          Enabled by default if no local browser is detected (e.g., in Cloud Shell).
                          Use "--remote-vnc no" to disable.
+  --remote-vnc-link-file Specify a file to write the remote VNC link to (instead of the default .remote file).
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
@@ -3448,7 +3455,8 @@ def main():
             # Correctly parse string values like 'True', 'cf', 'lhr'
             remote_vnc = remote_vnc_val if remote_vnc_val not in ['0', 'False', 'false', None] else False
             debug_vnc = sys.argv[12] == '1' if len(sys.argv) > 12 else False
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, remote_vnc=remote_vnc, debug=debug_vnc)
+            link_file = sys.argv[13] if len(sys.argv) > 13 and sys.argv[13] != '0' else None
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, remote_vnc=remote_vnc, debug=debug_vnc, remote_vnc_link_file=link_file)
         except Exception as e:
             # If we have an error log path, try to write to it even if startup fails
             try:
@@ -3500,7 +3508,8 @@ def main():
         'public_ssh': False,
         'accept_vm_ssh': False,
         'remote_vnc': None,
-        'remote_vnc_is_default': False
+        'remote_vnc_is_default': False,
+        'remote_vnc_link_file': None
     }
 
     ssh_passthrough = []
@@ -3625,11 +3634,9 @@ def main():
                 i += 1
             else:
                 config['remote_vnc'] = True
-            # No i += 1 here as we already incremented if value present, 
-            # and the while loop does a global i += 1 at the end.
-            # However, the current structure has 'i += 1' inside individual elifs or at the bottom.
-            # In ANYVM, most elifs have i += 1, and there is an 'i += 1' at the end of the loop (line 3510).
-            # So if we consume an extra arg, we i += 1. If not, we don't.
+        elif arg == "--remote-vnc-link-file":
+            config['remote_vnc_link_file'] = os.path.abspath(args[i+1])
+            i += 1
         elif arg == "--accept-vm-ssh":
             config['accept_vm_ssh'] = True
         elif arg == "--whpx":
@@ -4615,7 +4622,8 @@ def main():
                 '1' if is_vnc_console else '0',
                 '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1',
                 str(config['remote_vnc']) if config['remote_vnc'] else '0',
-                '1' if config['debug'] else '0'
+                '1' if config['debug'] else '0',
+                str(config['remote_vnc_link_file']) if config['remote_vnc_link_file'] else '0'
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
@@ -4650,7 +4658,7 @@ def main():
     try:
         if os.path.exists(vnc_log_path):
             os.remove(vnc_log_path)
-        remote_file = vnc_log_path.replace(".vncproxy.log", ".remote")
+        remote_file = config['remote_vnc_link_file'] if config['remote_vnc_link_file'] else vnc_log_path.replace(".vncproxy.log", ".remote")
         if os.path.exists(remote_file):
             os.remove(remote_file)
     except:
