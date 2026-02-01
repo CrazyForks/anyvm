@@ -4593,6 +4593,9 @@ def main():
                 if supports_ansi_color():
                     display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                 log("VNC Web UI available at {}".format(display_local_url))
+                if config.get('remote_vnc_is_default'):
+                    log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                    log("        Use '--remote-vnc off' to disable it.")
                 return p
             except Exception as e:
                 debuglog(config['debug'], "Failed to start VNC proxy process: {}".format(e))
@@ -4992,6 +4995,9 @@ def main():
                                 if supports_ansi_color():
                                     display_url = "\x1b[32m{}\x1b[0m".format(tunnel_url)
                                 log("Open this link to access WebVNC (via {}): {}".format(tunnel_service, display_url))
+                                if config.get('remote_vnc_is_default'):
+                                    log("Notice: Remote VNC tunnel is enabled by default as no local browser was detected.")
+                                    log("        Use '--remote-vnc off' to disable it.")
                             else:
                                 # Check for errors
                                 err_match = re.search(r"(?:Cloudflare )?Tunnel Error: (.*)", log_text)
