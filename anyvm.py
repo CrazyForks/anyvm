@@ -1728,7 +1728,7 @@ handleResize();
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1'):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', vnc_password=""):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
@@ -1739,6 +1739,7 @@ class VNCWebProxy:
         self.error_log_path = error_log_path
         self.is_console_vnc = is_console_vnc
         self.listen_addr = listen_addr
+        self.vnc_password = vnc_password
         self.clients = set()
         self.serial_buffer = collections.deque(maxlen=1024 * 100) # 100KB binary buffer (optimized for refresh speed)
         self.serial_writer = None
@@ -1748,20 +1749,29 @@ class VNCWebProxy:
     async def handle_client(self, reader, writer):
         try:
             request = await reader.read(4096)
+            if not request: return
+            
             request_text = request.decode('utf-8', errors='ignore')
-            lines = request_text.split('\r\n')
-            if not lines:
-                writer.close()
-                return
+            lines = request_text.splitlines()
+            if not lines: return
+            
+            parts = lines[0].split()
+            if len(parts) < 2: return
+            path = parts[1]
             
             headers = {}
             for line in lines[1:]:
                 if ':' in line:
-                    key, value = line.split(':', 1)
-                    headers[key.strip().lower()] = value.strip()
+                    key, val = line.split(':', 1)
+                    headers[key.strip().lower()] = val.strip()
             
-            path = lines[0].split()[1] if len(lines[0].split()) > 1 else '/'
-            
+            if self.vnc_password:
+                auth_header = headers.get('authorization', '')
+                is_auth_ok = self.check_auth(auth_header)
+                if not is_auth_ok:
+                    await self.request_auth(writer)
+                    return
+
             if 'upgrade' in headers and headers.get('upgrade', '').lower() == 'websocket':
                 await self.handle_websocket(reader, writer, headers)
             else:
@@ -1774,6 +1784,31 @@ class VNCWebProxy:
             except:
                 pass
     
+    def check_auth(self, auth_header):
+        if not auth_header or not auth_header.lower().startswith('basic '):
+            return False
+        try:
+            cred_part = auth_header.split(None, 1)[1]
+            decoded = base64.b64decode(cred_part).decode('utf-8')
+            pwd = decoded.split(':', 1)[1] if ':' in decoded else decoded
+            return pwd == self.vnc_password
+        except:
+            return False
+
+    async def request_auth(self, writer):
+        body = b"401 Unauthorized"
+        response = (
+            "HTTP/1.1 401 Unauthorized\r\n"
+            "WWW-Authenticate: Basic realm=\"AnyVM\"\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n"
+            "\r\n".format(len(body))
+        ).encode('utf-8') + body
+        writer.write(response)
+        await writer.drain()
+
+
     async def handle_http(self, writer, path):
         title = "AnyVM - VNC Viewer"
         if self.vm_info:
@@ -2094,7 +2129,7 @@ def strip_ansi(text):
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     return ansi_escape.sub('', text)
 
-def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', remote_vnc=False, debug=False, remote_vnc_link_file=None):
+def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', remote_vnc=False, debug=False, remote_vnc_link_file=None, vnc_password=""):
     # Handle termination signals for immediate cleanup
     def signal_handler(sig, frame):
         sys.exit(0)
@@ -2344,7 +2379,7 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
         t.start()
 
     try:
-        proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr)
+        proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, vnc_password=vnc_password)
         proxy.kill_tunnels_func = kill_all_tunnels
         asyncio.run(proxy.run())
     finally:
@@ -2404,6 +2439,7 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
+  --vnc-password <pwd>   Set a password for the VNC Web UI. Empty or omitted means no password.
   --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, Pinggy, or Serveo.
                          Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy, --remote-vnc serveo.
                          Enabled by default if no local browser is detected (e.g., in Cloud Shell).
@@ -3468,7 +3504,8 @@ def main():
             remote_vnc = remote_vnc_val if remote_vnc_val not in ['0', 'False', 'false', None] else False
             debug_vnc = sys.argv[12] == '1' if len(sys.argv) > 12 else False
             link_file = sys.argv[13] if len(sys.argv) > 13 and sys.argv[13] != '0' else None
-            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, remote_vnc=remote_vnc, debug=debug_vnc, remote_vnc_link_file=link_file)
+            vnc_pwd = sys.argv[14] if len(sys.argv) > 14 else ""
+            start_vnc_web_proxy(vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, remote_vnc=remote_vnc, debug=debug_vnc, remote_vnc_link_file=link_file, vnc_password=vnc_pwd)
         except Exception as e:
             # If we have an error log path, try to write to it even if startup fails
             try:
@@ -3521,7 +3558,8 @@ def main():
         'accept_vm_ssh': False,
         'remote_vnc': None,
         'remote_vnc_is_default': False,
-        'remote_vnc_link_file': None
+        'remote_vnc_link_file': None,
+        'vnc_password': ""
     }
 
     ssh_passthrough = []
@@ -3610,6 +3648,9 @@ def main():
         elif arg == "--vnc":
             config['vnc'] = args[i+1]
             vnc_user_specified = True
+            i += 1
+        elif arg == "--vnc-password":
+            config['vnc_password'] = args[i+1]
             i += 1
         elif arg in ["--res", "--resolution"]:
             config['resolution'] = args[i+1]
@@ -4635,7 +4676,8 @@ def main():
                 '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1',
                 str(config['remote_vnc']) if config['remote_vnc'] else '0',
                 '1' if config['debug'] else '0',
-                str(config['remote_vnc_link_file']) if config['remote_vnc_link_file'] else '0'
+                str(config['remote_vnc_link_file']) if config['remote_vnc_link_file'] else '0',
+                config['vnc_password']
             ]
             popen_kwargs = {}
             if IS_WINDOWS:
