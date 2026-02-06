@@ -140,7 +140,7 @@ AnyVM includes a built-in, premium VNC Web UI that allows you to access the VM's
   - **Fullscreen**: Toggle fullscreen mode for an immersive experience.
   - **Stats**: Real-time FPS and latency monitoring.
 - **Accessibility**: Available at `http://localhost:6080` by default. If the port is occupied, AnyVM will automatically try the next available port (e.g., 6081, 6082).
-- **Security**: Protect your VNC session with `--vnc-password <pwd>`. When set, the browser will prompt for credentials when accessing the Web UI.
+- **Security**: Protect your VNC session with `--vnc-password <pwd>`. When set, the browser will prompt for credentials when accessing the Web UI. (Note: The **username can be anything**, but the **password must be correct**).
 - **Remote Access**: Use `--remote-vnc` to automatically create a public, secure tunnel (via Cloudflare, Localhost.run, Pinggy, or Serveo) to access your VM's display from anywhere in the world. (In Google Cloud Shell, this is enabled by default; use `--remote-vnc no` to disable).
 
 ## 9. CLI options (with examples)
@@ -238,7 +238,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - **VNC Web UI**: Enabled by default starting at port `6080` (auto-increments if busy). Use `--vnc off` to disable.
   - Example: `python3 anyvm.py --os freebsd --vnc 0`
 
-- `--vnc-password <pwd>`: Set a password for the VNC Web UI. Empty or omitted means no password.
+- `--vnc-password <pwd>`: Set a password for the VNC Web UI. Empty or omitted means no password. (Note: On the login page, the **username can be anything**, but the **password must be correct**).
   - Example: `python3 anyvm.py --os freebsd --vnc-password mysecret`
 
 - `--remote-vnc`: Create a public tunnel for the VNC Web UI using Cloudflare, Localhost.run, Pinggy, or Serveo.
