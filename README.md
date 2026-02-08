@@ -13,7 +13,7 @@ anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU o
   ```bash
   sudo chmod o+rw /dev/kvm
   
-  sudo apt-get --no-install-recommends -y install \
+  sudo apt-get update && sudo apt-get --no-install-recommends -y install \
   zstd ovmf xz-utils qemu-utils ca-certificates \
   qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
   qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc u-boot-qemu \
@@ -32,12 +32,6 @@ anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU o
 
 ```bash
 
-#desktop release
-
-python3 anyvm.py --os freebsd  --release 15.0-xfce
-python3 anyvm.py --os freebsd  --release 15.0-gnome
-python3 anyvm.py --os freebsd  --release 15.0-kde6
-
 
 #command line release
 python3 anyvm.py --os freebsd
@@ -47,6 +41,16 @@ python3 anyvm.py --os openbsd --release 7.5 --arch aarch64
 python3 anyvm.py --os solaris
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
+
+
+
+#desktop release
+
+python3 anyvm.py --os freebsd  --release 15.0-xfce
+python3 anyvm.py --os freebsd  --release 15.0-gnome
+python3 anyvm.py --os freebsd  --release 15.0-kde6
+
+
 
 # Run a command inside the VM (everything after `--` is sent to the VM via ssh):
 python3 anyvm.py --os freebsd -- uname -a
