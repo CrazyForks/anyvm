@@ -13,7 +13,9 @@ anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU o
   ```bash
   sudo chmod o+rw /dev/kvm
   
-  sudo apt-get update && sudo apt-get --no-install-recommends -y install \
+  sudo apt-get update
+
+  sudo apt-get --no-install-recommends -y install \
   zstd ovmf xz-utils qemu-utils ca-certificates \
   qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
   qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc u-boot-qemu \
