@@ -117,7 +117,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "solaris": "2.0.3",
     "omnios": "2.0.4",
     "haiku": "2.0.0",
-    "openindiana": "2.0.4"
+    "openindiana": "2.0.6"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2429,7 +2429,7 @@ Options:
                          Format: /host/path:/guest/path
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
-                         Supported: rsync (default), sshfs, nfs, scp.
+                         Supported: rsync (default), sshfs, nfs, scp, no/off (disable sync).
                          Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
   --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids re-download and re-extract).
@@ -3662,8 +3662,10 @@ def main():
             val = args[i+1].lower()
             if val == "":
                 val = "rsync"
-            if val not in ["sshfs", "nfs", "rsync", "scp"]:
-                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, scp.".format(val))
+            if val in ["no", "off"]:
+                val = "no"
+            if val not in ["sshfs", "nfs", "rsync", "scp", "no"]:
+                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, scp, no/off.".format(val))
             config['sync'] = val
             i += 1
         elif arg == "--disktype":
@@ -5238,7 +5240,7 @@ Host host
                 p.communicate(input=b'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n')
                 p.wait()
             # Mount Shared Folders
-            if config['vpaths']:
+            if config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
                 if config['sync'] == 'nfs':
                     # Check if sudo exists in path (unix only)
