@@ -4386,7 +4386,7 @@ def main():
         "-smp", config['cpu'],
         "-m", config['mem'],
         "-netdev", netdev_args,
-        "-drive", "file={},format=qcow2,if={}".format(qcow_name, disk_if)
+        "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
     ])
 
     rtc_base = "utc"
