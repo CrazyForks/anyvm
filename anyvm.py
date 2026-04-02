@@ -971,9 +971,9 @@ function connect() {
                         const setEncodings = new Uint8Array([
                             2, 0,
                             0, 4,             // 4 encodings
-                            0, 0, 0, 5,       // Hextile (5) - good compression, no zlib needed
+                            0, 0, 0, 5,       // Hextile (5) - compressed, good for remote
                             0, 0, 0, 1,       // CopyRect (1) - zero-bandwidth for moved regions
-                            0, 0, 0, 0,       // Raw (0) - fallback
+                            0, 0, 0, 0,       // Raw (0) - fastest on localhost/LAN
                             255, 255, 255, 33  // DesktopSize pseudo-encoding (-223)
                         ]);
                         ws.send(setEncodings);
@@ -1123,7 +1123,7 @@ function connect() {
                             }
                         }
                     }
-                    
+
                     if (complete) {
                         consume(offset);
                         pendingUpdate = false;
@@ -1175,7 +1175,7 @@ function connect() {
             else break;
         }
     }
-    
+
     function requestUpdate(incremental) {
         if (!connected) return;
         pendingUpdate = true;
@@ -2603,6 +2603,19 @@ def get_private_ips():
         except socket.gaierror:
             pass
     return private_ips
+
+def is_port_available(addr, port):
+    """Check if a TCP port is available on a specific address."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.bind((addr, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        try: s.close()
+        except: pass
 
 def get_free_port(start=10022, end=20000):
     """Return an available TCP port that works for both 0.0.0.0 and 127.0.0.1 binds."""
@@ -4367,6 +4380,7 @@ def main():
     else:
         ssh_addr = "127.0.0.1"
         ssh_extra_addrs = get_private_ips()
+        debuglog(config['debug'], "Private IPs for SSH: {}".format(ssh_extra_addrs if ssh_extra_addrs else "(none)"))
 
     if config['public']:
         p_addr = ""
@@ -4374,6 +4388,7 @@ def main():
     else:
         p_addr = "127.0.0.1"
         p_extra_addrs = get_private_ips()
+        debuglog(config['debug'], "Private IPs for port mappings: {}".format(p_extra_addrs if p_extra_addrs else "(none)"))
 
     # Ensure serial port is allocated for background logging and VNC console
     if not config['serialport']:
@@ -4496,7 +4511,11 @@ def main():
         netdev_args += ",ipv6=off"
     netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
     for extra_addr in ssh_extra_addrs:
-        netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
+        if is_port_available(extra_addr, int(config['sshport'])):
+            netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
+            debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 OK".format(extra_addr, config['sshport']))
+        else:
+            debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 SKIPPED (port in use)".format(extra_addr, config['sshport']))
 
     # Add custom port mappings
     for p in config['ports']:
@@ -4506,12 +4525,20 @@ def main():
             # host:guest -> tcp:addr:host-:guest
             netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(p_addr, parts[0], parts[1])
             for extra_addr in p_extra_addrs:
-                netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, parts[0], parts[1])
+                if is_port_available(extra_addr, int(parts[0])):
+                    netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, parts[0], parts[1])
+                    debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} OK".format(extra_addr, parts[0], parts[1]))
+                else:
+                    debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} SKIPPED (port in use)".format(extra_addr, parts[0], parts[1]))
         elif len(parts) == 3:
             # proto:host:guest -> proto:addr:host-:guest
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], p_addr, parts[1], parts[2])
             for extra_addr in p_extra_addrs:
-                netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], extra_addr, parts[1], parts[2])
+                if is_port_available(extra_addr, int(parts[1])):
+                    netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], extra_addr, parts[1], parts[2])
+                    debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} OK".format(parts[0], extra_addr, parts[1], parts[2]))
+                else:
+                    debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} SKIPPED (port in use)".format(parts[0], extra_addr, parts[1], parts[2]))
 
     args_qemu = []
     if serial_chardev_def:
