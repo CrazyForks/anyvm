@@ -970,9 +970,11 @@ function connect() {
                         
                         const setEncodings = new Uint8Array([
                             2, 0,
-                            0, 2,
-                            0, 0, 0, 0,
-                            255, 255, 255, 33 // DesktopSize pseudo-encoding (-223)
+                            0, 4,             // 4 encodings
+                            0, 0, 0, 5,       // Hextile (5) - good compression, no zlib needed
+                            0, 0, 0, 1,       // CopyRect (1) - zero-bandwidth for moved regions
+                            0, 0, 0, 0,       // Raw (0) - fallback
+                            255, 255, 255, 33  // DesktopSize pseudo-encoding (-223)
                         ]);
                         ws.send(setEncodings);
                         
@@ -1033,12 +1035,12 @@ function connect() {
                             }
                         }
                         
-                        if (enc === 0) {
+                        if (enc === 0) { // Raw
                             const pixelBytes = w * h * 4;
                             if (buffer.length < offset + pixelBytes) { complete = false; break; }
                             const pixels = buffer.slice(offset, offset + pixelBytes);
                             offset += pixelBytes;
-                            
+
                             const imgData = ctx.createImageData(w, h);
                             const src = pixels;
                             const dst = imgData.data;
@@ -1051,6 +1053,74 @@ function connect() {
                                 dst[di + 3] = 255;
                             }
                             ctx.putImageData(imgData, x, y);
+                        } else if (enc === 1) { // CopyRect
+                            if (buffer.length < offset + 4) { complete = false; break; }
+                            const srcX = new DataView(buffer.buffer, buffer.byteOffset + offset).getUint16(0);
+                            const srcY = new DataView(buffer.buffer, buffer.byteOffset + offset).getUint16(2);
+                            offset += 4;
+                            const imgData = ctx.getImageData(srcX, srcY, w, h);
+                            ctx.putImageData(imgData, x, y);
+                        } else if (enc === 5) { // Hextile
+                            let htBg = [0,0,0,255], htFg = [255,255,255,255];
+                            for (let ty = y; ty < y + h; ty += 16) {
+                                for (let tx = x; tx < x + w; tx += 16) {
+                                    const tw = Math.min(16, x + w - tx);
+                                    const th = Math.min(16, y + h - ty);
+                                    if (buffer.length < offset + 1) { complete = false; break; }
+                                    const sub = buffer[offset++];
+                                    if (sub & 1) { // Raw
+                                        const rawBytes = tw * th * 4;
+                                        if (buffer.length < offset + rawBytes) { complete = false; break; }
+                                        const imgData = ctx.createImageData(tw, th);
+                                        for (let p = 0; p < tw * th; p++) {
+                                            const si = offset + p * 4;
+                                            imgData.data[p*4]     = buffer[si+2];
+                                            imgData.data[p*4+1]   = buffer[si+1];
+                                            imgData.data[p*4+2]   = buffer[si];
+                                            imgData.data[p*4+3]   = 255;
+                                        }
+                                        offset += rawBytes;
+                                        ctx.putImageData(imgData, tx, ty);
+                                        continue;
+                                    }
+                                    if (sub & 2) { // BackgroundSpecified
+                                        if (buffer.length < offset + 4) { complete = false; break; }
+                                        htBg = [buffer[offset+2], buffer[offset+1], buffer[offset], 255];
+                                        offset += 4;
+                                    }
+                                    if (sub & 4) { // ForegroundSpecified
+                                        if (buffer.length < offset + 4) { complete = false; break; }
+                                        htFg = [buffer[offset+2], buffer[offset+1], buffer[offset], 255];
+                                        offset += 4;
+                                    }
+                                    // Fill background using fillRect (fast path)
+                                    ctx.fillStyle = `rgb(${htBg[0]},${htBg[1]},${htBg[2]})`;
+                                    ctx.fillRect(tx, ty, tw, th);
+                                    if (sub & 8) { // AnySubrects
+                                        if (buffer.length < offset + 1) { complete = false; break; }
+                                        const numSub = buffer[offset++];
+                                        const subColored = !!(sub & 16);
+                                        const subBytes = numSub * (subColored ? 6 : 2);
+                                        if (buffer.length < offset + subBytes) { complete = false; break; }
+                                        for (let s = 0; s < numSub; s++) {
+                                            let sr, sg, sb;
+                                            if (subColored) {
+                                                sb = buffer[offset]; sg = buffer[offset+1]; sr = buffer[offset+2];
+                                                offset += 4;
+                                            } else {
+                                                sr = htFg[0]; sg = htFg[1]; sb = htFg[2];
+                                            }
+                                            const xy = buffer[offset], wh = buffer[offset+1];
+                                            offset += 2;
+                                            const sx = (xy >> 4) & 0xF, sy = xy & 0xF;
+                                            const sw = ((wh >> 4) & 0xF) + 1, sh = (wh & 0xF) + 1;
+                                            ctx.fillStyle = `rgb(${sr},${sg},${sb})`;
+                                            ctx.fillRect(tx + sx, ty + sy, sw, sh);
+                                        }
+                                    }
+                                }
+                                if (!complete) break;
+                            }
                         }
                     }
                     
@@ -1945,13 +2015,11 @@ class VNCWebProxy:
             finally: vnc_writer.close()
         
         async def vnc_to_ws():
-            WS_CHUNK = 4096  # Keep WebSocket frames small for low-MTU networks
             try:
                 while True:
                     data = await vnc_reader.read(65536)
                     if not data: break
-                    for i in range(0, len(data), WS_CHUNK):
-                        await self.send_ws_frame(writer, data[i:i+WS_CHUNK])
+                    await self.send_ws_frame(writer, data)
             except: pass
         
         await asyncio.gather(ws_to_vnc(), vnc_to_ws(), return_exceptions=True)
