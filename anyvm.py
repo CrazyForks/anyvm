@@ -1945,11 +1945,13 @@ class VNCWebProxy:
             finally: vnc_writer.close()
         
         async def vnc_to_ws():
+            WS_CHUNK = 4096  # Keep WebSocket frames small for low-MTU networks
             try:
                 while True:
                     data = await vnc_reader.read(65536)
                     if not data: break
-                    await self.send_ws_frame(writer, data)
+                    for i in range(0, len(data), WS_CHUNK):
+                        await self.send_ws_frame(writer, data[i:i+WS_CHUNK])
             except: pass
         
         await asyncio.gather(ws_to_vnc(), vnc_to_ws(), return_exceptions=True)
@@ -2513,12 +2515,14 @@ def get_private_ips():
             for line in out.splitlines():
                 # Format: "2: eth0    inet 192.168.1.100/24 brd ... scope global ..."
                 parts = line.split()
+                # Get interface name (field index 1, e.g. "eth0")
+                iface = parts[1] if len(parts) > 1 else ""
                 for j, tok in enumerate(parts):
                     if tok == "inet" and j + 1 < len(parts):
                         cidr = parts[j + 1]
                         prefix = cidr.split('/')[1] if '/' in cidr else '24'
-                        if prefix == '32':
-                            continue  # skip point-to-point /32 addresses
+                        if prefix == '32' and iface == 'lo':
+                            continue  # skip /32 on loopback (e.g. WSL virtual addresses)
                         _add(cidr.split('/')[0])
     except Exception:
         pass
