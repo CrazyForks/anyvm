@@ -2449,9 +2449,9 @@ Options:
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
-  --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
-  --public-vnc           Listen on 0.0.0.0 for the VNC web interface instead of 127.0.0.1.
-  --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1.
+  --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1 + LAN IPs.
+  --public-vnc           Listen on 0.0.0.0 for the VNC web interface instead of 127.0.0.1 + LAN IPs.
+  --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1 + LAN IPs.
   --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
   --debug                Enable verbose debug logging.
@@ -2486,24 +2486,51 @@ def get_private_ips():
     def _is_lan(addr_str):
         try:
             ip = ipaddress.ip_address(addr_str)
-            return not ip.is_global and not ip.is_loopback and not ip.is_link_local and not ip.is_unspecified
+            if ip.version != 4:
+                return False
+            return not ip.is_global and not ip.is_loopback and not ip.is_link_local and not ip.is_unspecified and not ip.is_multicast and not ip.is_reserved
         except ValueError:
             return False
+    def _add(addr):
+        if _is_lan(addr) and addr not in private_ips:
+            private_ips.append(addr)
+    # Method 1: parse OS command output to enumerate all interface IPs (most reliable)
+    try:
+        if IS_WINDOWS:
+            out = subprocess.check_output(["ipconfig"], stderr=subprocess.DEVNULL, timeout=5).decode('utf-8', errors='replace')
+            for line in out.splitlines():
+                line = line.strip()
+                # Match "IPv4 Address" lines in any locale (look for ": x.x.x.x")
+                if ':' in line:
+                    part = line.split(':', 1)[1].strip()
+                    try:
+                        ipaddress.ip_address(part)
+                        _add(part)
+                    except ValueError:
+                        pass
+        else:
+            out = subprocess.check_output(["ip", "-4", "-o", "addr", "show"], stderr=subprocess.DEVNULL, timeout=5).decode('utf-8', errors='replace')
+            for line in out.splitlines():
+                # Format: "2: eth0    inet 192.168.1.100/24 ..."
+                parts = line.split()
+                for j, tok in enumerate(parts):
+                    if tok == "inet" and j + 1 < len(parts):
+                        addr = parts[j + 1].split('/')[0]
+                        _add(addr)
+    except Exception:
+        pass
+    # Method 2: getaddrinfo (works on all platforms but may miss tun/tap interfaces)
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            addr = info[4][0]
-            if _is_lan(addr) and addr not in private_ips:
-                private_ips.append(addr)
+            _add(info[4][0])
     except socket.gaierror:
         pass
-    # Fallback: use UDP connect trick to discover the default interface IP
+    # Method 3: UDP connect trick to discover default route interface
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('10.255.255.255', 1))
-        default_ip = s.getsockname()[0]
+        _add(s.getsockname()[0])
         s.close()
-        if _is_lan(default_ip) and default_ip not in private_ips:
-            private_ips.append(default_ip)
     except Exception:
         pass
     return private_ips
