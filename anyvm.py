@@ -2148,7 +2148,8 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                 t = time.time()
                 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
                 remote_vnc_desc = "True" if remote_vnc == "1" else (remote_vnc if remote_vnc else "False")
-                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}, Remote VNC: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_addr, remote_vnc_desc))
+                listen_display = ','.join(listen_addr) if isinstance(listen_addr, list) else listen_addr
+                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}, Remote VNC: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_display, remote_vnc_desc))
         except:
             pass
     
@@ -2439,7 +2440,7 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
-  --vnc-password <pwd>   Set a password for the VNC Web UI. Empty or omitted means no password.
+  --vnc-password <pwd>   Set a password for the VNC Web UI. A random 6-char password is generated if omitted.
   --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, Pinggy, or Serveo.
                          Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy, --remote-vnc serveo.
                          Enabled by default if no local browser is detected (e.g., in Cloud Shell).
@@ -2477,6 +2478,35 @@ Examples:
   python qemu.py --os freebsd -- uname -a
 
 """)
+
+def get_private_ips():
+    """Return a list of non-public IPv4 addresses on this machine (RFC1918, CGNAT/Tailscale, etc.)."""
+    import ipaddress
+    private_ips = []
+    def _is_lan(addr_str):
+        try:
+            ip = ipaddress.ip_address(addr_str)
+            return not ip.is_global and not ip.is_loopback and not ip.is_link_local and not ip.is_unspecified
+        except ValueError:
+            return False
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = info[4][0]
+            if _is_lan(addr) and addr not in private_ips:
+                private_ips.append(addr)
+    except socket.gaierror:
+        pass
+    # Fallback: use UDP connect trick to discover the default interface IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('10.255.255.255', 1))
+        default_ip = s.getsockname()[0]
+        s.close()
+        if _is_lan(default_ip) and default_ip not in private_ips:
+            private_ips.append(default_ip)
+    except Exception:
+        pass
+    return private_ips
 
 def get_free_port(start=10022, end=20000):
     """Return an available TCP port that works for both 0.0.0.0 and 127.0.0.1 binds."""
@@ -3498,7 +3528,8 @@ def main():
             qmon_port = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
             error_log_path = sys.argv[8] if len(sys.argv) > 8 else None
             is_console_vnc = sys.argv[9] == '1' if len(sys.argv) > 9 else False
-            listen_addr = sys.argv[10] if len(sys.argv) > 10 else '127.0.0.1'
+            listen_addr_raw = sys.argv[10] if len(sys.argv) > 10 else '127.0.0.1'
+            listen_addr = listen_addr_raw.split(',') if ',' in listen_addr_raw else listen_addr_raw
             remote_vnc_val = sys.argv[11] if len(sys.argv) > 11 else '0'
             # Correctly parse string values like 'True', 'cf', 'lhr'
             remote_vnc = remote_vnc_val if remote_vnc_val not in ['0', 'False', 'false', None] else False
@@ -4236,13 +4267,17 @@ def main():
 
     if config['public'] or config['public_ssh']:
         ssh_addr = ""
+        ssh_extra_addrs = []
     else:
         ssh_addr = "127.0.0.1"
-        
+        ssh_extra_addrs = get_private_ips()
+
     if config['public']:
         p_addr = ""
+        p_extra_addrs = []
     else:
         p_addr = "127.0.0.1"
+        p_extra_addrs = get_private_ips()
 
     # Ensure serial port is allocated for background logging and VNC console
     if not config['serialport']:
@@ -4364,7 +4399,9 @@ def main():
     if not config.get('enable_ipv6'):
         netdev_args += ",ipv6=off"
     netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
-    
+    for extra_addr in ssh_extra_addrs:
+        netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
+
     # Add custom port mappings
     for p in config['ports']:
         parts = p.split(':')
@@ -4372,9 +4409,13 @@ def main():
         if len(parts) == 2:
             # host:guest -> tcp:addr:host-:guest
             netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(p_addr, parts[0], parts[1])
+            for extra_addr in p_extra_addrs:
+                netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, parts[0], parts[1])
         elif len(parts) == 3:
             # proto:host:guest -> proto:addr:host-:guest
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], p_addr, parts[1], parts[2])
+            for extra_addr in p_extra_addrs:
+                netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], extra_addr, parts[1], parts[2])
 
     args_qemu = []
     if serial_chardev_def:
@@ -4657,6 +4698,11 @@ def main():
     cmd_text = format_command_for_display(cmd_list)
     debuglog(config['debug'], "CMD:\n  " + cmd_text)
 
+    # Auto-generate VNC password if not specified
+    if not config['vnc_password'] and config['vnc'] != "off":
+        import random, string
+        config['vnc_password'] = ''.join(random.choices(string.ascii_letters, k=6))
+
     vnc_log_path = os.path.join(output_dir, "{}.vncproxy.log".format(vm_name))
 
     # Function to start (or restart) the VNC Web Proxy monitoring the given QEMU PID
@@ -4675,7 +4721,7 @@ def main():
                 config['qmon'] if config['qmon'] else "",
                 vnc_log_path,
                 '1' if is_vnc_console else '0',
-                '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1',
+                '0.0.0.0' if (config['public'] or config['public_vnc']) else ','.join(['127.0.0.1'] + get_private_ips()),
                 str(config['remote_vnc']) if config['remote_vnc'] else '0',
                 '1' if config['debug'] else '0',
                 str(config['remote_vnc_link_file']) if config['remote_vnc_link_file'] else '0',
@@ -4696,7 +4742,19 @@ def main():
                 if supports_ansi_color():
                     display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                 log("VNC Web UI available at {}".format(display_local_url))
-                
+                if config['vnc_password']:
+                    pwd_display = config['vnc_password']
+                    if supports_ansi_color():
+                        pwd_display = "\x1b[33m{}\x1b[0m".format(pwd_display)
+                    log("VNC password: {}".format(pwd_display))
+                if not (config['public'] or config['public_vnc']):
+                    lan_ips = get_private_ips()
+                    for ip in lan_ips:
+                        lan_url = "http://{}:{}".format(ip, web_port)
+                        if supports_ansi_color():
+                            lan_url = "\x1b[32m{}\x1b[0m".format(lan_url)
+                        log("  Also accessible at {}".format(lan_url))
+
                 # Start tunnel watcher thread if remote VNC is enabled
                 if config.get('remote_vnc'):
                     t = threading.Thread(target=watch_vnc_tunnel_log, args=(vnc_log_path, tunnel_wait_stop, config.get('remote_vnc_is_default')))
