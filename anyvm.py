@@ -2509,30 +2509,27 @@ def get_private_ips():
                     except ValueError:
                         pass
         else:
-            out = subprocess.check_output(["ip", "-4", "-o", "addr", "show"], stderr=subprocess.DEVNULL, timeout=5).decode('utf-8', errors='replace')
+            out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "scope", "global"], stderr=subprocess.DEVNULL, timeout=5).decode('utf-8', errors='replace')
             for line in out.splitlines():
-                # Format: "2: eth0    inet 192.168.1.100/24 ..."
+                # Format: "2: eth0    inet 192.168.1.100/24 brd ... scope global ..."
                 parts = line.split()
                 for j, tok in enumerate(parts):
                     if tok == "inet" and j + 1 < len(parts):
-                        addr = parts[j + 1].split('/')[0]
-                        _add(addr)
+                        cidr = parts[j + 1]
+                        prefix = cidr.split('/')[1] if '/' in cidr else '24'
+                        if prefix == '32':
+                            continue  # skip point-to-point /32 addresses
+                        _add(cidr.split('/')[0])
     except Exception:
         pass
-    # Method 2: getaddrinfo (works on all platforms but may miss tun/tap interfaces)
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            _add(info[4][0])
-    except socket.gaierror:
-        pass
-    # Method 3: UDP connect trick to discover default route interface
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('10.255.255.255', 1))
-        _add(s.getsockname()[0])
-        s.close()
-    except Exception:
-        pass
+    # Method 2: getaddrinfo (fallback, may miss tun/tap interfaces)
+    # Only used if Method 1 found nothing
+    if not private_ips:
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                _add(info[4][0])
+        except socket.gaierror:
+            pass
     return private_ips
 
 def get_free_port(start=10022, end=20000):
