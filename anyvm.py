@@ -1019,6 +1019,11 @@ function connect() {
                     const numRects = new DataView(buffer.buffer, buffer.byteOffset).getUint16(2);
                     let offset = 4;
                     let complete = true;
+                    // Pipeline: request next frame immediately, don't wait for render
+                    if (pendingUpdate) {
+                        pendingUpdate = false;
+                        requestUpdate(true);
+                    }
                     
                     for (let i = 0; i < numRects; i++) {
                         if (buffer.length < offset + 12) { complete = false; break; }
@@ -1141,14 +1146,11 @@ function connect() {
 
                     if (complete) {
                         consume(offset);
-                        pendingUpdate = false;
                         frameCount++;
                         if (requestStartTime) {
                             lastLatency = Math.round(performance.now() - requestStartTime);
                             latVal.textContent = lastLatency;
                         }
-                        // Request next update immediately
-                        if (!pendingUpdate) requestUpdate(true);
                     } else break;
                 }
                 else if (msgType === 1) {
