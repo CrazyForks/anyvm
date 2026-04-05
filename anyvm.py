@@ -582,6 +582,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             <div id="stats">
                 <div class="stat-pill"><span class="stat-label">LAT</span><span id="lat-val" class="stat-value">0</span><span class="stat-label">MS</span></div>
                 <div class="stat-pill"><span class="stat-label">FPS</span><span id="fps-val" class="stat-value">0</span></div>
+                <div class="stat-pill"><span class="stat-label">BW</span><span id="bw-val" class="stat-value">0</span></div>
             </div>
             <!-- Timestamp Toggle (Console Mode Only) -->
             <div id="timestamp-toggle" style="display: none; align-items: center; gap: 6px; margin-left: 10px;">
@@ -668,6 +669,7 @@ let fitAddon = null;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let lastLatency = 0;
+let bytesReceived = 0;
 let requestStartTime = 0;
 let reconnectTimer = null;
 let countdownInterval = null;
@@ -860,6 +862,7 @@ function connect() {
     
     ws.onmessage = (e) => {
         const data = new Uint8Array(e.data);
+        bytesReceived += data.length;
         if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
             if (term) {
                 try {
@@ -1721,7 +1724,14 @@ setInterval(() => {
     if (dt >= 500) {
         const fps = Math.round((frameCount * 1000) / dt);
         document.getElementById('fps-val').textContent = fps;
+        const bps = (bytesReceived * 1000) / dt;
+        let bwText;
+        if (bps >= 1048576) bwText = (bps / 1048576).toFixed(1) + ' MB/s';
+        else if (bps >= 1024) bwText = Math.round(bps / 1024) + ' KB/s';
+        else bwText = Math.round(bps) + ' B/s';
+        document.getElementById('bw-val').textContent = bwText;
         frameCount = 0;
+        bytesReceived = 0;
         lastFpsTime = now;
     }
     // Statistics should only show when not in fullscreen
