@@ -905,17 +905,29 @@ function connect() {
         processBuffer();
     };
     
+    let bufCap = 1024 * 1024; // 1MB pre-allocated
+    let bufStore = new Uint8Array(bufCap);
+    let bufLen = 0;
+
     function concatBuffers(a, b) {
-        const result = new Uint8Array(a.length + b.length);
-        result.set(a, 0);
-        result.set(b, a.length);
-        return result;
+        const needed = bufLen + b.length;
+        if (needed > bufCap) {
+            bufCap = Math.max(bufCap * 2, needed);
+            const newStore = new Uint8Array(bufCap);
+            newStore.set(bufStore.subarray(0, bufLen));
+            bufStore = newStore;
+        }
+        bufStore.set(b, bufLen);
+        bufLen += b.length;
+        buffer = bufStore.subarray(0, bufLen);
+        return buffer;
     }
-    
+
     function consume(n) {
-        const result = buffer.slice(0, n);
-        buffer = buffer.slice(n);
-        return result;
+        bufStore.copyWithin(0, n, bufLen);
+        bufLen -= n;
+        buffer = bufStore.subarray(0, bufLen);
+        return buffer;
     }
     
     function processBuffer() {
@@ -1135,10 +1147,8 @@ function connect() {
                             lastLatency = Math.round(performance.now() - requestStartTime);
                             latVal.textContent = lastLatency;
                         }
-                        // Request next update immediately for maximum FPS
-                        requestAnimationFrame(() => {
-                            if (!pendingUpdate) requestUpdate(true);
-                        });
+                        // Request next update immediately
+                        if (!pendingUpdate) requestUpdate(true);
                     } else break;
                 }
                 else if (msgType === 1) {
@@ -1829,6 +1839,8 @@ class VNCWebProxy:
     
     async def handle_client(self, reader, writer):
         try:
+            sock = writer.get_extra_info('socket')
+            if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             request = await reader.read(4096)
             if not request: return
             
@@ -1992,6 +2004,8 @@ class VNCWebProxy:
         for i in range(10):
             try:
                 vnc_reader, vnc_writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
+                sock = vnc_writer.get_extra_info('socket')
+                if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 break
             except:
                 if i == 9: return
@@ -2028,7 +2042,7 @@ class VNCWebProxy:
         async def vnc_to_ws():
             try:
                 while True:
-                    data = await vnc_reader.read(65536)
+                    data = await vnc_reader.read(16384)
                     if not data: break
                     await self.send_ws_frame(writer, data)
             except: pass
@@ -2050,7 +2064,17 @@ class VNCWebProxy:
             if masked:
                 mask = await reader.readexactly(4)
                 data = bytearray(await reader.readexactly(length))
-                for i in range(length): data[i] ^= mask[i % 4]
+                # Vectorized XOR: process 4 bytes at a time using int32
+                mask_int = int.from_bytes(mask, 'little')
+                mv = memoryview(data)
+                # Process aligned 4-byte chunks
+                end4 = length & ~3
+                for i in range(0, end4, 4):
+                    v = int.from_bytes(mv[i:i+4], 'little') ^ mask_int
+                    mv[i:i+4] = v.to_bytes(4, 'little')
+                # Process remaining bytes
+                for i in range(end4, length):
+                    data[i] ^= mask[i & 3]
                 return bytes(data)
             return await reader.readexactly(length)
         except: return None
@@ -2129,6 +2153,8 @@ class VNCWebProxy:
             return
         try:
             reader, writer = await asyncio.open_connection('127.0.0.1', self.qmon_port)
+            sock = writer.get_extra_info('socket')
+            if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             writer.write((cmd + "\n").encode())
             await writer.drain()
             # Wait a bit for command to be processed
