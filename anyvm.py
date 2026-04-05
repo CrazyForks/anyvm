@@ -985,11 +985,9 @@ function connect() {
                         
                         const setEncodings = new Uint8Array([
                             2, 0,
-                            0, 4,             // 4 encodings
-                            0, 0, 0, 5,       // Hextile (5) - compressed, good for remote
-                            0, 0, 0, 1,       // CopyRect (1) - zero-bandwidth for moved regions
-                            0, 0, 0, 0,       // Raw (0) - fastest on localhost/LAN
-                            255, 255, 255, 33  // DesktopSize pseudo-encoding (-223)
+                            0, 2,
+                            0, 0, 0, 0,
+                            255, 255, 255, 33 // DesktopSize pseudo-encoding (-223)
                         ]);
                         ws.send(setEncodings);
                         
@@ -2044,7 +2042,7 @@ class VNCWebProxy:
         async def vnc_to_ws():
             try:
                 while True:
-                    data = await vnc_reader.read(16384)
+                    data = await vnc_reader.read(65536)
                     if not data: break
                     await self.send_ws_frame(writer, data)
             except: pass
@@ -2088,8 +2086,9 @@ class VNCWebProxy:
             elif length <= 65535: header = bytes([0x82, 126]) + struct.pack('>H', length)
             else: header = bytes([0x82, 127]) + struct.pack('>Q', length)
             writer.write(header + data)
-            # Use a small delay or drain to ensure data is sent but don't block too long
-            await writer.drain()
+            # Only drain when write buffer is getting large
+            if writer.transport.get_write_buffer_size() > 131072:
+                await writer.drain()
         except:
             pass
 
@@ -4774,7 +4773,8 @@ def main():
                 candidates = [
                     "/usr/share/qemu/OVMF.fd",
                     "/usr/share/OVMF/OVMF_CODE.fd",
-                    "/usr/share/ovmf/OVMF_CODE.fd"
+                    "/usr/share/ovmf/OVMF_CODE.fd",
+                    "/usr/share/edk2/x64/OVMF_CODE.4m.fd"
                 ]
                 efi_src = ""
                 for c in candidates:
