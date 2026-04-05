@@ -5514,6 +5514,12 @@ Host host
                         if supports_ansi_color():
                             display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                         log("VNC Web UI: {}".format(display_local_url))
+                        if not (config['public'] or config['public_vnc']):
+                            for ip in get_private_ips():
+                                lan_url = "http://{}:{}".format(ip, web_port)
+                                if supports_ansi_color():
+                                    lan_url = "\x1b[32m{}\x1b[0m".format(lan_url)
+                                log("  Also accessible at {}".format(lan_url))
                     if tunnel_url:
                         display_url = tunnel_url
                         if supports_ansi_color():
