@@ -582,7 +582,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             <div id="stats">
                 <div class="stat-pill"><span class="stat-label">LAT</span><span id="lat-val" class="stat-value">0</span><span class="stat-label">MS</span></div>
                 <div class="stat-pill"><span class="stat-label">FPS</span><span id="fps-val" class="stat-value">0</span></div>
-                <div class="stat-pill"><span class="stat-label">BW</span><span id="bw-val" class="stat-value">0</span></div>
+                <div class="stat-pill"><span class="stat-label">BW</span><span id="bw-val" class="stat-value">0</span><span id="bw-unit" class="stat-label">KB/s</span></div>
             </div>
             <!-- Timestamp Toggle (Console Mode Only) -->
             <div id="timestamp-toggle" style="display: none; align-items: center; gap: 6px; margin-left: 10px;">
@@ -1725,11 +1725,12 @@ setInterval(() => {
         const fps = Math.round((frameCount * 1000) / dt);
         document.getElementById('fps-val').textContent = fps;
         const bps = (bytesReceived * 1000) / dt;
-        let bwText;
-        if (bps >= 1048576) bwText = (bps / 1048576).toFixed(1) + ' MB/s';
-        else if (bps >= 1024) bwText = Math.round(bps / 1024) + ' KB/s';
-        else bwText = Math.round(bps) + ' B/s';
-        document.getElementById('bw-val').textContent = bwText;
+        let bwNum, bwUnit;
+        if (bps >= 1048576) { bwNum = (bps / 1048576).toFixed(1); bwUnit = 'MB/s'; }
+        else if (bps >= 1024) { bwNum = Math.round(bps / 1024); bwUnit = 'KB/s'; }
+        else { bwNum = Math.round(bps); bwUnit = 'B/s'; }
+        document.getElementById('bw-val').textContent = bwNum;
+        document.getElementById('bw-unit').textContent = bwUnit;
         frameCount = 0;
         bytesReceived = 0;
         lastFpsTime = now;
