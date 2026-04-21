@@ -19,7 +19,6 @@ concurrency:
 
 jobs:
   windows:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, format('[os={0}]', matrix.os)) }}
     strategy:
       fail-fast: false
       matrix:
