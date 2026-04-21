@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
         arch: [""]
         runs: ["windows-latest"]
         sync: ["scp", "rsync"]

@@ -22,10 +22,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "netbsd", "openbsd"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
+        exclude:
+          - os: midnightbsd
+            arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -40,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -51,6 +54,8 @@ jobs:
           - os: omnios
             arch: aarch64
           - os: openindiana
+            arch: aarch64
+          - os: midnightbsd
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml

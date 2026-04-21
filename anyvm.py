@@ -2517,7 +2517,7 @@ Description:
 
 Options:
   --os <name>            Operating System name (Required).
-                         Supported: freebsd, openbsd, netbsd, dragonflybsd, solaris, haiku
+                         Supported: freebsd, midnightbsd, openbsd, netbsd, dragonflybsd, solaris, haiku
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64 or aarch64.
@@ -3048,7 +3048,7 @@ def sync_vm_time(config, ssh_base_cmd):
         try:
             # Try to get date with milliseconds
             cmd = "date '+%Y-%m-%d %H:%M:%S.%3N'"
-            if guest_os in ['freebsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
+            if guest_os in ['freebsd', 'midnightbsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
                 cmd = "date '+%Y-%m-%d %H:%M:%S.000'"
             
             p = subprocess.Popen(ssh_base_cmd + [cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -3084,7 +3084,7 @@ def sync_vm_time(config, ssh_base_cmd):
                     "/usr/sbin/ntpdate -u {0} || /usr/bin/ntpdate -u {0} || "
                     "/usr/sbin/ntpdig -S {0} || /usr/bin/ntpdig -S {0} || "
                     "/usr/sbin/rdate time.nist.gov || /usr/bin/rdate time.nist.gov || rdate time.nist.gov").format(ntp_servers)
-    elif guest_os in ['freebsd', 'netbsd']:
+    elif guest_os in ['freebsd', 'midnightbsd', 'netbsd']:
         # Try common BSD NTP tools with rdate fallback
         sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
     elif guest_os == 'omnios':
@@ -3242,7 +3242,7 @@ if [ "{os}" = "netbsd" ]; then
     exit 1
   fi
 else
-  if [ "{os}" = "freebsd" ]; then
+  if [ "{os}" = "freebsd" ] || [ "{os}" = "midnightbsd" ]; then
     kldload fusefs >/dev/null 2>&1 || true
   fi
   if sshfs -o reconnect,ServerAliveCountMax=2,allow_other,default_permissions host:"{vhost}" "{vguest}" ; then
@@ -3460,7 +3460,7 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
     
     # Specify remote rsync path as it might not be in default non-interactive PATH.
     # These MUST come before the source/destination arguments.
-    if os_name == "freebsd":
+    if os_name in ("freebsd", "midnightbsd"):
         cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])

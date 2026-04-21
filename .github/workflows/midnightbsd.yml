@@ -1,0 +1,57 @@
+
+name: MidnightBSD
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/midnightbsd.yml'
+      - '.github/workflows/testrun.yml'
+
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testsshfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["3.2.4", "4.0.4"]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: midnightbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "sshfs"
+
+
+  testnfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["3.2.4", "4.0.4"]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: midnightbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: nfs
