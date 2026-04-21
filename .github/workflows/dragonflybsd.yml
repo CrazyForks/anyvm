@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   sshfs:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=dragonflybsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +42,7 @@ jobs:
 
 
   nfs:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=dragonflybsd]') }}
     strategy:
       fail-fast: false
       matrix:
