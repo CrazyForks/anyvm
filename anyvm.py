@@ -3084,9 +3084,17 @@ def sync_vm_time(config, ssh_base_cmd):
                     "/usr/sbin/ntpdate -u {0} || /usr/bin/ntpdate -u {0} || "
                     "/usr/sbin/ntpdig -S {0} || /usr/bin/ntpdig -S {0} || "
                     "/usr/sbin/rdate time.nist.gov || /usr/bin/rdate time.nist.gov || rdate time.nist.gov").format(ntp_servers)
-    elif guest_os in ['freebsd', 'midnightbsd', 'netbsd']:
+    elif guest_os in ['freebsd', 'netbsd']:
         # Try common BSD NTP tools with rdate fallback
         sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
+    elif guest_os == 'midnightbsd':
+        # MidnightBSD base system: ntpdate/ntpdig/sntp are not included by default.
+        # Try ntpd -q (base system), then rdate (/usr/sbin/rdate), then package-installed tools.
+        sync_cmd = ("/usr/sbin/ntpd -q -g || ntpd -q -g || "
+                    "/usr/sbin/rdate -s time.nist.gov || /usr/sbin/rdate time.nist.gov || rdate time.nist.gov || "
+                    "/usr/local/sbin/ntpdate -u {0} || ntpdate -u {0} || "
+                    "/usr/local/bin/ntpdig -S {0} || ntpdig -S {0} || "
+                    "/usr/local/bin/sntp -sS {0} || sntp -sS {0}").format(ntp_servers)
     elif guest_os == 'omnios':
         # OmniOS: chrony is the preferred and often only functional tool.
         sync_cmd = "chronyc -a makestep || (svcadm enable chrony && sleep 2 && chronyc -a makestep)"
