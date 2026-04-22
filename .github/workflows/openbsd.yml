@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   testsshfs-old:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=openbsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +43,7 @@ jobs:
 
 
   testnfs-old:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=openbsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +65,7 @@ jobs:
 
 
   testsshfs:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=openbsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +86,7 @@ jobs:
       sync: "sshfs"
 
   testnfs:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=openbsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -108,7 +108,7 @@ jobs:
 
 
   testscp-riscv64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=openbsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
       matrix:

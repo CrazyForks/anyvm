@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   testsshfs:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=freebsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,7 +50,7 @@ jobs:
 
 
   testnfs:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=freebsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +75,7 @@ jobs:
       sync: nfs
 
   testscp-riscv64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[os=') || contains(github.event.head_commit.message, '[os=freebsd]') }}
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
