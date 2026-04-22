@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
         arch: ["aarch64", "x86_64"]
         runs: ["macos-latest"]
         sync: ["scp", "rsync"]
@@ -34,6 +34,8 @@ jobs:
           - os: omnios
             arch: aarch64
           - os: openindiana
+            arch: aarch64
+          - os: midnightbsd
             arch: aarch64
 
 

@@ -113,10 +113,11 @@ DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.1.0",
     "openbsd": "2.0.1",
     "netbsd": "2.0.3",
-    "dragonflybsd": "2.0.3",
-    "solaris": "2.0.3",
-    "omnios": "2.0.4",
+    "dragonflybsd": "2.0.4",
+    "solaris": "2.0.4",
+    "omnios": "2.0.7",
     "haiku": "2.0.0",
+    "midnightbsd": "2.0.1",
     "openindiana": "2.0.6"
 }
 
@@ -582,6 +583,7 @@ VNC_WEB_HTML = """<!DOCTYPE html>
             <div id="stats">
                 <div class="stat-pill"><span class="stat-label">LAT</span><span id="lat-val" class="stat-value">0</span><span class="stat-label">MS</span></div>
                 <div class="stat-pill"><span class="stat-label">FPS</span><span id="fps-val" class="stat-value">0</span></div>
+                <div class="stat-pill"><span class="stat-label">BW</span><span id="bw-val" class="stat-value">0</span><span id="bw-unit" class="stat-label">KB/s</span></div>
             </div>
             <!-- Timestamp Toggle (Console Mode Only) -->
             <div id="timestamp-toggle" style="display: none; align-items: center; gap: 6px; margin-left: 10px;">
@@ -668,6 +670,7 @@ let fitAddon = null;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let lastLatency = 0;
+let bytesReceived = 0;
 let requestStartTime = 0;
 let reconnectTimer = null;
 let countdownInterval = null;
@@ -860,6 +863,7 @@ function connect() {
     
     ws.onmessage = (e) => {
         const data = new Uint8Array(e.data);
+        bytesReceived += data.length;
         if (typeof IS_CONSOLE_VNC !== 'undefined' && IS_CONSOLE_VNC) {
             if (term) {
                 try {
@@ -902,17 +906,29 @@ function connect() {
         processBuffer();
     };
     
+    let bufCap = 1024 * 1024; // 1MB pre-allocated
+    let bufStore = new Uint8Array(bufCap);
+    let bufLen = 0;
+
     function concatBuffers(a, b) {
-        const result = new Uint8Array(a.length + b.length);
-        result.set(a, 0);
-        result.set(b, a.length);
-        return result;
+        const needed = bufLen + b.length;
+        if (needed > bufCap) {
+            bufCap = Math.max(bufCap * 2, needed);
+            const newStore = new Uint8Array(bufCap);
+            newStore.set(bufStore.subarray(0, bufLen));
+            bufStore = newStore;
+        }
+        bufStore.set(b, bufLen);
+        bufLen += b.length;
+        buffer = bufStore.subarray(0, bufLen);
+        return buffer;
     }
-    
+
     function consume(n) {
-        const result = buffer.slice(0, n);
-        buffer = buffer.slice(n);
-        return result;
+        bufStore.copyWithin(0, n, bufLen);
+        bufLen -= n;
+        buffer = bufStore.subarray(0, bufLen);
+        return buffer;
     }
     
     function processBuffer() {
@@ -1002,6 +1018,11 @@ function connect() {
                     const numRects = new DataView(buffer.buffer, buffer.byteOffset).getUint16(2);
                     let offset = 4;
                     let complete = true;
+                    // Pipeline: request next frame immediately, don't wait for render
+                    if (pendingUpdate) {
+                        pendingUpdate = false;
+                        requestUpdate(true);
+                    }
                     
                     for (let i = 0; i < numRects; i++) {
                         if (buffer.length < offset + 12) { complete = false; break; }
@@ -1033,12 +1054,12 @@ function connect() {
                             }
                         }
                         
-                        if (enc === 0) {
+                        if (enc === 0) { // Raw
                             const pixelBytes = w * h * 4;
                             if (buffer.length < offset + pixelBytes) { complete = false; break; }
                             const pixels = buffer.slice(offset, offset + pixelBytes);
                             offset += pixelBytes;
-                            
+
                             const imgData = ctx.createImageData(w, h);
                             const src = pixels;
                             const dst = imgData.data;
@@ -1051,21 +1072,84 @@ function connect() {
                                 dst[di + 3] = 255;
                             }
                             ctx.putImageData(imgData, x, y);
+                        } else if (enc === 1) { // CopyRect
+                            if (buffer.length < offset + 4) { complete = false; break; }
+                            const srcX = new DataView(buffer.buffer, buffer.byteOffset + offset).getUint16(0);
+                            const srcY = new DataView(buffer.buffer, buffer.byteOffset + offset).getUint16(2);
+                            offset += 4;
+                            const imgData = ctx.getImageData(srcX, srcY, w, h);
+                            ctx.putImageData(imgData, x, y);
+                        } else if (enc === 5) { // Hextile
+                            let htBg = [0,0,0,255], htFg = [255,255,255,255];
+                            for (let ty = y; ty < y + h; ty += 16) {
+                                for (let tx = x; tx < x + w; tx += 16) {
+                                    const tw = Math.min(16, x + w - tx);
+                                    const th = Math.min(16, y + h - ty);
+                                    if (buffer.length < offset + 1) { complete = false; break; }
+                                    const sub = buffer[offset++];
+                                    if (sub & 1) { // Raw
+                                        const rawBytes = tw * th * 4;
+                                        if (buffer.length < offset + rawBytes) { complete = false; break; }
+                                        const imgData = ctx.createImageData(tw, th);
+                                        for (let p = 0; p < tw * th; p++) {
+                                            const si = offset + p * 4;
+                                            imgData.data[p*4]     = buffer[si+2];
+                                            imgData.data[p*4+1]   = buffer[si+1];
+                                            imgData.data[p*4+2]   = buffer[si];
+                                            imgData.data[p*4+3]   = 255;
+                                        }
+                                        offset += rawBytes;
+                                        ctx.putImageData(imgData, tx, ty);
+                                        continue;
+                                    }
+                                    if (sub & 2) { // BackgroundSpecified
+                                        if (buffer.length < offset + 4) { complete = false; break; }
+                                        htBg = [buffer[offset+2], buffer[offset+1], buffer[offset], 255];
+                                        offset += 4;
+                                    }
+                                    if (sub & 4) { // ForegroundSpecified
+                                        if (buffer.length < offset + 4) { complete = false; break; }
+                                        htFg = [buffer[offset+2], buffer[offset+1], buffer[offset], 255];
+                                        offset += 4;
+                                    }
+                                    // Fill background using fillRect (fast path)
+                                    ctx.fillStyle = `rgb(${htBg[0]},${htBg[1]},${htBg[2]})`;
+                                    ctx.fillRect(tx, ty, tw, th);
+                                    if (sub & 8) { // AnySubrects
+                                        if (buffer.length < offset + 1) { complete = false; break; }
+                                        const numSub = buffer[offset++];
+                                        const subColored = !!(sub & 16);
+                                        const subBytes = numSub * (subColored ? 6 : 2);
+                                        if (buffer.length < offset + subBytes) { complete = false; break; }
+                                        for (let s = 0; s < numSub; s++) {
+                                            let sr, sg, sb;
+                                            if (subColored) {
+                                                sb = buffer[offset]; sg = buffer[offset+1]; sr = buffer[offset+2];
+                                                offset += 4;
+                                            } else {
+                                                sr = htFg[0]; sg = htFg[1]; sb = htFg[2];
+                                            }
+                                            const xy = buffer[offset], wh = buffer[offset+1];
+                                            offset += 2;
+                                            const sx = (xy >> 4) & 0xF, sy = xy & 0xF;
+                                            const sw = ((wh >> 4) & 0xF) + 1, sh = (wh & 0xF) + 1;
+                                            ctx.fillStyle = `rgb(${sr},${sg},${sb})`;
+                                            ctx.fillRect(tx + sx, ty + sy, sw, sh);
+                                        }
+                                    }
+                                }
+                                if (!complete) break;
+                            }
                         }
                     }
-                    
+
                     if (complete) {
                         consume(offset);
-                        pendingUpdate = false;
                         frameCount++;
                         if (requestStartTime) {
                             lastLatency = Math.round(performance.now() - requestStartTime);
                             latVal.textContent = lastLatency;
                         }
-                        // Request next update immediately for maximum FPS
-                        requestAnimationFrame(() => {
-                            if (!pendingUpdate) requestUpdate(true);
-                        });
                     } else break;
                 }
                 else if (msgType === 1) {
@@ -1105,7 +1189,7 @@ function connect() {
             else break;
         }
     }
-    
+
     function requestUpdate(incremental) {
         if (!connected) return;
         pendingUpdate = true;
@@ -1651,7 +1735,15 @@ setInterval(() => {
     if (dt >= 500) {
         const fps = Math.round((frameCount * 1000) / dt);
         document.getElementById('fps-val').textContent = fps;
+        const bps = (bytesReceived * 1000) / dt;
+        let bwNum, bwUnit;
+        if (bps >= 1048576) { bwNum = (bps / 1048576).toFixed(1); bwUnit = 'MB/s'; }
+        else if (bps >= 1024) { bwNum = Math.round(bps / 1024); bwUnit = 'KB/s'; }
+        else { bwNum = Math.round(bps); bwUnit = 'B/s'; }
+        document.getElementById('bw-val').textContent = bwNum;
+        document.getElementById('bw-unit').textContent = bwUnit;
         frameCount = 0;
+        bytesReceived = 0;
         lastFpsTime = now;
     }
     // Statistics should only show when not in fullscreen
@@ -1748,6 +1840,8 @@ class VNCWebProxy:
     
     async def handle_client(self, reader, writer):
         try:
+            sock = writer.get_extra_info('socket')
+            if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             request = await reader.read(4096)
             if not request: return
             
@@ -1911,6 +2005,8 @@ class VNCWebProxy:
         for i in range(10):
             try:
                 vnc_reader, vnc_writer = await asyncio.open_connection(self.vnc_host, self.vnc_port)
+                sock = vnc_writer.get_extra_info('socket')
+                if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 break
             except:
                 if i == 9: return
@@ -1969,7 +2065,17 @@ class VNCWebProxy:
             if masked:
                 mask = await reader.readexactly(4)
                 data = bytearray(await reader.readexactly(length))
-                for i in range(length): data[i] ^= mask[i % 4]
+                # Vectorized XOR: process 4 bytes at a time using int32
+                mask_int = int.from_bytes(mask, 'little')
+                mv = memoryview(data)
+                # Process aligned 4-byte chunks
+                end4 = length & ~3
+                for i in range(0, end4, 4):
+                    v = int.from_bytes(mv[i:i+4], 'little') ^ mask_int
+                    mv[i:i+4] = v.to_bytes(4, 'little')
+                # Process remaining bytes
+                for i in range(end4, length):
+                    data[i] ^= mask[i & 3]
                 return bytes(data)
             return await reader.readexactly(length)
         except: return None
@@ -1981,8 +2087,9 @@ class VNCWebProxy:
             elif length <= 65535: header = bytes([0x82, 126]) + struct.pack('>H', length)
             else: header = bytes([0x82, 127]) + struct.pack('>Q', length)
             writer.write(header + data)
-            # Use a small delay or drain to ensure data is sent but don't block too long
-            await writer.drain()
+            # Only drain when write buffer is getting large
+            if writer.transport.get_write_buffer_size() > 131072:
+                await writer.drain()
         except:
             pass
 
@@ -2048,6 +2155,8 @@ class VNCWebProxy:
             return
         try:
             reader, writer = await asyncio.open_connection('127.0.0.1', self.qmon_port)
+            sock = writer.get_extra_info('socket')
+            if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             writer.write((cmd + "\n").encode())
             await writer.drain()
             # Wait a bit for command to be processed
@@ -2148,7 +2257,8 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                 t = time.time()
                 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
                 remote_vnc_desc = "True" if remote_vnc == "1" else (remote_vnc if remote_vnc else "False")
-                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}, Remote VNC: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_addr, remote_vnc_desc))
+                listen_display = ','.join(listen_addr) if isinstance(listen_addr, list) else listen_addr
+                f.write("[{}] [VNCProxy] Proxy starting. VNC/Serial: {}, Web: {}, QEMU PID: {}, Monitor Port: {}, Console Mode: {}, Listen: {}, Remote VNC: {}\n".format(ts, vnc_port, web_port, qemu_pid, qmon_port, is_console_vnc, listen_display, remote_vnc_desc))
         except:
             pass
     
@@ -2407,7 +2517,7 @@ Description:
 
 Options:
   --os <name>            Operating System name (Required).
-                         Supported: freebsd, openbsd, netbsd, dragonflybsd, solaris, haiku
+                         Supported: freebsd, midnightbsd, openbsd, netbsd, dragonflybsd, solaris, haiku
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64 or aarch64.
@@ -2439,7 +2549,7 @@ Options:
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
-  --vnc-password <pwd>   Set a password for the VNC Web UI. Empty or omitted means no password.
+  --vnc-password <pwd>   Set a password for the VNC Web UI. A random 6-char password is generated if omitted.
   --remote-vnc           Create a public URL for the VNC Web UI using Cloudflare, Localhost.run, Pinggy, or Serveo.
                          Usage: --remote-vnc (auto), --remote-vnc cf, --remote-vnc lhr, --remote-vnc pinggy, --remote-vnc serveo.
                          Enabled by default if no local browser is detected (e.g., in Cloud Shell).
@@ -2448,9 +2558,9 @@ Options:
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
-  --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1.
-  --public-vnc           Listen on 0.0.0.0 for the VNC web interface instead of 127.0.0.1.
-  --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1.
+  --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1 + LAN IPs.
+  --public-vnc           Listen on 0.0.0.0 for the VNC web interface instead of 127.0.0.1 + LAN IPs.
+  --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1 + LAN IPs.
   --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
   --debug                Enable verbose debug logging.
@@ -2477,6 +2587,74 @@ Examples:
   python qemu.py --os freebsd -- uname -a
 
 """)
+
+def get_private_ips():
+    """Return a list of non-public IPv4 addresses on this machine (RFC1918, CGNAT/Tailscale, etc.)."""
+    import ipaddress
+    private_ips = []
+    def _is_lan(addr_str):
+        try:
+            ip = ipaddress.ip_address(addr_str)
+            if ip.version != 4:
+                return False
+            return not ip.is_global and not ip.is_loopback and not ip.is_link_local and not ip.is_unspecified and not ip.is_multicast and not ip.is_reserved
+        except ValueError:
+            return False
+    def _add(addr):
+        if _is_lan(addr) and addr not in private_ips:
+            private_ips.append(addr)
+    # Method 1: parse OS command output to enumerate all interface IPs (most reliable)
+    try:
+        if IS_WINDOWS:
+            out = subprocess.check_output(["ipconfig"], stderr=subprocess.DEVNULL, timeout=5).decode('utf-8', errors='replace')
+            for line in out.splitlines():
+                line = line.strip()
+                # Match "IPv4 Address" lines in any locale (look for ": x.x.x.x")
+                if ':' in line:
+                    part = line.split(':', 1)[1].strip()
+                    try:
+                        ipaddress.ip_address(part)
+                        _add(part)
+                    except ValueError:
+                        pass
+        else:
+            out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "scope", "global"], stderr=subprocess.DEVNULL, timeout=5).decode('utf-8', errors='replace')
+            for line in out.splitlines():
+                # Format: "2: eth0    inet 192.168.1.100/24 brd ... scope global ..."
+                parts = line.split()
+                # Get interface name (field index 1, e.g. "eth0")
+                iface = parts[1] if len(parts) > 1 else ""
+                for j, tok in enumerate(parts):
+                    if tok == "inet" and j + 1 < len(parts):
+                        cidr = parts[j + 1]
+                        prefix = cidr.split('/')[1] if '/' in cidr else '24'
+                        if prefix == '32' and iface == 'lo':
+                            continue  # skip /32 on loopback (e.g. WSL virtual addresses)
+                        _add(cidr.split('/')[0])
+    except Exception:
+        pass
+    # Method 2: getaddrinfo (fallback, may miss tun/tap interfaces)
+    # Only used if Method 1 found nothing
+    if not private_ips:
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                _add(info[4][0])
+        except socket.gaierror:
+            pass
+    return private_ips
+
+def is_port_available(addr, port):
+    """Check if a TCP port is available on a specific address."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.bind((addr, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        try: s.close()
+        except: pass
 
 def get_free_port(start=10022, end=20000):
     """Return an available TCP port that works for both 0.0.0.0 and 127.0.0.1 binds."""
@@ -2870,7 +3048,7 @@ def sync_vm_time(config, ssh_base_cmd):
         try:
             # Try to get date with milliseconds
             cmd = "date '+%Y-%m-%d %H:%M:%S.%3N'"
-            if guest_os in ['freebsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
+            if guest_os in ['freebsd', 'midnightbsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
                 cmd = "date '+%Y-%m-%d %H:%M:%S.000'"
             
             p = subprocess.Popen(ssh_base_cmd + [cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -2909,6 +3087,14 @@ def sync_vm_time(config, ssh_base_cmd):
     elif guest_os in ['freebsd', 'netbsd']:
         # Try common BSD NTP tools with rdate fallback
         sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
+    elif guest_os == 'midnightbsd':
+        # MidnightBSD base system: ntpdate/ntpdig/sntp are not included by default.
+        # Prefer rdate (base system, always works). Older MidnightBSD's ntpd lacks -q flag.
+        sync_cmd = ("/usr/sbin/rdate -s time.nist.gov || /usr/sbin/rdate time.nist.gov || rdate time.nist.gov || "
+                    "/usr/sbin/ntpd -q -g || ntpd -q -g || "
+                    "/usr/local/sbin/ntpdate -u {0} || ntpdate -u {0} || "
+                    "/usr/local/bin/ntpdig -S {0} || ntpdig -S {0} || "
+                    "/usr/local/bin/sntp -sS {0} || sntp -sS {0}").format(ntp_servers)
     elif guest_os == 'omnios':
         # OmniOS: chrony is the preferred and often only functional tool.
         sync_cmd = "chronyc -a makestep || (svcadm enable chrony && sleep 2 && chronyc -a makestep)"
@@ -3064,8 +3250,8 @@ if [ "{os}" = "netbsd" ]; then
     exit 1
   fi
 else
-  if [ "{os}" = "freebsd" ]; then
-    kldload fusefs >/dev/null 2>&1 || true
+  if [ "{os}" = "freebsd" ] || [ "{os}" = "midnightbsd" ]; then
+    kldload fusefs >/dev/null 2>&1 || kldload fuse >/dev/null 2>&1 || true
   fi
   if sshfs -o reconnect,ServerAliveCountMax=2,allow_other,default_permissions host:"{vhost}" "{vguest}" ; then
     /sbin/mount >/dev/null 2>&1 || mount >/dev/null 2>&1
@@ -3282,7 +3468,7 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
     
     # Specify remote rsync path as it might not be in default non-interactive PATH.
     # These MUST come before the source/destination arguments.
-    if os_name == "freebsd":
+    if os_name in ("freebsd", "midnightbsd"):
         cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])
@@ -3498,7 +3684,8 @@ def main():
             qmon_port = int(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7].isdigit() else None
             error_log_path = sys.argv[8] if len(sys.argv) > 8 else None
             is_console_vnc = sys.argv[9] == '1' if len(sys.argv) > 9 else False
-            listen_addr = sys.argv[10] if len(sys.argv) > 10 else '127.0.0.1'
+            listen_addr_raw = sys.argv[10] if len(sys.argv) > 10 else '127.0.0.1'
+            listen_addr = listen_addr_raw.split(',') if ',' in listen_addr_raw else listen_addr_raw
             remote_vnc_val = sys.argv[11] if len(sys.argv) > 11 else '0'
             # Correctly parse string values like 'True', 'cf', 'lhr'
             remote_vnc = remote_vnc_val if remote_vnc_val not in ['0', 'False', 'false', None] else False
@@ -4236,13 +4423,19 @@ def main():
 
     if config['public'] or config['public_ssh']:
         ssh_addr = ""
+        ssh_extra_addrs = []
     else:
         ssh_addr = "127.0.0.1"
-        
+        ssh_extra_addrs = get_private_ips()
+        debuglog(config['debug'], "Private IPs for SSH: {}".format(ssh_extra_addrs if ssh_extra_addrs else "(none)"))
+
     if config['public']:
         p_addr = ""
+        p_extra_addrs = []
     else:
         p_addr = "127.0.0.1"
+        p_extra_addrs = get_private_ips()
+        debuglog(config['debug'], "Private IPs for port mappings: {}".format(p_extra_addrs if p_extra_addrs else "(none)"))
 
     # Ensure serial port is allocated for background logging and VNC console
     if not config['serialport']:
@@ -4364,7 +4557,13 @@ def main():
     if not config.get('enable_ipv6'):
         netdev_args += ",ipv6=off"
     netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
-    
+    for extra_addr in ssh_extra_addrs:
+        if is_port_available(extra_addr, int(config['sshport'])):
+            netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
+            debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 OK".format(extra_addr, config['sshport']))
+        else:
+            debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 SKIPPED (port in use)".format(extra_addr, config['sshport']))
+
     # Add custom port mappings
     for p in config['ports']:
         parts = p.split(':')
@@ -4372,9 +4571,21 @@ def main():
         if len(parts) == 2:
             # host:guest -> tcp:addr:host-:guest
             netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(p_addr, parts[0], parts[1])
+            for extra_addr in p_extra_addrs:
+                if is_port_available(extra_addr, int(parts[0])):
+                    netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, parts[0], parts[1])
+                    debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} OK".format(extra_addr, parts[0], parts[1]))
+                else:
+                    debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} SKIPPED (port in use)".format(extra_addr, parts[0], parts[1]))
         elif len(parts) == 3:
             # proto:host:guest -> proto:addr:host-:guest
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], p_addr, parts[1], parts[2])
+            for extra_addr in p_extra_addrs:
+                if is_port_available(extra_addr, int(parts[1])):
+                    netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], extra_addr, parts[1], parts[2])
+                    debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} OK".format(parts[0], extra_addr, parts[1], parts[2]))
+                else:
+                    debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} SKIPPED (port in use)".format(parts[0], extra_addr, parts[1], parts[2]))
 
     args_qemu = []
     if serial_chardev_def:
@@ -4658,6 +4869,11 @@ def main():
     cmd_text = format_command_for_display(cmd_list)
     debuglog(config['debug'], "CMD:\n  " + cmd_text)
 
+    # Auto-generate VNC password if not specified
+    if not config['vnc_password'] and config['vnc'] != "off":
+        import random, string
+        config['vnc_password'] = ''.join(random.choices(string.ascii_letters, k=6))
+
     vnc_log_path = os.path.join(output_dir, "{}.vncproxy.log".format(vm_name))
 
     # Function to start (or restart) the VNC Web Proxy monitoring the given QEMU PID
@@ -4676,7 +4892,7 @@ def main():
                 config['qmon'] if config['qmon'] else "",
                 vnc_log_path,
                 '1' if is_vnc_console else '0',
-                '0.0.0.0' if (config['public'] or config['public_vnc']) else '127.0.0.1',
+                '0.0.0.0' if (config['public'] or config['public_vnc']) else ','.join(['127.0.0.1'] + get_private_ips()),
                 str(config['remote_vnc']) if config['remote_vnc'] else '0',
                 '1' if config['debug'] else '0',
                 str(config['remote_vnc_link_file']) if config['remote_vnc_link_file'] else '0',
@@ -4697,7 +4913,19 @@ def main():
                 if supports_ansi_color():
                     display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                 log("VNC Web UI available at {}".format(display_local_url))
-                
+                if config['vnc_password']:
+                    pwd_display = config['vnc_password']
+                    if supports_ansi_color():
+                        pwd_display = "\x1b[33m{}\x1b[0m".format(pwd_display)
+                    log("VNC password: {}".format(pwd_display))
+                if not (config['public'] or config['public_vnc']):
+                    lan_ips = get_private_ips()
+                    for ip in lan_ips:
+                        lan_url = "http://{}:{}".format(ip, web_port)
+                        if supports_ansi_color():
+                            lan_url = "\x1b[32m{}\x1b[0m".format(lan_url)
+                        log("  Also accessible at {}".format(lan_url))
+
                 # Start tunnel watcher thread if remote VNC is enabled
                 if config.get('remote_vnc'):
                     t = threading.Thread(target=watch_vnc_tunnel_log, args=(vnc_log_path, tunnel_wait_stop, config.get('remote_vnc_is_default')))
@@ -5334,6 +5562,12 @@ Host host
                         if supports_ansi_color():
                             display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                         log("VNC Web UI: {}".format(display_local_url))
+                        if not (config['public'] or config['public_vnc']):
+                            for ip in get_private_ips():
+                                lan_url = "http://{}:{}".format(ip, web_port)
+                                if supports_ansi_color():
+                                    lan_url = "\x1b[32m{}\x1b[0m".format(lan_url)
+                                log("  Also accessible at {}".format(lan_url))
                     if tunnel_url:
                         display_url = tunnel_url
                         if supports_ansi_color():

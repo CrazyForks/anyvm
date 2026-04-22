@@ -1,5 +1,5 @@
 
-name: Haiku
+name: MidnightBSD
 
 on:
   workflow_dispatch:
@@ -10,8 +10,9 @@ on:
       - '*'
     paths:
       - '**.py'
-      - '.github/workflows/haiku.yml'
+      - '.github/workflows/midnightbsd.yml'
       - '.github/workflows/testrun.yml'
+
 
 
 concurrency:
@@ -19,12 +20,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  testrsync:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=haiku]') }}
+  testsshfs:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=midnightbsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: [""]
+        release: ["2.2.8", "3.2.4", "4.0.4"]
         arch: [""]
         runs: ["ubuntu-24.04"]
 
@@ -33,31 +34,26 @@ jobs:
     secrets: inherit
     with:
       runs: ${{ matrix.runs }}
-      os: haiku
+      os: midnightbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: rsync
-      user: user
-      vmpath: /boot/home/host
+      sync: "sshfs"
 
 
-  testscp:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=haiku]') }}
+  testnfs:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=midnightbsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: [""]
+        release: ["2.2.8", "3.2.4", "4.0.4"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
     with:
       runs: ${{ matrix.runs }}
-      os: haiku
+      os: midnightbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: scp
-      user: user
-      vmpath: /boot/home/host
+      sync: nfs
