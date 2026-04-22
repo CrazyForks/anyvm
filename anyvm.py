@@ -3089,9 +3089,9 @@ def sync_vm_time(config, ssh_base_cmd):
         sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
     elif guest_os == 'midnightbsd':
         # MidnightBSD base system: ntpdate/ntpdig/sntp are not included by default.
-        # Try ntpd -q (base system), then rdate (/usr/sbin/rdate), then package-installed tools.
-        sync_cmd = ("/usr/sbin/ntpd -q -g || ntpd -q -g || "
-                    "/usr/sbin/rdate -s time.nist.gov || /usr/sbin/rdate time.nist.gov || rdate time.nist.gov || "
+        # Prefer rdate (base system, always works). Older MidnightBSD's ntpd lacks -q flag.
+        sync_cmd = ("/usr/sbin/rdate -s time.nist.gov || /usr/sbin/rdate time.nist.gov || rdate time.nist.gov || "
+                    "/usr/sbin/ntpd -q -g || ntpd -q -g || "
                     "/usr/local/sbin/ntpdate -u {0} || ntpdate -u {0} || "
                     "/usr/local/bin/ntpdig -S {0} || ntpdig -S {0} || "
                     "/usr/local/bin/sntp -sS {0} || sntp -sS {0}").format(ntp_servers)
@@ -3251,7 +3251,7 @@ if [ "{os}" = "netbsd" ]; then
   fi
 else
   if [ "{os}" = "freebsd" ] || [ "{os}" = "midnightbsd" ]; then
-    kldload fusefs >/dev/null 2>&1 || true
+    kldload fusefs >/dev/null 2>&1 || kldload fuse >/dev/null 2>&1 || true
   fi
   if sshfs -o reconnect,ServerAliveCountMax=2,allow_other,default_permissions host:"{vhost}" "{vguest}" ; then
     /sbin/mount >/dev/null 2>&1 || mount >/dev/null 2>&1
