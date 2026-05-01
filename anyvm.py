@@ -21,6 +21,7 @@ import hashlib
 import struct
 import collections
 import ssl
+import ipaddress
 
 # Python 2/3 compatibility for urllib and input
 try:
@@ -1820,7 +1821,7 @@ handleResize();
 class VNCWebProxy:
     GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     
-    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', vnc_password=""):
+    def __init__(self, vnc_host, vnc_port, web_port, vm_info="", qemu_pid=None, audio_enabled=False, qmon_port=None, error_log_path=None, is_console_vnc=False, listen_addr='127.0.0.1', vnc_password="", tunnel_port=None):
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
         self.web_port = web_port
@@ -1832,6 +1833,11 @@ class VNCWebProxy:
         self.is_console_vnc = is_console_vnc
         self.listen_addr = listen_addr
         self.vnc_password = vnc_password
+        # Dedicated 127.0.0.1 port reserved for the remote tunnel agent. Connections
+        # arriving on this port always require the password — the IP-based bypass
+        # is intentionally skipped, since the peer IP will be 127.0.0.1 (tunnel
+        # process running locally) but the actual user is on the public internet.
+        self.tunnel_port = tunnel_port
         self.clients = set()
         self.serial_buffer = collections.deque(maxlen=1024 * 100) # 100KB binary buffer (optimized for refresh speed)
         self.serial_writer = None
@@ -1842,24 +1848,29 @@ class VNCWebProxy:
         try:
             sock = writer.get_extra_info('socket')
             if sock: sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            peer = writer.get_extra_info('peername')
+            peer_ip = peer[0] if peer else None
+            sockname = writer.get_extra_info('sockname')
+            local_port = sockname[1] if sockname else None
+            is_tunnel_socket = (self.tunnel_port is not None and local_port == self.tunnel_port)
             request = await reader.read(4096)
             if not request: return
-            
+
             request_text = request.decode('utf-8', errors='ignore')
             lines = request_text.splitlines()
             if not lines: return
-            
+
             parts = lines[0].split()
             if len(parts) < 2: return
             path = parts[1]
-            
+
             headers = {}
             for line in lines[1:]:
                 if ':' in line:
                     key, val = line.split(':', 1)
                     headers[key.strip().lower()] = val.strip()
-            
-            if self.vnc_password:
+
+            if self.vnc_password and (is_tunnel_socket or not self._is_trusted_client_ip(peer_ip)):
                 auth_header = headers.get('authorization', '')
                 is_auth_ok = self.check_auth(auth_header)
                 if not is_auth_ok:
@@ -1878,6 +1889,23 @@ class VNCWebProxy:
             except:
                 pass
     
+    def _is_trusted_client_ip(self, peer_ip):
+        # Skip VNC password prompt for clients on loopback, RFC1918 private
+        # networks, link-local, or CGNAT (100.64.0.0/10, used by Tailscale etc.).
+        if not peer_ip:
+            return False
+        try:
+            addr = ipaddress.ip_address(peer_ip)
+            if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+                addr = addr.ipv4_mapped
+            if addr.is_loopback or addr.is_private or addr.is_link_local:
+                return True
+            if isinstance(addr, ipaddress.IPv4Address) and addr in ipaddress.ip_network('100.64.0.0/10'):
+                return True
+            return False
+        except (ValueError, TypeError):
+            return False
+
     def check_auth(self, auth_header):
         if not auth_header or not auth_header.lower().startswith('basic '):
             return False
@@ -1937,7 +1965,7 @@ class VNCWebProxy:
         ).encode('utf-8') + body
         writer.write(response)
         await writer.drain()
-    
+
     async def handle_websocket(self, reader, writer, headers):
         key = headers.get('sec-websocket-key', '')
         accept = base64.b64encode(hashlib.sha1((key + self.GUID).encode()).digest()).decode()
@@ -2219,19 +2247,25 @@ class VNCWebProxy:
         # Start serial worker if in console mode
         if self.is_console_vnc:
             asyncio.create_task(self.serial_worker())
-            
+
         self.server = await asyncio.start_server(self.handle_client, self.listen_addr, self.web_port)
+        self.tunnel_server = None
+        if self.tunnel_port is not None:
+            self.tunnel_server = await asyncio.start_server(self.handle_client, '127.0.0.1', self.tunnel_port)
         # Start the monitor in a background thread
         t = threading.Thread(target=self.monitor_qemu_thread, args=(asyncio.get_event_loop(),))
         t.daemon = True
         t.start()
-        
-        async with self.server: 
-            try:
-                # Wait for the stop event (triggered by QEMU exit)
-                await self.stop_event.wait()
-            except asyncio.CancelledError:
-                pass
+
+        try:
+            async with self.server:
+                if self.tunnel_server is not None:
+                    async with self.tunnel_server:
+                        await self.stop_event.wait()
+                else:
+                    await self.stop_event.wait()
+        except asyncio.CancelledError:
+            pass
 
 def strip_ansi(text):
     """Removes ANSI escape sequences from text."""
@@ -2263,7 +2297,7 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
             pass
     
     tunnel_procs = [] # Track all started tunnel processes
-    
+
     def kill_all_tunnels():
         for p in list(tunnel_procs):
             if p.poll() is None:
@@ -2276,6 +2310,23 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
                 except: pass
             if p in tunnel_procs:
                 tunnel_procs.remove(p)
+
+    # Allocate a dedicated 127.0.0.1 port for the tunnel agent so that
+    # tunnel-borne traffic can be distinguished from local browser traffic at
+    # the TCP layer. Connections to this port always require the password
+    # (see VNCWebProxy.handle_client). If allocation fails we refuse to start
+    # the tunnel rather than fall back to web_port, which would silently
+    # disable password protection for tunnel users.
+    tunnel_port = None
+    if remote_vnc:
+        tunnel_port = get_free_port(start=16080, end=16180)
+        if tunnel_port is None:
+            if error_log_path:
+                try:
+                    with open(error_log_path, 'a') as f:
+                        f.write("[VNCProxy] Failed to allocate tunnel_port (16080-16180 exhausted). Remote tunnel disabled to preserve password enforcement.\n")
+                except: pass
+            remote_vnc = False
 
     if remote_vnc:
         def tunnel_manager():
@@ -2298,25 +2349,25 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
             strategies = [
                 {
                     'name': 'Cloudflare',
-                    'cmd': lambda: [cf_path, "tunnel", "--url", "http://127.0.0.1:{}".format(web_port)] if os.path.exists(cf_path) else None,
+                    'cmd': lambda: [cf_path, "tunnel", "--url", "http://127.0.0.1:{}".format(tunnel_port)] if os.path.exists(cf_path) else None,
                     'regex': r"https://[a-z0-9-]+\.trycloudflare\.com",
                     'msg': "Open this link to access WebVNC (via Cloudflare): {}"
                 },
                 {
                     'name': 'Localhost.run',
-                    'cmd': lambda: ["ssh", "-F", "/dev/null" if sys_name != "windows" else "NUL", "-T", "-o", "StrictHostKeyChecking=no", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(web_port), "lx@localhost.run"],
+                    'cmd': lambda: ["ssh", "-F", "/dev/null" if sys_name != "windows" else "NUL", "-T", "-o", "StrictHostKeyChecking=no", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(tunnel_port), "lx@localhost.run"],
                     'regex': r"https?://[a-z0-9.-]+\.lhr\.(?:life|proxy\.localhost\.run|localhost\.run)",
                     'msg': "Open this link to access WebVNC (via Localhost.run): {}"
                 },
                 {
                     'name': 'Pinggy',
-                    'cmd': lambda: ["ssh", "-F", "/dev/null" if sys_name != "windows" else "NUL", "-T", "-o", "StrictHostKeyChecking=no", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-p", "443", "-R", "80:localhost:{}".format(web_port), "a.pinggy.io"],
+                    'cmd': lambda: ["ssh", "-F", "/dev/null" if sys_name != "windows" else "NUL", "-T", "-o", "StrictHostKeyChecking=no", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-p", "443", "-R", "80:localhost:{}".format(tunnel_port), "a.pinggy.io"],
                     'regex': r"https?://[a-z0-9.-]+\.pinggy\.link",
                     'msg': "Open this link to access WebVNC (via Pinggy): {}"
                 },
                 {
                     'name': 'Serveo',
-                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(web_port), "serveo.net"],
+                    'cmd': lambda: ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10", "-R", "80:localhost:{}".format(tunnel_port), "serveo.net"],
                     'regex': r"https?://[a-z0-9.-]+\.(?:serveo\.net|serveousercontent\.com)",
                     'msg': "Open this link to access WebVNC (via Serveo): {}"
                 }
@@ -2489,7 +2540,7 @@ def start_vnc_web_proxy(vnc_port, web_port, vm_info="", qemu_pid=None, audio_ena
         t.start()
 
     try:
-        proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, vnc_password=vnc_password)
+        proxy = VNCWebProxy('127.0.0.1', vnc_port, web_port, vm_info, qemu_pid, audio_enabled, qmon_port, error_log_path, is_console_vnc, listen_addr=listen_addr, vnc_password=vnc_password, tunnel_port=tunnel_port)
         proxy.kill_tunnels_func = kill_all_tunnels
         asyncio.run(proxy.run())
     finally:
