@@ -116,10 +116,10 @@ DEFAULT_BUILDER_VERSIONS = {
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.4",
     "solaris": "2.0.4",
-    "omnios": "2.0.7",
+    "omnios": "2.0.8",
     "haiku": "2.0.0",
-    "midnightbsd": "2.0.1",
-    "openindiana": "2.0.6"
+    "midnightbsd": "2.0.2",
+    "openindiana": "2.0.7"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
