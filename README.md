@@ -1,4 +1,8 @@
-﻿# Run any VM anywhere [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
+﻿# Run any VM anywhere 
+
+[![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/anyvm-org/anyvm?include_prereleases&sort=semver)](https://github.com/anyvm-org/anyvm/releases)
+
 
 anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
 
