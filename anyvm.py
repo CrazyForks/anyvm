@@ -115,7 +115,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "openbsd": "2.0.1",
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.4",
-    "solaris": "2.0.4",
+    "solaris": "2.0.5",
     "omnios": "2.0.8",
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
