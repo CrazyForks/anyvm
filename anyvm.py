@@ -5732,8 +5732,10 @@ def main():
                     log("Apple Silicon detected: waiting 5s for OpenIndiana services to settle...")
                     time.sleep(5)
                 sync_vm_time(config, ssh_base_cmd)
-            
+                debuglog(config['debug'], "[trace] sync_vm_time returned")
+
             # Post-boot config: Setup reverse SSH config inside VM
+            debuglog(config['debug'], "[trace] entering post-boot config block")
             current_user = getpass.getuser()
             host_port_line = ""
             if not config['hostsshport']:
@@ -5742,6 +5744,9 @@ def main():
                     debuglog(config['debug'], "Detected host SSH port {}".format(config['hostsshport']))
             if config['hostsshport']:
                 host_port_line = "  Port {}\n".format(config['hostsshport'])
+            debuglog(config['debug'], "[trace] sync={!r} accept_vm_ssh={} -> will inject VM .ssh/config: {}".format(
+                config.get('sync'), config.get('accept_vm_ssh'),
+                config.get('sync') == 'sshfs' or config.get('accept_vm_ssh')))
             if config.get('sync') == 'sshfs' or config.get('accept_vm_ssh'):
                 vm_ssh_config = """
 StrictHostKeyChecking=no
@@ -5751,16 +5756,23 @@ Host host
 {host_port}  User {user}
   ServerAliveInterval 1
 """.format(host_port=host_port_line, user=current_user)
-                
+
+                debuglog(config['debug'], "[trace] injecting VM .ssh/config via ssh ...")
                 p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
                 p.communicate(input=vm_ssh_config.encode('utf-8'))
                 p.wait()
+                debuglog(config['debug'], "[trace] VM .ssh/config injection rc={}".format(p.returncode))
             # OmniOS DNS configuration
             if config['os'] == 'omnios':
+                debuglog(config['debug'], "[trace] writing /etc/resolv.conf on OmniOS ...")
                 p = subprocess.Popen(ssh_base_cmd + ["sh"], stdin=subprocess.PIPE)
                 p.communicate(input=b'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n')
                 p.wait()
+                debuglog(config['debug'], "[trace] OmniOS resolv.conf rc={}".format(p.returncode))
             # Mount Shared Folders
+            debuglog(config['debug'], "[trace] vpaths={!r} sync={!r} -> will mount: {}".format(
+                config['vpaths'], config.get('sync'),
+                bool(config['vpaths']) and config['sync'] != 'no'))
             if config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
                 if config['sync'] == 'nfs':
@@ -5833,6 +5845,8 @@ Host host
                              log("        Use '--remote-vnc off' to disable it.")
                  log("======================================")
 
+            debuglog(config['debug'], "[trace] reached final-SSH gate, detach={} console={}".format(
+                config['detach'], config['console']))
             if not config['detach']:
                 ssh_cmd = ssh_base_cmd + ssh_passthrough
                 debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
@@ -5842,14 +5856,19 @@ Host host
                 # (observed on MidnightBSD 3.2.4), which then blocks anyvm
                 # forever. Users running interactively still get the shell;
                 # users with `-- cmd ...` still get their command executed.
-                skip_final_ssh = (
-                    not ssh_passthrough
-                    and not (hasattr(sys.stdin, 'isatty') and sys.stdin.isatty())
-                )
+                stdin_is_tty = bool(hasattr(sys.stdin, 'isatty') and sys.stdin.isatty())
+                stdout_is_tty = bool(hasattr(sys.stdout, 'isatty') and sys.stdout.isatty())
+                skip_final_ssh = (not ssh_passthrough) and (not stdin_is_tty)
+                debuglog(config['debug'], "[trace] final-SSH decision: ssh_passthrough={!r} stdin_tty={} stdout_tty={} skip={}".format(
+                    ssh_passthrough, stdin_is_tty, stdout_is_tty, skip_final_ssh))
                 if skip_final_ssh:
                     debuglog(config['debug'], "Skipping final interactive SSH: non-TTY stdin and no passthrough command.")
                 else:
-                    subprocess.call(ssh_cmd)
+                    debuglog(config['debug'], "[trace] final-SSH calling subprocess.call ...")
+                    rc = subprocess.call(ssh_cmd)
+                    debuglog(config['debug'], "[trace] final-SSH returned rc={}".format(rc))
+            else:
+                debuglog(config['debug'], "[trace] detach mode -- skipping final SSH")
             # Avoid noisy banner when running as PID 1 inside a container or if QEMU already exited
             if os.getpid() != 1:
                 if not config['detach']:
