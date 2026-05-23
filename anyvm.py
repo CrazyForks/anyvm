@@ -4818,9 +4818,16 @@ def main():
         "-netdev", netdev_args,
     ])
 
-    # Disk: split into -drive + -device when we need bootindex (virtio path).
-    # bootindex on the boot disk makes UEFI prefer it over PXE/HTTP boot, saving 1-2 min on aarch64.
-    if disk_if == "virtio":
+    # Disk: when we need bootindex, split into -drive + -device so we can set it
+    # on the virtio-blk-pci device. bootindex only helps UEFI/EFI firmwares skip
+    # slow PXE/HTTP boot attempts -- aarch64 (always EFI) and x86_64 with --uefi.
+    # For BIOS x86_64 (SeaBIOS) and riscv64 (u-boot), the shortcut form is fine
+    # and avoids confusing some guest bootloaders (e.g. illumos GRUB).
+    needs_bootindex_disk = (
+        config['arch'] == "aarch64"
+        or config.get('useefi')
+    )
+    if disk_if == "virtio" and needs_bootindex_disk:
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
             "-device", "virtio-blk-pci,drive=disk0,bootindex=0"
