@@ -5734,6 +5734,15 @@ def main():
                 sync_vm_time(config, ssh_base_cmd)
                 debuglog(config['debug'], "[trace] sync_vm_time returned")
 
+            # Defensive: brief pause before opening more SSH sessions. Without
+            # this we saw flaky "remote host has disconnected" on MidnightBSD,
+            # likely because the previous SSH session's utmp/logout/PAM
+            # accounting hadn't fully settled. The symptom is timing sensitive
+            # and was masked by debug-log overhead, so we explicitly insert a
+            # small cushion here that applies to all guests.
+            time.sleep(0.5)
+            debuglog(config['debug'], "[trace] post-sync settle delay done")
+
             # Post-boot config: Setup reverse SSH config inside VM
             debuglog(config['debug'], "[trace] entering post-boot config block")
             current_user = getpass.getuser()
