@@ -3437,22 +3437,16 @@ fi
                 os=os_name,
         )
 
-    # Write the mount script into the VM, then execute it (instead of piping via stdin each retry).
-    p_write = subprocess.Popen(ssh_cmd + ["cat - > ~/anyvm.mount.sshfs.sh"], stdin=subprocess.PIPE)
-    p_write.communicate(input=mount_script.encode('utf-8'))
-    if p_write.returncode != 0:
-        log("Warning: Failed to write ~/anyvm.mount.sshfs.sh in guest.")
-        return
-
     mounted = False
     for _ in range(10):
-        rc = subprocess.call(ssh_cmd + ["sh ~/anyvm.mount.sshfs.sh"])
-        if rc == 0:
+        p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
+        p_mount.communicate(input=mount_script.encode('utf-8'))
+        if p_mount.returncode == 0:
             mounted = True
             break
         log("SSHFS mount failed, retrying...")
         time.sleep(2)
-
+    
     if not mounted:
         log("Warning: Failed to mount shared folder via sshfs.")
 
@@ -3510,22 +3504,16 @@ else
 fi
 """.format(vguest=vguest, vhost=vhost, os=os_name)
 
-    # Write the mount script into the VM, then execute it (instead of piping via stdin each retry).
-    p_write = subprocess.Popen(ssh_cmd + ["cat - > ~/anyvm.mount.nfs.sh"], stdin=subprocess.PIPE)
-    p_write.communicate(input=mount_script.encode('utf-8'))
-    if p_write.returncode != 0:
-        log("Warning: Failed to write ~/anyvm.mount.nfs.sh in guest.")
-        return
-
     mounted = False
     for _ in range(10):
-        rc = subprocess.call(ssh_cmd + ["sh ~/anyvm.mount.nfs.sh"])
-        if rc == 0:
+        p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
+        p_mount.communicate(input=mount_script.encode('utf-8'))
+        if p_mount.returncode == 0:
             mounted = True
             break
         log("NFS mount failed, retrying...")
         time.sleep(2)
-
+    
     if not mounted:
         log("Warning: Failed to mount shared folder via NFS.")
 
