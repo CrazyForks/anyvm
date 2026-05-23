@@ -151,11 +151,17 @@ def format_command_for_display(cmd_list):
 def log(msg):
     t = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+    line = "[{}] {}".format(timestamp, msg)
     if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
-        # Clear current line (progress bar) and move cursor to beginning
+        # Clear current line (progress bar) and move cursor to beginning,
+        # then emit each line with an explicit CR+LF so we don't depend on
+        # the TTY's ONLCR mode being on (something upstream sometimes flips it).
         sys.stdout.write("\r\x1b[K")
-    print("[{}] {}".format(timestamp, msg))
-    sys.stdout.flush()
+        sys.stdout.write(line.replace("\n", "\r\n") + "\r\n")
+        sys.stdout.flush()
+    else:
+        print(line)
+        sys.stdout.flush()
 
 def supports_ansi_color(stream=sys.stdout):
     """Checks if the stream supports ANSI color sequences."""
@@ -185,7 +191,14 @@ def debuglog(enabled, msg):
     if enabled:
         t = time.time()
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
-        print("[{}] [DEBUG] {}".format(timestamp, msg))
+        line = "[{}] [DEBUG] {}".format(timestamp, msg)
+        if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+            # Emit explicit CR+LF -- some subprocess on the way flips ONLCR off,
+            # so plain \n would leave the cursor at the previous column.
+            sys.stdout.write(line.replace("\n", "\r\n") + "\r\n")
+            sys.stdout.flush()
+        else:
+            print(line)
 
 def is_browser_available():
     """Returns True if the current environment can likely open a local browser."""
@@ -3091,6 +3104,108 @@ def call_with_timeout(cmd, timeout_seconds, **popen_kwargs):
         pass
     return None, True
 
+# Slirp / DHCP defaults baked into the netdev_args string below.
+# Keep these in sync if you ever change net=/dhcpstart= in the netdev string.
+SLIRP_NETWORK_PREFIX = "192.168.122."
+SLIRP_EXPECTED_GUEST_IP = SLIRP_NETWORK_PREFIX + "10"
+
+def _qmon_send(monitor_port, command, timeout=2.0):
+    """Send a single HMP command to the QEMU monitor TCP port, return the reply text or None.
+
+    CRITICAL: do NOT send the HMP 'quit' command -- it terminates QEMU itself.
+    We close the TCP socket from our side instead; the monitor server (started
+    with server,nowait) keeps listening for new clients.
+    """
+    try:
+        s = socket.create_connection(('127.0.0.1', int(monitor_port)), timeout=2.0)
+    except (socket.error, OSError, ValueError):
+        return None
+    chunks = []
+    try:
+        s.settimeout(timeout)
+        s.sendall((command + "\n").encode('utf-8'))
+        # Read whatever the monitor emits until a brief idle period (timeout).
+        while True:
+            try:
+                data = s.recv(4096)
+            except socket.timeout:
+                break
+            if not data:
+                break
+            chunks.append(data)
+    finally:
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            s.close()
+        except Exception:
+            pass
+    text = b''.join(chunks).decode('utf-8', errors='ignore')
+    # QEMU monitor echoes input with readline control bytes; strip them.
+    text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+    text = text.replace('\b', '').replace('\r', '')
+    return text
+
+def get_vm_ip_from_monitor(monitor_port, network_prefix=SLIRP_NETWORK_PREFIX):
+    """Detect the actual VM IP from slirp's connection table.
+
+    Looks at lines from 'info usernet' where the source IP is in our guest subnet
+    and the destination is external -- those are VM-originated outbound flows,
+    and their source IP is the VM's real DHCP-assigned address.
+
+    Returns None if no such traffic is visible yet (VM idle / not booted enough).
+    """
+    text = _qmon_send(monitor_port, 'info usernet')
+    if not text:
+        return None
+    line_pattern = re.compile(
+        r'^\s*\w+\[[^\]]+\]\s+\d+\s+(\S+)\s+\d+\s+(\S+)\s+\d+',
+        re.MULTILINE,
+    )
+    reserved_last = {0, 1, 2, 3, 255}  # network/gateway/dns/broadcast in slirp's /24
+    candidates = {}
+    for m in line_pattern.finditer(text):
+        src_ip, dst_ip = m.group(1), m.group(2)
+        if src_ip.startswith(network_prefix) and not dst_ip.startswith(network_prefix):
+            try:
+                last = int(src_ip.rsplit('.', 1)[1])
+            except ValueError:
+                continue
+            if last in reserved_last:
+                continue
+            candidates[src_ip] = candidates.get(src_ip, 0) + 1
+    if not candidates:
+        return None
+    return max(candidates.items(), key=lambda kv: kv[1])[0]
+
+def rewrite_hostfwd_target(monitor_port, hostfwd_specs, new_guest_ip, debug=False):
+    """Rebind every hostfwd entry to point at new_guest_ip via the QEMU monitor.
+
+    hostfwd_specs items are (proto, host_addr, host_port, guest_port) -- all strings.
+    Returns True if every (remove, add) pair appeared to succeed.
+    """
+    if not hostfwd_specs:
+        return False
+    all_ok = True
+    for proto, host_addr, host_port, guest_port in hostfwd_specs:
+        remove_cmd = "hostfwd_remove {}:{}:{}".format(proto, host_addr, host_port)
+        add_cmd = "hostfwd_add {}:{}:{}-{}:{}".format(proto, host_addr, host_port, new_guest_ip, guest_port)
+        rem = _qmon_send(monitor_port, remove_cmd)
+        add = _qmon_send(monitor_port, add_cmd)
+        # QEMU monitor prints nothing on success; "Error" or "not found" on failure.
+        rem_ok = bool(rem) and "Error" not in rem and "not found" not in rem.lower()
+        add_ok = bool(add) and "Error" not in add and "could not" not in add.lower()
+        if debug:
+            debuglog(debug, "hostfwd rewrite {}:{}:{} -> {}:{}: remove={} add={}".format(
+                proto, host_addr, host_port, new_guest_ip, guest_port,
+                "ok" if rem_ok else "fail", "ok" if add_ok else "fail",
+            ))
+        if not (rem_ok and add_ok):
+            all_ok = False
+    return all_ok
+
 def sync_vm_time(config, ssh_base_cmd):
     """Synchronizes VM time using NTP-like commands inside the guest."""
     guest_os = config.get('os', '').lower()
@@ -4571,8 +4686,10 @@ def main():
         if config['os'] == "openindiana":
             # Rule for OpenIndiana: Default to 'console' if not specified.
             auto_reason = "OpenIndiana (requires console for login display)"
-        elif "x86_64" not in bin_name:
+        elif "x86_64" not in bin_name and not (config['os'] == "openbsd" and config['arch'] == "aarch64"):
             # Rule for non-x86 architectures: Default to 'console' if not specified.
+            # Exception: OpenBSD on aarch64 has a working graphical framebuffer
+            # via virtio-gpu-pci, so prefer regular VNC there.
             auto_reason = "non-x86 arch ({})".format(bin_name)
              
     if auto_reason:
@@ -4634,13 +4751,21 @@ def main():
 
     # Build Netdev Argument
     # Always include standard SSH mapping
-    netdev_args = "user,id=net0,net=192.168.122.0/24,dhcpstart=192.168.122.50"
+    netdev_args = "user,id=net0,net=192.168.122.0/24,dhcpstart=192.168.122.10"
     if not config.get('enable_ipv6'):
         netdev_args += ",ipv6=off"
+
+    # Track every hostfwd we install so we can rebind them at runtime via the
+    # QEMU monitor if the VM ends up with an unexpected IP (e.g. stale DHCP lease).
+    # Each entry: (proto, host_addr, host_port_str, guest_port_str)
+    hostfwd_specs = []
+
     netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
+    hostfwd_specs.append(("tcp", ssh_addr, str(config['sshport']), "22"))
     for extra_addr in ssh_extra_addrs:
         if is_port_available(extra_addr, int(config['sshport'])):
             netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
+            hostfwd_specs.append(("tcp", extra_addr, str(config['sshport']), "22"))
             debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 OK".format(extra_addr, config['sshport']))
         else:
             debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 SKIPPED (port in use)".format(extra_addr, config['sshport']))
@@ -4652,18 +4777,22 @@ def main():
         if len(parts) == 2:
             # host:guest -> tcp:addr:host-:guest
             netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(p_addr, parts[0], parts[1])
+            hostfwd_specs.append(("tcp", p_addr, parts[0], parts[1]))
             for extra_addr in p_extra_addrs:
                 if is_port_available(extra_addr, int(parts[0])):
                     netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, parts[0], parts[1])
+                    hostfwd_specs.append(("tcp", extra_addr, parts[0], parts[1]))
                     debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} OK".format(extra_addr, parts[0], parts[1]))
                 else:
                     debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} SKIPPED (port in use)".format(extra_addr, parts[0], parts[1]))
         elif len(parts) == 3:
             # proto:host:guest -> proto:addr:host-:guest
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], p_addr, parts[1], parts[2])
+            hostfwd_specs.append((parts[0], p_addr, parts[1], parts[2]))
             for extra_addr in p_extra_addrs:
                 if is_port_available(extra_addr, int(parts[1])):
                     netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], extra_addr, parts[1], parts[2])
+                    hostfwd_specs.append((parts[0], extra_addr, parts[1], parts[2]))
                     debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} OK".format(parts[0], extra_addr, parts[1], parts[2]))
                 else:
                     debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} SKIPPED (port in use)".format(parts[0], extra_addr, parts[1], parts[2]))
@@ -5391,6 +5520,12 @@ def main():
             probe_timeout_sec = 5 if (IS_WINDOWS or config['arch'] == "aarch64") else 3
             boot_start_time = time.time()
 
+            # Fallback for stale-DHCP-lease scenarios: if the VM ends up with an IP
+            # different from dhcpstart (= what hostfwd was wired to at QEMU launch),
+            # rebind hostfwd at runtime via the monitor. Only attempted once per boot.
+            hostfwd_guard_done = False
+            hostfwd_guard_last_check = 0.0
+
             while True:
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
@@ -5405,11 +5540,28 @@ def main():
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
-                if timed_out:
-                    continue
                 if ret == 0:
                     success = True
                     break
+
+                # While waiting for SSH to come up, periodically poll the QEMU monitor
+                # to detect if the VM got an unexpected IP and fix hostfwd accordingly.
+                if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
+                        and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
+                    hostfwd_guard_last_check = time.time()
+                    actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                    if actual_ip:
+                        if actual_ip == SLIRP_EXPECTED_GUEST_IP:
+                            debuglog(config['debug'], "VM IP {} matches expected, hostfwd OK".format(actual_ip))
+                            hostfwd_guard_done = True
+                        else:
+                            log("VM has IP {} (expected {}); rewriting hostfwd via monitor.".format(actual_ip, SLIRP_EXPECTED_GUEST_IP))
+                            if rewrite_hostfwd_target(config['qmon'], hostfwd_specs, actual_ip, debug=config['debug']):
+                                log("Hostfwd rewritten to target {}.".format(actual_ip))
+                                hostfwd_guard_done = True
+
+                if timed_out:
+                    continue
 
             
             wait_timer_stop.set()
@@ -5477,29 +5629,47 @@ def main():
                     wait_timer_thread.daemon = True
                     wait_timer_thread.start()
                 
-                # Second boot attempt with 5 minute timeout
+                # Second boot attempt -- QEMU restarted from scratch, so hostfwd was
+                # reset to its initial guest-IP target. Reset the guard so we check again.
                 boot_start_time = time.time()
                 success = False
-                
+                hostfwd_guard_done = False
+                hostfwd_guard_last_check = 0.0
+
                 while True:
                     if proc.poll() is not None:
                         fail_with_output("QEMU terminated during boot (retry)")
-                    
+
                     elapsed = time.time() - boot_start_time
                     if elapsed >= boot_timeout_seconds:
                         break
-                    
+
                     ret, timed_out = call_with_timeout(
                         ssh_base_cmd + ["exit"],
                         timeout_seconds=probe_timeout_sec,
                         stdout=DEVNULL,
                         stderr=DEVNULL
                     )
-                    if timed_out:
-                        continue
                     if ret == 0:
                         success = True
                         break
+
+                    if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
+                            and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
+                        hostfwd_guard_last_check = time.time()
+                        actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                        if actual_ip:
+                            if actual_ip == SLIRP_EXPECTED_GUEST_IP:
+                                debuglog(config['debug'], "VM IP {} matches expected (retry)".format(actual_ip))
+                                hostfwd_guard_done = True
+                            else:
+                                log("VM has IP {} (expected {}); rewriting hostfwd via monitor (retry).".format(actual_ip, SLIRP_EXPECTED_GUEST_IP))
+                                if rewrite_hostfwd_target(config['qmon'], hostfwd_specs, actual_ip, debug=config['debug']):
+                                    log("Hostfwd rewritten to target {}.".format(actual_ip))
+                                    hostfwd_guard_done = True
+
+                    if timed_out:
+                        continue
                     time.sleep(2)
                 
                 wait_timer_stop.set()
