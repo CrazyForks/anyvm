@@ -4686,11 +4686,20 @@ def main():
         if config['os'] == "openindiana":
             # Rule for OpenIndiana: Default to 'console' if not specified.
             auto_reason = "OpenIndiana (requires console for login display)"
-        elif "x86_64" not in bin_name and not (config['os'] == "openbsd" and config['arch'] == "aarch64"):
+        elif "x86_64" not in bin_name:
             # Rule for non-x86 architectures: Default to 'console' if not specified.
-            # Exception: OpenBSD on aarch64 has a working graphical framebuffer
-            # via virtio-gpu-pci, so prefer regular VNC there.
-            auto_reason = "non-x86 arch ({})".format(bin_name)
+            # Exception: OpenBSD on aarch64 starting at 7.4 has a working
+            # graphical framebuffer via virtio-gpu-pci, so prefer regular VNC
+            # there. 7.3 and earlier lack this and still need console.
+            openbsd_aarch64_has_fb = False
+            if config['os'] == "openbsd" and config['arch'] == "aarch64":
+                try:
+                    rel_parts = tuple(int(x) for x in config['release'].split('.')[:2])
+                    openbsd_aarch64_has_fb = len(rel_parts) >= 2 and rel_parts >= (7, 4)
+                except (ValueError, AttributeError):
+                    openbsd_aarch64_has_fb = False
+            if not openbsd_aarch64_has_fb:
+                auto_reason = "non-x86 arch ({})".format(bin_name)
              
     if auto_reason:
          debuglog(config['debug'], "Auto-enabling VNC Console: " + auto_reason)
@@ -4900,8 +4909,22 @@ def main():
         if vga_type in ["virtio", "virtio-gpu"]:
             vga_type = "virtio-gpu-pci"
         
+        # OpenBSD aarch64 < 7.4 has broken ACPI _PRT routing for legacy PCI
+        # interrupts -- xhci/e1000 fail with "couldn't map interrupt", and the
+        # modern virtio transport isn't fully wired up in vio(4) either. Force
+        # Device Tree mode by disabling ACPI so PCI INTx routing comes from FDT.
+        machine_opts = "virt,accel={},gic-version=3,usb=on".format(accel)
+        try:
+            obsd_rel = tuple(int(x) for x in config['release'].split('.')[:2])
+        except (ValueError, AttributeError):
+            obsd_rel = None
+        if (config['os'] == "openbsd" and config['arch'] == "aarch64"
+                and obsd_rel is not None and len(obsd_rel) >= 2 and obsd_rel < (7, 4)):
+            machine_opts += ",acpi=off"
+            debuglog(config['debug'], "OpenBSD aarch64 < 7.4: disabling ACPI (force FDT for PCI interrupts)")
+
         args_qemu.extend([
-            "-machine", "virt,accel={},gic-version=3,usb=on".format(accel),
+            "-machine", machine_opts,
             "-cpu", cpu,
             "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card),
