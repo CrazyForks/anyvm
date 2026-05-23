@@ -271,6 +271,11 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 - `--disktype <type>`: Disk interface type (e.g. `virtio`, `ide`).
   - Example: `python3 anyvm.py --os dragonflybsd --disktype ide`
 
+- `--boot-timeout-sec <n>`: Boot timeout in seconds before QEMU is killed and retried once. Default: `600` (10 minutes).
+  - Exception: OpenBSD on `aarch64` defaults to `1200` (20 minutes) because it boots much slower under emulation.
+  - Useful for slow hosts (emulated arches, low-resource CI runners) or for failing fast in tests.
+  - Example: `python3 anyvm.py --os openbsd --boot-timeout-sec 1200`
+
 
 
 ### Data directory

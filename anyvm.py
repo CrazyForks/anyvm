@@ -2619,6 +2619,7 @@ Options:
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
+  --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once (default: 600).
   --sync-time [off]      Synchronize VM time using NTP inside the guest after boot.
                          (Default: enabled for DragonFlyBSD/Solaris family, disabled otherwise).
   --                     Send all following args to the final ssh command (executes inside the VM).
@@ -3809,7 +3810,8 @@ def main():
         'remote_vnc': None,
         'remote_vnc_is_default': False,
         'remote_vnc_link_file': None,
-        'vnc_password': ""
+        'vnc_password': "",
+        'boot_timeout_sec': 600
     }
 
     ssh_passthrough = []
@@ -3817,6 +3819,7 @@ def main():
     serial_user_specified = False
     vnc_user_specified = False
     arch_specified = False
+    boot_timeout_user_specified = False
 
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -3960,6 +3963,16 @@ def main():
             i += 1
         elif arg == "--snapshot":
             config['snapshot'] = True
+        elif arg == "--boot-timeout-sec":
+            try:
+                val = int(args[i+1])
+            except ValueError:
+                fatal("--boot-timeout-sec requires an integer (seconds), got: {}".format(args[i+1]))
+            if val <= 0:
+                fatal("--boot-timeout-sec must be positive, got: {}".format(val))
+            config['boot_timeout_sec'] = val
+            boot_timeout_user_specified = True
+            i += 1
         elif arg == "--sync-time":
             if i + 1 < len(args) and args[i+1] == "off":
                 config['synctime'] = False
@@ -4031,6 +4044,11 @@ def main():
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
+    # OpenBSD on aarch64 boots much slower under emulation; bump default timeout
+    # unless the user passed --boot-timeout-sec explicitly.
+    if not boot_timeout_user_specified and config['os'] == "openbsd" and config['arch'] == "aarch64":
+        config['boot_timeout_sec'] = 1200
+        debuglog(config['debug'], "OpenBSD/aarch64: default boot timeout raised to 1200s")
 
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
@@ -4660,8 +4678,19 @@ def main():
         "-smp", config['cpu'],
         "-m", config['mem'],
         "-netdev", netdev_args,
-        "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
     ])
+
+    # Disk: split into -drive + -device when we need bootindex (virtio path).
+    # bootindex on the boot disk makes UEFI prefer it over PXE/HTTP boot, saving 1-2 min on aarch64.
+    if disk_if == "virtio":
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
+            "-device", "virtio-blk-pci,drive=disk0,bootindex=0"
+        ])
+    else:
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
+        ])
 
     rtc_base = "utc"
     if config['os'] in ["windows", "haiku"]:
@@ -4770,7 +4799,7 @@ def main():
             "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card)
         ])
-        
+
         uboot_bin = "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin"
         if not os.path.exists(uboot_bin):
             fatal("RISC-V u-boot binary not found at {}.\nPlease install it: sudo apt-get install u-boot-qemu".format(uboot_bin))
@@ -4883,7 +4912,7 @@ def main():
         # Determine if VNC should listen on 0.0.0.0 or 127.0.0.1
         # It should only listen on 0.0.0.0 if user specified --vnc (and it's not off/console) AND --public is set.
         if vnc_user_specified and config['vnc'] not in ["off", "console"]:
-            vnc_addr = addr  # Uses "" if --public else "127.0.0.1"
+            vnc_addr = p_addr  # Uses "" if --public else "127.0.0.1"
         else:
             vnc_addr = "127.0.0.1"
 
@@ -5358,20 +5387,21 @@ def main():
                 "{}@127.0.0.1".format(vm_user)
             ])
             
-            boot_timeout_seconds = 600  # 10 minutes
+            boot_timeout_seconds = config['boot_timeout_sec']
+            probe_timeout_sec = 5 if (IS_WINDOWS or config['arch'] == "aarch64") else 3
             boot_start_time = time.time()
-            
+
             while True:
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
-                
+
                 elapsed = time.time() - boot_start_time
                 if elapsed >= boot_timeout_seconds:
                     break
-                
+
                 ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
-                    timeout_seconds=5 if IS_WINDOWS else 2,
+                    timeout_seconds=probe_timeout_sec,
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
@@ -5418,7 +5448,7 @@ def main():
             
             if not success:
                 # First timeout - kill QEMU and retry once
-                log("Boot timed out after 5 minutes. Killing QEMU and retrying...")
+                log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
                 terminate_process(proc, "QEMU")
                 if proxy_proc:
                     terminate_process(proxy_proc, "VNC Proxy")
@@ -5461,7 +5491,7 @@ def main():
                     
                     ret, timed_out = call_with_timeout(
                         ssh_base_cmd + ["exit"],
-                        timeout_seconds=5 if IS_WINDOWS else 3,
+                        timeout_seconds=probe_timeout_sec,
                         stdout=DEVNULL,
                         stderr=DEVNULL
                     )
