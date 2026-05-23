@@ -5836,7 +5836,20 @@ Host host
             if not config['detach']:
                 ssh_cmd = ssh_base_cmd + ssh_passthrough
                 debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
-                subprocess.call(ssh_cmd)
+                # Skip the final interactive SSH when there's nothing to run AND
+                # stdin isn't a TTY (typical CI environment). An empty session
+                # with EOF stdin makes some guests' login/csh hang on logout
+                # (observed on MidnightBSD 3.2.4), which then blocks anyvm
+                # forever. Users running interactively still get the shell;
+                # users with `-- cmd ...` still get their command executed.
+                skip_final_ssh = (
+                    not ssh_passthrough
+                    and not (hasattr(sys.stdin, 'isatty') and sys.stdin.isatty())
+                )
+                if skip_final_ssh:
+                    debuglog(config['debug'], "Skipping final interactive SSH: non-TTY stdin and no passthrough command.")
+                else:
+                    subprocess.call(ssh_cmd)
             # Avoid noisy banner when running as PID 1 inside a container or if QEMU already exited
             if os.getpid() != 1:
                 if not config['detach']:
