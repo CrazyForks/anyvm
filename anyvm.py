@@ -2632,7 +2632,11 @@ Options:
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
-  --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once (default: 600).
+  --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once.
+                         Default: 600. Exceptions (only when this flag is not
+                         explicitly passed): OpenBSD/aarch64 -> 1200; TCG mode
+                         (no KVM/HVF/WHPX) -> 1800, since software emulation
+                         is 10-50x slower than hardware acceleration.
   --enable-pmu           Expose the host PMU (performance counters) to the guest.
                          Disabled by default to avoid intermittent #GP-in-wrmsr
                          crashes seen on some host CPUs (DragonFlyBSD is the
@@ -4854,6 +4858,13 @@ def main():
                 config['cpu'] = "2"
         except (ValueError, TypeError):
             pass
+
+    # TCG (pure software emulation) is 10-50x slower than KVM/HVF/WHPX, so the
+    # default 600s boot timeout is often not enough for heavier guests
+    # (Solaris, DragonFlyBSD, etc.). Bump it unless the user pinned a value.
+    if not boot_timeout_user_specified and accel == "tcg" and config['boot_timeout_sec'] < 1800:
+        config['boot_timeout_sec'] = 1800
+        debuglog(config['debug'], "TCG (no hardware acceleration): default boot timeout raised to {}s".format(config['boot_timeout_sec']))
 
     # Disk type selection
     if config['disktype']:
