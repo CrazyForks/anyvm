@@ -77,9 +77,15 @@ jobs:
 
     - name: Install dependencies (Windows)
       if: runner.os == 'Windows'
+      shell: bash
       run: |
         #C:/msys64/usr/bin/pacman.exe  -S --noconfirm  mingw-w64-ucrt-x86_64-qemu
-        choco install qemu zstandard rsync
+        for i in 1 2 3; do
+          choco install -y --no-progress qemu zstandard rsync && exit 0
+          echo "Attempt $i failed, sleeping 15s..."
+          sleep 15
+        done
+        exit 1
 
     - name: Test 
       id: test
