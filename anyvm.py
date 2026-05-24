@@ -5079,7 +5079,18 @@ def main():
         
         if accel in ["kvm", "whpx", "hvf"]:
             if accel == "kvm":
-                cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
+                if config['os'] == 'dragonflybsd':
+                    # DragonFlyBSD's early-boot init writes to MSRs that vary by
+                    # runner CPU generation. -cpu host exposes too much; even
+                    # pmu=off was not enough to stop intermittent #GP-in-wrmsr
+                    # right after TSC calibration. Lock to a stable named model
+                    # so guest CPUID is identical across all runner hardware.
+                    # Note: named CPU models do NOT support `migratable` or
+                    # `l3-cache` properties (those are -cpu host only).
+                    cpu_opts = "Broadwell-v4,+hypervisor,+invtsc"
+                    debuglog(config['debug'], "DragonFlyBSD: using Broadwell-v4 named CPU model (avoids -cpu host MSR variance)")
+                else:
+                    cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
             else:
                 cpu_opts = "host,+rdrand,+rdseed"
         else:
