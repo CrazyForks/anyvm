@@ -199,6 +199,10 @@ def debuglog(enabled, msg):
             sys.stdout.flush()
         else:
             print(line)
+            # Flush every line so CI logs reflect real time. Without this,
+            # debuglog output is block-buffered when stdout is a pipe and
+            # a hang in anyvm.py would lose all in-flight trace messages.
+            sys.stdout.flush()
 
 def is_browser_available():
     """Returns True if the current environment can likely open a local browser."""
