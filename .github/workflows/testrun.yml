@@ -115,7 +115,7 @@ jobs:
         ssh -v -p 20022 -o StrictHostKeyChecking=accept-new ${{ inputs.user }}@localhost "ls ${{ inputs.vmpath }}; exit" | grep justcheck.txt;
 
     - name: Collect debug artifacts
-      if: always()
+      if: failure()
       shell: bash
       run: |
         mkdir -p ./debug-artifacts
@@ -133,7 +133,7 @@ jobs:
         find ./debug-artifacts -type f 2>/dev/null || true
 
     - name: Upload debug artifacts
-      if: always()
+      if: failure()
       uses: actions/upload-artifact@v7
       with:
         name: debug-${{ runner.os }}-${{ inputs.os }}-${{ inputs.release }}-${{ inputs.arch }}-${{ inputs.sync }}-${{ inputs.nic }}
