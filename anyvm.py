@@ -5076,6 +5076,15 @@ def main():
                 cpu_opts = "host,+rdrand,+rdseed"
         else:
             cpu_opts = "qemu64,+rdrand,+rdseed"
+
+        # DragonFlyBSD intermittently crashes with a #GP in wrmsr right after
+        # TSC calibration when -cpu host exposes runner-specific PMU MSRs that
+        # KVM does not permit writes to (varies by GH Actions runner hardware
+        # generation -- Cascade Lake / Ice Lake / Sapphire Rapids etc.).
+        # Disabling the guest PMU stops DFly from touching those MSRs.
+        if config['os'] == 'dragonflybsd' and accel == "kvm":
+            cpu_opts += ",pmu=off"
+            debuglog(config['debug'], "DragonFlyBSD + KVM: appended pmu=off to -cpu opts")
             
         if config['vga']:
             vga_type = config['vga']
