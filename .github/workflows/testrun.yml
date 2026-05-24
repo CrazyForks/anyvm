@@ -113,7 +113,32 @@ jobs:
         echo "===============test 4"
         ${{ inputs.sleep }}
         ssh -v -p 20022 -o StrictHostKeyChecking=accept-new ${{ inputs.user }}@localhost "ls ${{ inputs.vmpath }}; exit" | grep justcheck.txt;
-    
+
+    - name: Collect debug artifacts
+      if: always()
+      shell: bash
+      run: |
+        mkdir -p ./debug-artifacts
+        if [ -d ../test_output ]; then
+          cd ../test_output
+          find . -type f \( -name "*.log" -o -name "*.ppm" -o -name "*.txt" -o -name "*.conf" \) | while read f; do
+            target="$GITHUB_WORKSPACE/debug-artifacts/$f"
+            mkdir -p "$(dirname "$target")"
+            cp "$f" "$target"
+          done
+        fi
+        echo "Collected artifacts:"
+        find ./debug-artifacts -type f 2>/dev/null || true
+
+    - name: Upload debug artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-${{ runner.os }}-${{ inputs.os }}-${{ inputs.release }}-${{ inputs.arch }}-${{ inputs.sync }}-${{ inputs.nic }}
+        path: debug-artifacts/
+        retention-days: 7
+        if-no-files-found: ignore
+
 
 
 

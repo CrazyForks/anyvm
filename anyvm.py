@@ -3787,6 +3787,116 @@ def tail_serial_log(path, stop_event):
         pass
 
 
+def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_dir, vm_name, proc, cmd_list=None):
+    """Dump diagnostic info on a boot-wait timeout. All output via debuglog so it only
+    fires under --debug. Useful for triaging intermittent CI boot failures.
+    """
+    debug = config.get('debug')
+    debuglog(debug, "===== boot-debug snapshot [{}] begin =====".format(label))
+
+    # QEMU process status
+    try:
+        rc = proc.poll()
+        debuglog(debug, "QEMU PID {} poll={} (None means still running)".format(proc.pid, rc))
+    except Exception as e:
+        debuglog(debug, "QEMU proc inspect failed: {}".format(e))
+
+    # QEMU full launch command line -- the exact args we passed
+    if cmd_list:
+        try:
+            debuglog(debug, "QEMU cmd_list ({} args):\n  {}".format(
+                len(cmd_list), " \\\n  ".join(shlex.quote(str(a)) for a in cmd_list)))
+        except Exception:
+            try:
+                debuglog(debug, "QEMU cmd_list ({} args):\n  {}".format(len(cmd_list), " ".join(str(a) for a in cmd_list)))
+            except Exception as e:
+                debuglog(debug, "cmd_list dump failed: {}".format(e))
+
+    # Host-side process info: is QEMU using CPU? memory? how long alive?
+    try:
+        if IS_WINDOWS:
+            ps_cmd = ["tasklist", "/FI", "PID eq {}".format(proc.pid), "/V", "/FO", "LIST"]
+        else:
+            ps_cmd = ["ps", "-p", str(proc.pid), "-o", "pid,ppid,stat,pcpu,pmem,rss,vsz,etime,command"]
+        ps_out = subprocess.check_output(ps_cmd, stderr=subprocess.STDOUT, timeout=5).decode('utf-8', errors='replace')
+        debuglog(debug, "host ps for QEMU PID {}:\n{}".format(proc.pid, ps_out.rstrip()))
+    except Exception as e:
+        debuglog(debug, "host ps for QEMU failed: {}".format(e))
+
+    # On Linux, /proc/<pid>/status has rich per-process info
+    if not IS_WINDOWS:
+        try:
+            status_path = "/proc/{}/status".format(proc.pid)
+            if os.path.exists(status_path):
+                with open(status_path) as f:
+                    status_lines = f.read().splitlines()
+                wanted = ("State", "Threads", "VmSize", "VmRSS", "VmData", "VmPeak",
+                          "voluntary_ctxt_switches", "nonvoluntary_ctxt_switches")
+                picked = [ln for ln in status_lines if ln.split(":")[0] in wanted]
+                if picked:
+                    debuglog(debug, "{}:\n{}".format(status_path, "\n".join(picked)))
+        except Exception as e:
+            debuglog(debug, "/proc status read failed: {}".format(e))
+
+    # Tail of serial console log (kernel + init messages, panic traces, etc.)
+    try:
+        if serial_log_file and os.path.exists(serial_log_file):
+            size = os.path.getsize(serial_log_file)
+            tail_size = min(size, 16384)
+            with open(serial_log_file, 'rb') as f:
+                if size > tail_size:
+                    f.seek(size - tail_size)
+                tail = f.read().decode('utf-8', errors='replace')
+            debuglog(debug, "--- serial.log tail ({} of {} bytes) ---\n{}\n--- end serial.log tail ---".format(tail_size, size, tail))
+        else:
+            debuglog(debug, "serial.log not present: {}".format(serial_log_file))
+    except Exception as e:
+        debuglog(debug, "serial.log tail failed: {}".format(e))
+
+    # QEMU monitor info commands (VM running? paused? network up? CPU stuck?)
+    if qmon_port:
+        qmon_cmds = (
+            'info version',
+            'info name',
+            'info uuid',
+            'info kvm',
+            'info status',
+            'info cpus',
+            'info registers',
+            'info roms',
+            'info memory_size_summary',
+            'info block',
+            'info pci',
+            'info network',
+            'info usernet',
+            'info chardev',
+            'info vnc',
+            'info migrate',
+        )
+        for cmd in qmon_cmds:
+            try:
+                resp = _qmon_send(qmon_port, cmd, timeout=2.0)
+                debuglog(debug, "qmon> {}\n{}".format(cmd, (resp or "<no response>").strip()))
+            except Exception as e:
+                debuglog(debug, "qmon> {} failed: {}".format(cmd, e))
+    else:
+        debuglog(debug, "qmon not available; skipping monitor commands")
+
+    # VNC screendump (PPM) -- visual snapshot of guest console at the moment of timeout
+    if qmon_port and output_dir:
+        try:
+            screenshot_path = os.path.abspath(os.path.join(output_dir, "{}.boot-debug-{}.ppm".format(vm_name, label)))
+            resp = _qmon_send(qmon_port, "screendump {}".format(screenshot_path), timeout=5.0)
+            if os.path.exists(screenshot_path):
+                debuglog(debug, "VM screen captured -> {} ({} bytes)".format(screenshot_path, os.path.getsize(screenshot_path)))
+            else:
+                debuglog(debug, "screendump produced no file; qmon resp: {}".format((resp or '').strip()))
+        except Exception as e:
+            debuglog(debug, "screendump failed: {}".format(e))
+
+    debuglog(debug, "===== boot-debug snapshot [{}] end =====".format(label))
+
+
 def watch_vnc_tunnel_log(log_path, stop_event, is_default_notice=False):
     """Monitor VNC proxy log and print tunnel URL as soon as it appears."""
     if not log_path:
@@ -5543,6 +5653,11 @@ def main():
             # rebind hostfwd at runtime via the monitor. Only attempted once per boot.
             hostfwd_guard_done = False
             hostfwd_guard_last_check = 0.0
+            last_boot_progress_log = -1.0
+            last_probe_result = "(none yet)"
+
+            debuglog(config['debug'], "Boot wait begin: QEMU PID={}, timeout={}s, probe_timeout={}s, qmon={}, ssh_port={}".format(
+                proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
 
             while True:
                 if proc.poll() is not None:
@@ -5552,12 +5667,18 @@ def main():
                 if elapsed >= boot_timeout_seconds:
                     break
 
+                if elapsed - last_boot_progress_log >= 15:
+                    debuglog(config['debug'], "Boot wait: elapsed={:.1f}s/{}s, last probe={}".format(
+                        elapsed, boot_timeout_seconds, last_probe_result))
+                    last_boot_progress_log = elapsed
+
                 ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
                     timeout_seconds=probe_timeout_sec,
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
+                last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
                 if ret == 0:
                     success = True
                     break
@@ -5617,8 +5738,9 @@ def main():
                         pass
             
             if not success:
-                # First timeout - kill QEMU and retry once
+                # First timeout - dump diagnostics, then kill QEMU and retry once
                 log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
+                _dump_boot_debug_snapshot(config, "first-timeout", serial_log_file, config.get('qmon'), output_dir, vm_name, proc, cmd_list=cmd_list)
                 terminate_process(proc, "QEMU")
                 if proxy_proc:
                     terminate_process(proxy_proc, "VNC Proxy")
@@ -5653,6 +5775,11 @@ def main():
                 success = False
                 hostfwd_guard_done = False
                 hostfwd_guard_last_check = 0.0
+                last_boot_progress_log = -1.0
+                last_probe_result = "(none yet)"
+
+                debuglog(config['debug'], "Boot wait begin (retry): QEMU PID={}, timeout={}s, probe_timeout={}s, qmon={}, ssh_port={}".format(
+                    proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
 
                 while True:
                     if proc.poll() is not None:
@@ -5662,12 +5789,18 @@ def main():
                     if elapsed >= boot_timeout_seconds:
                         break
 
+                    if elapsed - last_boot_progress_log >= 15:
+                        debuglog(config['debug'], "Boot wait (retry): elapsed={:.1f}s/{}s, last probe={}".format(
+                            elapsed, boot_timeout_seconds, last_probe_result))
+                        last_boot_progress_log = elapsed
+
                     ret, timed_out = call_with_timeout(
                         ssh_base_cmd + ["exit"],
                         timeout_seconds=probe_timeout_sec,
                         stdout=DEVNULL,
                         stderr=DEVNULL
                     )
+                    last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
                     if ret == 0:
                         success = True
                         break
