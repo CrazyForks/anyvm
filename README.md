@@ -273,6 +273,8 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 
 - `--boot-timeout-sec <n>`: Boot timeout in seconds before QEMU is killed and retried once. Default: `600` (10 minutes).
   - Exception: OpenBSD on `aarch64` defaults to `1200` (20 minutes) because it boots much slower under emulation.
+  - Exception: when running under TCG (no hardware acceleration -- e.g. Windows runners with chocolatey QEMU, or any host without `/dev/kvm` / HVF / WHPX), the default is bumped to `1800` (30 minutes). TCG is 10-50x slower than KVM, and heavy guests like Solaris or DragonFlyBSD often need more time to boot.
+  - Both exceptions only apply when `--boot-timeout-sec` is not explicitly passed; an explicit value always wins.
   - Useful for slow hosts (emulated arches, low-resource CI runners) or for failing fast in tests.
   - Example: `python3 anyvm.py --os openbsd --boot-timeout-sec 1200`
 

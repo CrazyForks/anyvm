@@ -199,6 +199,10 @@ def debuglog(enabled, msg):
             sys.stdout.flush()
         else:
             print(line)
+            # Flush every line so CI logs reflect real time. Without this,
+            # debuglog output is block-buffered when stdout is a pipe and
+            # a hang in anyvm.py would lose all in-flight trace messages.
+            sys.stdout.flush()
 
 def is_browser_available():
     """Returns True if the current environment can likely open a local browser."""
@@ -2632,7 +2636,11 @@ Options:
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
-  --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once (default: 600).
+  --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once.
+                         Default: 600. Exceptions (only when this flag is not
+                         explicitly passed): OpenBSD/aarch64 -> 1200; TCG mode
+                         (no KVM/HVF/WHPX) -> 1800, since software emulation
+                         is 10-50x slower than hardware acceleration.
   --enable-pmu           Expose the host PMU (performance counters) to the guest.
                          Disabled by default to avoid intermittent #GP-in-wrmsr
                          crashes seen on some host CPUs (DragonFlyBSD is the
@@ -4855,6 +4863,13 @@ def main():
         except (ValueError, TypeError):
             pass
 
+    # TCG (pure software emulation) is 10-50x slower than KVM/HVF/WHPX, so the
+    # default 600s boot timeout is often not enough for heavier guests
+    # (Solaris, DragonFlyBSD, etc.). Bump it unless the user pinned a value.
+    if not boot_timeout_user_specified and accel == "tcg" and config['boot_timeout_sec'] < 1800:
+        config['boot_timeout_sec'] = 1800
+        debuglog(config['debug'], "TCG (no hardware acceleration): default boot timeout raised to {}s".format(config['boot_timeout_sec']))
+
     # Disk type selection
     if config['disktype']:
         disk_if = config['disktype']
@@ -5391,13 +5406,13 @@ def main():
             global_identity_block = ""
             if hostid_file:
                 # Apply the VM key to all SSH hosts (requested behavior).
-                global_identity_block = "Host *\n  ConnectTimeout 60\n  ConnectionAttempts 3\n  ServerAliveInterval 10\n  ServerAliveCountMax 3\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
+                global_identity_block = "Host *\n  ConnectTimeout 60\n  ConnectionAttempts 3\n  ServerAliveInterval 30\n  ServerAliveCountMax 6\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
                     hostid_file,
                 )
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 60\n  ConnectionAttempts 3\n  ServerAliveInterval 10\n  ServerAliveCountMax 3\n  User {}\n  HostName 127.0.0.1\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 60\n  ConnectionAttempts 3\n  ServerAliveInterval 30\n  ServerAliveCountMax 6\n  User {}\n  HostName 127.0.0.1\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     vm_user,
