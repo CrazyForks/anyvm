@@ -276,6 +276,12 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Useful for slow hosts (emulated arches, low-resource CI runners) or for failing fast in tests.
   - Example: `python3 anyvm.py --os openbsd --boot-timeout-sec 1200`
 
+- `--enable-pmu`: Expose the host PMU (performance monitoring unit / hardware performance counters) to the guest.
+  - **Disabled by default.** Exposing the host PMU via `-cpu host` can trigger intermittent `#GP`-in-`wrmsr` crashes during early guest boot when the host CPU generation exposes PMU MSRs that KVM refuses writes to. DragonFlyBSD is the most affected guest; this manifested as random boot failures across CI runners with different Intel CPU generations.
+  - Only applies to x86_64 with hardware acceleration (`kvm` / `whpx` / `hvf`). TCG and non-x86 arches are unaffected.
+  - Pass `--enable-pmu` if you need `perf` / `pmcstat` / VTune or similar profilers to work inside the guest.
+  - Example: `python3 anyvm.py --os ubuntu --enable-pmu -- perf stat ls`
+
 
 
 ### Data directory

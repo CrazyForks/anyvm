@@ -120,12 +120,14 @@ jobs:
       run: |
         mkdir -p ./debug-artifacts
         if [ -d ../test_output ]; then
-          cd ../test_output
-          find . -type f \( -name "*.log" -o -name "*.ppm" -o -name "*.txt" -o -name "*.conf" \) | while read f; do
-            target="$GITHUB_WORKSPACE/debug-artifacts/$f"
-            mkdir -p "$(dirname "$target")"
-            cp "$f" "$target"
-          done
+          (
+            cd ../test_output
+            find . -type f \( -name "*.log" -o -name "*.ppm" -o -name "*.txt" -o -name "*.conf" \) | while read f; do
+              target="$GITHUB_WORKSPACE/debug-artifacts/$f"
+              mkdir -p "$(dirname "$target")"
+              cp "$f" "$target"
+            done
+          )
         fi
         echo "Collected artifacts:"
         find ./debug-artifacts -type f 2>/dev/null || true

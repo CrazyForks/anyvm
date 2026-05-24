@@ -2633,6 +2633,11 @@ Options:
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
   --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once (default: 600).
+  --enable-pmu           Expose the host PMU (performance counters) to the guest.
+                         Disabled by default to avoid intermittent #GP-in-wrmsr
+                         crashes seen on some host CPUs (DragonFlyBSD is the
+                         most affected). Required if you want perf / pmcstat /
+                         VTune to work inside the guest.
   --sync-time [off]      Synchronize VM time using NTP inside the guest after boot.
                          (Default: enabled for DragonFlyBSD/Solaris family, disabled otherwise).
   --                     Send all following args to the final ssh command (executes inside the VM).
@@ -4024,7 +4029,8 @@ def main():
         'remote_vnc_is_default': False,
         'remote_vnc_link_file': None,
         'vnc_password': "",
-        'boot_timeout_sec': 600
+        'boot_timeout_sec': 600,
+        'enable_pmu': False
     }
 
     ssh_passthrough = []
@@ -4176,6 +4182,8 @@ def main():
             i += 1
         elif arg == "--snapshot":
             config['snapshot'] = True
+        elif arg == "--enable-pmu":
+            config['enable_pmu'] = True
         elif arg == "--boot-timeout-sec":
             try:
                 val = int(args[i+1])
@@ -5077,14 +5085,14 @@ def main():
         else:
             cpu_opts = "qemu64,+rdrand,+rdseed"
 
-        # DragonFlyBSD intermittently crashes with a #GP in wrmsr right after
-        # TSC calibration when -cpu host exposes runner-specific PMU MSRs that
-        # KVM does not permit writes to (varies by GH Actions runner hardware
-        # generation -- Cascade Lake / Ice Lake / Sapphire Rapids etc.).
-        # Disabling the guest PMU stops DFly from touching those MSRs.
-        if config['os'] == 'dragonflybsd' and accel == "kvm":
+        # Disable the guest PMU by default. Exposing the host PMU via -cpu host
+        # can trigger intermittent #GP-in-wrmsr crashes during early guest boot
+        # (notably DragonFlyBSD) when the runner CPU generation exposes PMU
+        # MSRs that KVM refuses writes to. Profiling tools inside the guest
+        # (perf / pmcstat / VTune) need the PMU -- pass --enable-pmu to opt in.
+        if accel in ["kvm", "whpx", "hvf"] and not config.get('enable_pmu'):
             cpu_opts += ",pmu=off"
-            debuglog(config['debug'], "DragonFlyBSD + KVM: appended pmu=off to -cpu opts")
+            debuglog(config['debug'], "Guest PMU disabled (pass --enable-pmu to expose host PMU)")
             
         if config['vga']:
             vga_type = config['vga']
