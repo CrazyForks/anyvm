@@ -77,9 +77,15 @@ jobs:
 
     - name: Install dependencies (Windows)
       if: runner.os == 'Windows'
+      shell: bash
       run: |
         #C:/msys64/usr/bin/pacman.exe  -S --noconfirm  mingw-w64-ucrt-x86_64-qemu
-        choco install qemu zstandard rsync
+        for i in 1 2 3; do
+          choco install -y --no-progress qemu zstandard rsync && exit 0
+          echo "Attempt $i failed, sleeping 15s..."
+          sleep 15
+        done
+        exit 1
 
     - name: Test 
       id: test
@@ -95,19 +101,48 @@ jobs:
         # We use the ssh port as an alias to the vm, so we can use 'ssh $port' to login
         echo "===============test 1"
         ${{ inputs.sleep }}
-        ssh -v 10022 ls -lah ${{ inputs.vmpath }};
+        ssh -v 10022 "ls -lah ${{ inputs.vmpath }}; exit";
         echo "===============test 2"
         ${{ inputs.sleep }}
-        ssh -v 10022 ls ${{ inputs.vmpath }} | grep justcheck.txt;
+        ssh -v 10022 "ls ${{ inputs.vmpath }}; exit" | grep justcheck.txt;
         ${{ inputs.sleep }}
-        ssh -v 10022 ls -lah ${{ inputs.vmpath }} | grep '.dotfile';
+        ssh -v 10022 "ls -lah ${{ inputs.vmpath }}; exit" | grep '.dotfile';
         echo "===============test 3"
         ${{ inputs.sleep }}
-        ssh -v testname ls ${{ inputs.vmpath }} | grep justcheck.txt;
+        ssh -v testname "ls ${{ inputs.vmpath }}; exit" | grep justcheck.txt;
         echo "===============test 4"
         ${{ inputs.sleep }}
-        ssh -v -p 20022 -o StrictHostKeyChecking=accept-new ${{ inputs.user }}@localhost ls ${{ inputs.vmpath }} | grep justcheck.txt;
-    
+        ssh -v -p 20022 -o StrictHostKeyChecking=accept-new ${{ inputs.user }}@localhost "ls ${{ inputs.vmpath }}; exit" | grep justcheck.txt;
+
+    - name: Collect debug artifacts
+      if: failure()
+      shell: bash
+      run: |
+        mkdir -p ./debug-artifacts
+        if [ -d ../test_output ]; then
+          (
+            cd ../test_output
+            find . -type f \( -name "*.log" -o -name "*.ppm" -o -name "*.txt" -o -name "*.conf" \) | while read f; do
+              target="$GITHUB_WORKSPACE/debug-artifacts/$f"
+              mkdir -p "$(dirname "$target")"
+              cp "$f" "$target"
+            done
+          )
+        fi
+        echo "Collected artifacts:"
+        find ./debug-artifacts -type f 2>/dev/null || true
+
+    - name: Upload debug artifacts
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: debug-${{ runner.os }}-${{ inputs.os }}-${{ inputs.release }}-${{ inputs.arch }}-${{ inputs.sync }}-${{ inputs.nic }}
+        path: debug-artifacts/
+        retention-days: 7
+        if-no-files-found: ignore
+
+
+
 
 
 

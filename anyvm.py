@@ -112,14 +112,14 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.1.0",
-    "openbsd": "2.0.1",
+    "openbsd": "2.0.2",
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.4",
-    "solaris": "2.0.4",
-    "omnios": "2.0.7",
+    "solaris": "2.0.5",
+    "omnios": "2.0.8",
     "haiku": "2.0.0",
-    "midnightbsd": "2.0.1",
-    "openindiana": "2.0.6"
+    "midnightbsd": "2.0.2",
+    "openindiana": "2.0.7"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -151,11 +151,17 @@ def format_command_for_display(cmd_list):
 def log(msg):
     t = time.time()
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
+    line = "[{}] {}".format(timestamp, msg)
     if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
-        # Clear current line (progress bar) and move cursor to beginning
+        # Clear current line (progress bar) and move cursor to beginning,
+        # then emit each line with an explicit CR+LF so we don't depend on
+        # the TTY's ONLCR mode being on (something upstream sometimes flips it).
         sys.stdout.write("\r\x1b[K")
-    print("[{}] {}".format(timestamp, msg))
-    sys.stdout.flush()
+        sys.stdout.write(line.replace("\n", "\r\n") + "\r\n")
+        sys.stdout.flush()
+    else:
+        print(line)
+        sys.stdout.flush()
 
 def supports_ansi_color(stream=sys.stdout):
     """Checks if the stream supports ANSI color sequences."""
@@ -185,7 +191,14 @@ def debuglog(enabled, msg):
     if enabled:
         t = time.time()
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".{:03d}".format(int(t % 1 * 1000))
-        print("[{}] [DEBUG] {}".format(timestamp, msg))
+        line = "[{}] [DEBUG] {}".format(timestamp, msg)
+        if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+            # Emit explicit CR+LF -- some subprocess on the way flips ONLCR off,
+            # so plain \n would leave the cursor at the previous column.
+            sys.stdout.write(line.replace("\n", "\r\n") + "\r\n")
+            sys.stdout.flush()
+        else:
+            print(line)
 
 def is_browser_available():
     """Returns True if the current environment can likely open a local browser."""
@@ -2619,6 +2632,12 @@ Options:
   --console, -c          Run QEMU in foreground (console mode).
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
+  --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once (default: 600).
+  --enable-pmu           Expose the host PMU (performance counters) to the guest.
+                         Disabled by default to avoid intermittent #GP-in-wrmsr
+                         crashes seen on some host CPUs (DragonFlyBSD is the
+                         most affected). Required if you want perf / pmcstat /
+                         VTune to work inside the guest.
   --sync-time [off]      Synchronize VM time using NTP inside the guest after boot.
                          (Default: enabled for DragonFlyBSD/Solaris family, disabled otherwise).
   --                     Send all following args to the final ssh command (executes inside the VM).
@@ -3089,6 +3108,108 @@ def call_with_timeout(cmd, timeout_seconds, **popen_kwargs):
     except Exception:
         pass
     return None, True
+
+# Slirp / DHCP defaults baked into the netdev_args string below.
+# Keep these in sync if you ever change net=/dhcpstart= in the netdev string.
+SLIRP_NETWORK_PREFIX = "192.168.122."
+SLIRP_EXPECTED_GUEST_IP = SLIRP_NETWORK_PREFIX + "10"
+
+def _qmon_send(monitor_port, command, timeout=2.0):
+    """Send a single HMP command to the QEMU monitor TCP port, return the reply text or None.
+
+    CRITICAL: do NOT send the HMP 'quit' command -- it terminates QEMU itself.
+    We close the TCP socket from our side instead; the monitor server (started
+    with server,nowait) keeps listening for new clients.
+    """
+    try:
+        s = socket.create_connection(('127.0.0.1', int(monitor_port)), timeout=2.0)
+    except (socket.error, OSError, ValueError):
+        return None
+    chunks = []
+    try:
+        s.settimeout(timeout)
+        s.sendall((command + "\n").encode('utf-8'))
+        # Read whatever the monitor emits until a brief idle period (timeout).
+        while True:
+            try:
+                data = s.recv(4096)
+            except socket.timeout:
+                break
+            if not data:
+                break
+            chunks.append(data)
+    finally:
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            s.close()
+        except Exception:
+            pass
+    text = b''.join(chunks).decode('utf-8', errors='ignore')
+    # QEMU monitor echoes input with readline control bytes; strip them.
+    text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+    text = text.replace('\b', '').replace('\r', '')
+    return text
+
+def get_vm_ip_from_monitor(monitor_port, network_prefix=SLIRP_NETWORK_PREFIX):
+    """Detect the actual VM IP from slirp's connection table.
+
+    Looks at lines from 'info usernet' where the source IP is in our guest subnet
+    and the destination is external -- those are VM-originated outbound flows,
+    and their source IP is the VM's real DHCP-assigned address.
+
+    Returns None if no such traffic is visible yet (VM idle / not booted enough).
+    """
+    text = _qmon_send(monitor_port, 'info usernet')
+    if not text:
+        return None
+    line_pattern = re.compile(
+        r'^\s*\w+\[[^\]]+\]\s+\d+\s+(\S+)\s+\d+\s+(\S+)\s+\d+',
+        re.MULTILINE,
+    )
+    reserved_last = {0, 1, 2, 3, 255}  # network/gateway/dns/broadcast in slirp's /24
+    candidates = {}
+    for m in line_pattern.finditer(text):
+        src_ip, dst_ip = m.group(1), m.group(2)
+        if src_ip.startswith(network_prefix) and not dst_ip.startswith(network_prefix):
+            try:
+                last = int(src_ip.rsplit('.', 1)[1])
+            except ValueError:
+                continue
+            if last in reserved_last:
+                continue
+            candidates[src_ip] = candidates.get(src_ip, 0) + 1
+    if not candidates:
+        return None
+    return max(candidates.items(), key=lambda kv: kv[1])[0]
+
+def rewrite_hostfwd_target(monitor_port, hostfwd_specs, new_guest_ip, debug=False):
+    """Rebind every hostfwd entry to point at new_guest_ip via the QEMU monitor.
+
+    hostfwd_specs items are (proto, host_addr, host_port, guest_port) -- all strings.
+    Returns True if every (remove, add) pair appeared to succeed.
+    """
+    if not hostfwd_specs:
+        return False
+    all_ok = True
+    for proto, host_addr, host_port, guest_port in hostfwd_specs:
+        remove_cmd = "hostfwd_remove {}:{}:{}".format(proto, host_addr, host_port)
+        add_cmd = "hostfwd_add {}:{}:{}-{}:{}".format(proto, host_addr, host_port, new_guest_ip, guest_port)
+        rem = _qmon_send(monitor_port, remove_cmd)
+        add = _qmon_send(monitor_port, add_cmd)
+        # QEMU monitor prints nothing on success; "Error" or "not found" on failure.
+        rem_ok = bool(rem) and "Error" not in rem and "not found" not in rem.lower()
+        add_ok = bool(add) and "Error" not in add and "could not" not in add.lower()
+        if debug:
+            debuglog(debug, "hostfwd rewrite {}:{}:{} -> {}:{}: remove={} add={}".format(
+                proto, host_addr, host_port, new_guest_ip, guest_port,
+                "ok" if rem_ok else "fail", "ok" if add_ok else "fail",
+            ))
+        if not (rem_ok and add_ok):
+            all_ok = False
+    return all_ok
 
 def sync_vm_time(config, ssh_base_cmd):
     """Synchronizes VM time using NTP-like commands inside the guest."""
@@ -3671,6 +3792,116 @@ def tail_serial_log(path, stop_event):
         pass
 
 
+def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_dir, vm_name, proc, cmd_list=None):
+    """Dump diagnostic info on a boot-wait timeout. All output via debuglog so it only
+    fires under --debug. Useful for triaging intermittent CI boot failures.
+    """
+    debug = config.get('debug')
+    debuglog(debug, "===== boot-debug snapshot [{}] begin =====".format(label))
+
+    # QEMU process status
+    try:
+        rc = proc.poll()
+        debuglog(debug, "QEMU PID {} poll={} (None means still running)".format(proc.pid, rc))
+    except Exception as e:
+        debuglog(debug, "QEMU proc inspect failed: {}".format(e))
+
+    # QEMU full launch command line -- the exact args we passed
+    if cmd_list:
+        try:
+            debuglog(debug, "QEMU cmd_list ({} args):\n  {}".format(
+                len(cmd_list), " \\\n  ".join(shlex.quote(str(a)) for a in cmd_list)))
+        except Exception:
+            try:
+                debuglog(debug, "QEMU cmd_list ({} args):\n  {}".format(len(cmd_list), " ".join(str(a) for a in cmd_list)))
+            except Exception as e:
+                debuglog(debug, "cmd_list dump failed: {}".format(e))
+
+    # Host-side process info: is QEMU using CPU? memory? how long alive?
+    try:
+        if IS_WINDOWS:
+            ps_cmd = ["tasklist", "/FI", "PID eq {}".format(proc.pid), "/V", "/FO", "LIST"]
+        else:
+            ps_cmd = ["ps", "-p", str(proc.pid), "-o", "pid,ppid,stat,pcpu,pmem,rss,vsz,etime,command"]
+        ps_out = subprocess.check_output(ps_cmd, stderr=subprocess.STDOUT, timeout=5).decode('utf-8', errors='replace')
+        debuglog(debug, "host ps for QEMU PID {}:\n{}".format(proc.pid, ps_out.rstrip()))
+    except Exception as e:
+        debuglog(debug, "host ps for QEMU failed: {}".format(e))
+
+    # On Linux, /proc/<pid>/status has rich per-process info
+    if not IS_WINDOWS:
+        try:
+            status_path = "/proc/{}/status".format(proc.pid)
+            if os.path.exists(status_path):
+                with open(status_path) as f:
+                    status_lines = f.read().splitlines()
+                wanted = ("State", "Threads", "VmSize", "VmRSS", "VmData", "VmPeak",
+                          "voluntary_ctxt_switches", "nonvoluntary_ctxt_switches")
+                picked = [ln for ln in status_lines if ln.split(":")[0] in wanted]
+                if picked:
+                    debuglog(debug, "{}:\n{}".format(status_path, "\n".join(picked)))
+        except Exception as e:
+            debuglog(debug, "/proc status read failed: {}".format(e))
+
+    # Tail of serial console log (kernel + init messages, panic traces, etc.)
+    try:
+        if serial_log_file and os.path.exists(serial_log_file):
+            size = os.path.getsize(serial_log_file)
+            tail_size = min(size, 16384)
+            with open(serial_log_file, 'rb') as f:
+                if size > tail_size:
+                    f.seek(size - tail_size)
+                tail = f.read().decode('utf-8', errors='replace')
+            debuglog(debug, "--- serial.log tail ({} of {} bytes) ---\n{}\n--- end serial.log tail ---".format(tail_size, size, tail))
+        else:
+            debuglog(debug, "serial.log not present: {}".format(serial_log_file))
+    except Exception as e:
+        debuglog(debug, "serial.log tail failed: {}".format(e))
+
+    # QEMU monitor info commands (VM running? paused? network up? CPU stuck?)
+    if qmon_port:
+        qmon_cmds = (
+            'info version',
+            'info name',
+            'info uuid',
+            'info kvm',
+            'info status',
+            'info cpus',
+            'info registers',
+            'info roms',
+            'info memory_size_summary',
+            'info block',
+            'info pci',
+            'info network',
+            'info usernet',
+            'info chardev',
+            'info vnc',
+            'info migrate',
+        )
+        for cmd in qmon_cmds:
+            try:
+                resp = _qmon_send(qmon_port, cmd, timeout=2.0)
+                debuglog(debug, "qmon> {}\n{}".format(cmd, (resp or "<no response>").strip()))
+            except Exception as e:
+                debuglog(debug, "qmon> {} failed: {}".format(cmd, e))
+    else:
+        debuglog(debug, "qmon not available; skipping monitor commands")
+
+    # VNC screendump (PPM) -- visual snapshot of guest console at the moment of timeout
+    if qmon_port and output_dir:
+        try:
+            screenshot_path = os.path.abspath(os.path.join(output_dir, "{}.boot-debug-{}.ppm".format(vm_name, label)))
+            resp = _qmon_send(qmon_port, "screendump {}".format(screenshot_path), timeout=5.0)
+            if os.path.exists(screenshot_path):
+                debuglog(debug, "VM screen captured -> {} ({} bytes)".format(screenshot_path, os.path.getsize(screenshot_path)))
+            else:
+                debuglog(debug, "screendump produced no file; qmon resp: {}".format((resp or '').strip()))
+        except Exception as e:
+            debuglog(debug, "screendump failed: {}".format(e))
+
+    debuglog(debug, "===== boot-debug snapshot [{}] end =====".format(label))
+
+
 def watch_vnc_tunnel_log(log_path, stop_event, is_default_notice=False):
     """Monitor VNC proxy log and print tunnel URL as soon as it appears."""
     if not log_path:
@@ -3797,7 +4028,9 @@ def main():
         'remote_vnc': None,
         'remote_vnc_is_default': False,
         'remote_vnc_link_file': None,
-        'vnc_password': ""
+        'vnc_password': "",
+        'boot_timeout_sec': 600,
+        'enable_pmu': False
     }
 
     ssh_passthrough = []
@@ -3805,6 +4038,7 @@ def main():
     serial_user_specified = False
     vnc_user_specified = False
     arch_specified = False
+    boot_timeout_user_specified = False
 
 
     script_home = os.path.dirname(os.path.abspath(__file__))
@@ -3948,6 +4182,18 @@ def main():
             i += 1
         elif arg == "--snapshot":
             config['snapshot'] = True
+        elif arg == "--enable-pmu":
+            config['enable_pmu'] = True
+        elif arg == "--boot-timeout-sec":
+            try:
+                val = int(args[i+1])
+            except ValueError:
+                fatal("--boot-timeout-sec requires an integer (seconds), got: {}".format(args[i+1]))
+            if val <= 0:
+                fatal("--boot-timeout-sec must be positive, got: {}".format(val))
+            config['boot_timeout_sec'] = val
+            boot_timeout_user_specified = True
+            i += 1
         elif arg == "--sync-time":
             if i + 1 < len(args) and args[i+1] == "off":
                 config['synctime'] = False
@@ -4019,6 +4265,11 @@ def main():
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
+    # OpenBSD on aarch64 boots much slower under emulation; bump default timeout
+    # unless the user passed --boot-timeout-sec explicitly.
+    if not boot_timeout_user_specified and config['os'] == "openbsd" and config['arch'] == "aarch64":
+        config['boot_timeout_sec'] = 1200
+        debuglog(config['debug'], "OpenBSD/aarch64: default boot timeout raised to 1200s")
 
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
@@ -4543,7 +4794,18 @@ def main():
             auto_reason = "OpenIndiana (requires console for login display)"
         elif "x86_64" not in bin_name:
             # Rule for non-x86 architectures: Default to 'console' if not specified.
-            auto_reason = "non-x86 arch ({})".format(bin_name)
+            # Exception: OpenBSD on aarch64 starting at 7.4 has a working
+            # graphical framebuffer via virtio-gpu-pci, so prefer regular VNC
+            # there. 7.3 and earlier lack this and still need console.
+            openbsd_aarch64_has_fb = False
+            if config['os'] == "openbsd" and config['arch'] == "aarch64":
+                try:
+                    rel_parts = tuple(int(x) for x in config['release'].split('.')[:2])
+                    openbsd_aarch64_has_fb = len(rel_parts) >= 2 and rel_parts >= (7, 4)
+                except (ValueError, AttributeError):
+                    openbsd_aarch64_has_fb = False
+            if not openbsd_aarch64_has_fb:
+                auto_reason = "non-x86 arch ({})".format(bin_name)
              
     if auto_reason:
          debuglog(config['debug'], "Auto-enabling VNC Console: " + auto_reason)
@@ -4604,13 +4866,21 @@ def main():
 
     # Build Netdev Argument
     # Always include standard SSH mapping
-    netdev_args = "user,id=net0,net=192.168.122.0/24,dhcpstart=192.168.122.50"
+    netdev_args = "user,id=net0,net=192.168.122.0/24,dhcpstart=192.168.122.10"
     if not config.get('enable_ipv6'):
         netdev_args += ",ipv6=off"
+
+    # Track every hostfwd we install so we can rebind them at runtime via the
+    # QEMU monitor if the VM ends up with an unexpected IP (e.g. stale DHCP lease).
+    # Each entry: (proto, host_addr, host_port_str, guest_port_str)
+    hostfwd_specs = []
+
     netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
+    hostfwd_specs.append(("tcp", ssh_addr, str(config['sshport']), "22"))
     for extra_addr in ssh_extra_addrs:
         if is_port_available(extra_addr, int(config['sshport'])):
             netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
+            hostfwd_specs.append(("tcp", extra_addr, str(config['sshport']), "22"))
             debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 OK".format(extra_addr, config['sshport']))
         else:
             debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 SKIPPED (port in use)".format(extra_addr, config['sshport']))
@@ -4622,18 +4892,22 @@ def main():
         if len(parts) == 2:
             # host:guest -> tcp:addr:host-:guest
             netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(p_addr, parts[0], parts[1])
+            hostfwd_specs.append(("tcp", p_addr, parts[0], parts[1]))
             for extra_addr in p_extra_addrs:
                 if is_port_available(extra_addr, int(parts[0])):
                     netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, parts[0], parts[1])
+                    hostfwd_specs.append(("tcp", extra_addr, parts[0], parts[1]))
                     debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} OK".format(extra_addr, parts[0], parts[1]))
                 else:
                     debuglog(config['debug'], "hostfwd: tcp {}:{} -> :{} SKIPPED (port in use)".format(extra_addr, parts[0], parts[1]))
         elif len(parts) == 3:
             # proto:host:guest -> proto:addr:host-:guest
             netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], p_addr, parts[1], parts[2])
+            hostfwd_specs.append((parts[0], p_addr, parts[1], parts[2]))
             for extra_addr in p_extra_addrs:
                 if is_port_available(extra_addr, int(parts[1])):
                     netdev_args += ",hostfwd={}:{}:{}-:{}".format(parts[0], extra_addr, parts[1], parts[2])
+                    hostfwd_specs.append((parts[0], extra_addr, parts[1], parts[2]))
                     debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} OK".format(parts[0], extra_addr, parts[1], parts[2]))
                 else:
                     debuglog(config['debug'], "hostfwd: {} {}:{} -> :{} SKIPPED (port in use)".format(parts[0], extra_addr, parts[1], parts[2]))
@@ -4648,8 +4922,26 @@ def main():
         "-smp", config['cpu'],
         "-m", config['mem'],
         "-netdev", netdev_args,
-        "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
     ])
+
+    # Disk: when we need bootindex, split into -drive + -device so we can set it
+    # on the virtio-blk-pci device. bootindex only helps UEFI/EFI firmwares skip
+    # slow PXE/HTTP boot attempts -- aarch64 (always EFI) and x86_64 with --uefi.
+    # For BIOS x86_64 (SeaBIOS) and riscv64 (u-boot), the shortcut form is fine
+    # and avoids confusing some guest bootloaders (e.g. illumos GRUB).
+    needs_bootindex_disk = (
+        config['arch'] == "aarch64"
+        or config.get('useefi')
+    )
+    if disk_if == "virtio" and needs_bootindex_disk:
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
+            "-device", "virtio-blk-pci,drive=disk0,bootindex=0"
+        ])
+    else:
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
+        ])
 
     rtc_base = "utc"
     if config['os'] in ["windows", "haiku"]:
@@ -4730,8 +5022,22 @@ def main():
         if vga_type in ["virtio", "virtio-gpu"]:
             vga_type = "virtio-gpu-pci"
         
+        # OpenBSD aarch64 < 7.4 has broken ACPI _PRT routing for legacy PCI
+        # interrupts -- xhci/e1000 fail with "couldn't map interrupt", and the
+        # modern virtio transport isn't fully wired up in vio(4) either. Force
+        # Device Tree mode by disabling ACPI so PCI INTx routing comes from FDT.
+        machine_opts = "virt,accel={},gic-version=3,usb=on".format(accel)
+        try:
+            obsd_rel = tuple(int(x) for x in config['release'].split('.')[:2])
+        except (ValueError, AttributeError):
+            obsd_rel = None
+        if (config['os'] == "openbsd" and config['arch'] == "aarch64"
+                and obsd_rel is not None and len(obsd_rel) >= 2 and obsd_rel < (7, 4)):
+            machine_opts += ",acpi=off"
+            debuglog(config['debug'], "OpenBSD aarch64 < 7.4: disabling ACPI (force FDT for PCI interrupts)")
+
         args_qemu.extend([
-            "-machine", "virt,accel={},gic-version=3,usb=on".format(accel),
+            "-machine", machine_opts,
             "-cpu", cpu,
             "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card),
@@ -4758,7 +5064,7 @@ def main():
             "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card)
         ])
-        
+
         uboot_bin = "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin"
         if not os.path.exists(uboot_bin):
             fatal("RISC-V u-boot binary not found at {}.\nPlease install it: sudo apt-get install u-boot-qemu".format(uboot_bin))
@@ -4778,6 +5084,15 @@ def main():
                 cpu_opts = "host,+rdrand,+rdseed"
         else:
             cpu_opts = "qemu64,+rdrand,+rdseed"
+
+        # Disable the guest PMU by default. Exposing the host PMU via -cpu host
+        # can trigger intermittent #GP-in-wrmsr crashes during early guest boot
+        # (notably DragonFlyBSD) when the runner CPU generation exposes PMU
+        # MSRs that KVM refuses writes to. Profiling tools inside the guest
+        # (perf / pmcstat / VTune) need the PMU -- pass --enable-pmu to opt in.
+        if accel in ["kvm", "whpx", "hvf"] and not config.get('enable_pmu'):
+            cpu_opts += ",pmu=off"
+            debuglog(config['debug'], "Guest PMU disabled (pass --enable-pmu to expose host PMU)")
             
         if config['vga']:
             vga_type = config['vga']
@@ -4871,7 +5186,7 @@ def main():
         # Determine if VNC should listen on 0.0.0.0 or 127.0.0.1
         # It should only listen on 0.0.0.0 if user specified --vnc (and it's not off/console) AND --public is set.
         if vnc_user_specified and config['vnc'] not in ["off", "console"]:
-            vnc_addr = addr  # Uses "" if --public else "127.0.0.1"
+            vnc_addr = p_addr  # Uses "" if --public else "127.0.0.1"
         else:
             vnc_addr = "127.0.0.1"
 
@@ -5065,13 +5380,13 @@ def main():
             global_identity_block = ""
             if hostid_file:
                 # Apply the VM key to all SSH hosts (requested behavior).
-                global_identity_block = "Host *\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
+                global_identity_block = "Host *\n  ConnectTimeout 60\n  ConnectionAttempts 3\n  ServerAliveInterval 10\n  ServerAliveCountMax 3\n  IdentityFile {}\n  IdentityFile ~/.ssh/id_rsa\n  IdentityFile ~/.ssh/id_ed25519\n  IdentityFile ~/.ssh/id_ecdsa\n\n".format(
                     hostid_file,
                 )
 
             def build_ssh_host_config(host_aliases):
                 host_spec = " ".join(str(x) for x in host_aliases if x)
-                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 10\n  ConnectionAttempts 3\n  User {}\n  HostName 127.0.0.1\n  Port {}\n".format(
+                host_block = "Host {}\n  StrictHostKeyChecking no\n  UserKnownHostsFile {}\n  ConnectTimeout 60\n  ConnectionAttempts 3\n  ServerAliveInterval 10\n  ServerAliveCountMax 3\n  User {}\n  HostName 127.0.0.1\n  Port {}\n".format(
                     host_spec,
                     SSH_KNOWN_HOSTS_NULL,
                     vm_user,
@@ -5346,28 +5661,63 @@ def main():
                 "{}@127.0.0.1".format(vm_user)
             ])
             
-            boot_timeout_seconds = 600  # 10 minutes
+            boot_timeout_seconds = config['boot_timeout_sec']
+            probe_timeout_sec = 5 if (IS_WINDOWS or config['arch'] == "aarch64") else 3
             boot_start_time = time.time()
-            
+
+            # Fallback for stale-DHCP-lease scenarios: if the VM ends up with an IP
+            # different from dhcpstart (= what hostfwd was wired to at QEMU launch),
+            # rebind hostfwd at runtime via the monitor. Only attempted once per boot.
+            hostfwd_guard_done = False
+            hostfwd_guard_last_check = 0.0
+            last_boot_progress_log = -1.0
+            last_probe_result = "(none yet)"
+
+            debuglog(config['debug'], "Boot wait begin: QEMU PID={}, timeout={}s, probe_timeout={}s, qmon={}, ssh_port={}".format(
+                proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
+
             while True:
                 if proc.poll() is not None:
                     fail_with_output("QEMU terminated during boot")
-                
+
                 elapsed = time.time() - boot_start_time
                 if elapsed >= boot_timeout_seconds:
                     break
-                
+
+                if elapsed - last_boot_progress_log >= 15:
+                    debuglog(config['debug'], "Boot wait: elapsed={:.1f}s/{}s, last probe={}".format(
+                        elapsed, boot_timeout_seconds, last_probe_result))
+                    last_boot_progress_log = elapsed
+
                 ret, timed_out = call_with_timeout(
                     ssh_base_cmd + ["exit"],
-                    timeout_seconds=5 if IS_WINDOWS else 2,
+                    timeout_seconds=probe_timeout_sec,
                     stdout=DEVNULL,
                     stderr=DEVNULL
                 )
-                if timed_out:
-                    continue
+                last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
                 if ret == 0:
                     success = True
                     break
+
+                # While waiting for SSH to come up, periodically poll the QEMU monitor
+                # to detect if the VM got an unexpected IP and fix hostfwd accordingly.
+                if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
+                        and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
+                    hostfwd_guard_last_check = time.time()
+                    actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                    if actual_ip:
+                        if actual_ip == SLIRP_EXPECTED_GUEST_IP:
+                            debuglog(config['debug'], "VM IP {} matches expected, hostfwd OK".format(actual_ip))
+                            hostfwd_guard_done = True
+                        else:
+                            log("VM has IP {} (expected {}); rewriting hostfwd via monitor.".format(actual_ip, SLIRP_EXPECTED_GUEST_IP))
+                            if rewrite_hostfwd_target(config['qmon'], hostfwd_specs, actual_ip, debug=config['debug']):
+                                log("Hostfwd rewritten to target {}.".format(actual_ip))
+                                hostfwd_guard_done = True
+
+                if timed_out:
+                    continue
 
             
             wait_timer_stop.set()
@@ -5405,8 +5755,9 @@ def main():
                         pass
             
             if not success:
-                # First timeout - kill QEMU and retry once
-                log("Boot timed out after 5 minutes. Killing QEMU and retrying...")
+                # First timeout - dump diagnostics, then kill QEMU and retry once
+                log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
+                _dump_boot_debug_snapshot(config, "first-timeout", serial_log_file, config.get('qmon'), output_dir, vm_name, proc, cmd_list=cmd_list)
                 terminate_process(proc, "QEMU")
                 if proxy_proc:
                     terminate_process(proxy_proc, "VNC Proxy")
@@ -5435,29 +5786,58 @@ def main():
                     wait_timer_thread.daemon = True
                     wait_timer_thread.start()
                 
-                # Second boot attempt with 5 minute timeout
+                # Second boot attempt -- QEMU restarted from scratch, so hostfwd was
+                # reset to its initial guest-IP target. Reset the guard so we check again.
                 boot_start_time = time.time()
                 success = False
-                
+                hostfwd_guard_done = False
+                hostfwd_guard_last_check = 0.0
+                last_boot_progress_log = -1.0
+                last_probe_result = "(none yet)"
+
+                debuglog(config['debug'], "Boot wait begin (retry): QEMU PID={}, timeout={}s, probe_timeout={}s, qmon={}, ssh_port={}".format(
+                    proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
+
                 while True:
                     if proc.poll() is not None:
                         fail_with_output("QEMU terminated during boot (retry)")
-                    
+
                     elapsed = time.time() - boot_start_time
                     if elapsed >= boot_timeout_seconds:
                         break
-                    
+
+                    if elapsed - last_boot_progress_log >= 15:
+                        debuglog(config['debug'], "Boot wait (retry): elapsed={:.1f}s/{}s, last probe={}".format(
+                            elapsed, boot_timeout_seconds, last_probe_result))
+                        last_boot_progress_log = elapsed
+
                     ret, timed_out = call_with_timeout(
                         ssh_base_cmd + ["exit"],
-                        timeout_seconds=5 if IS_WINDOWS else 3,
+                        timeout_seconds=probe_timeout_sec,
                         stdout=DEVNULL,
                         stderr=DEVNULL
                     )
-                    if timed_out:
-                        continue
+                    last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
                     if ret == 0:
                         success = True
                         break
+
+                    if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
+                            and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
+                        hostfwd_guard_last_check = time.time()
+                        actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                        if actual_ip:
+                            if actual_ip == SLIRP_EXPECTED_GUEST_IP:
+                                debuglog(config['debug'], "VM IP {} matches expected (retry)".format(actual_ip))
+                                hostfwd_guard_done = True
+                            else:
+                                log("VM has IP {} (expected {}); rewriting hostfwd via monitor (retry).".format(actual_ip, SLIRP_EXPECTED_GUEST_IP))
+                                if rewrite_hostfwd_target(config['qmon'], hostfwd_specs, actual_ip, debug=config['debug']):
+                                    log("Hostfwd rewritten to target {}.".format(actual_ip))
+                                    hostfwd_guard_done = True
+
+                    if timed_out:
+                        continue
                     time.sleep(2)
                 
                 wait_timer_stop.set()
@@ -5490,8 +5870,19 @@ def main():
                     log("Apple Silicon detected: waiting 5s for OpenIndiana services to settle...")
                     time.sleep(5)
                 sync_vm_time(config, ssh_base_cmd)
-            
+                debuglog(config['debug'], "[trace] sync_vm_time returned")
+
+            # Defensive: brief pause before opening more SSH sessions. Without
+            # this we saw flaky "remote host has disconnected" on MidnightBSD,
+            # likely because the previous SSH session's utmp/logout/PAM
+            # accounting hadn't fully settled. The symptom is timing sensitive
+            # and was masked by debug-log overhead, so we explicitly insert a
+            # small cushion here that applies to all guests.
+            time.sleep(0.5)
+            debuglog(config['debug'], "[trace] post-sync settle delay done")
+
             # Post-boot config: Setup reverse SSH config inside VM
+            debuglog(config['debug'], "[trace] entering post-boot config block")
             current_user = getpass.getuser()
             host_port_line = ""
             if not config['hostsshport']:
@@ -5500,6 +5891,9 @@ def main():
                     debuglog(config['debug'], "Detected host SSH port {}".format(config['hostsshport']))
             if config['hostsshport']:
                 host_port_line = "  Port {}\n".format(config['hostsshport'])
+            debuglog(config['debug'], "[trace] sync={!r} accept_vm_ssh={} -> will inject VM .ssh/config: {}".format(
+                config.get('sync'), config.get('accept_vm_ssh'),
+                config.get('sync') == 'sshfs' or config.get('accept_vm_ssh')))
             if config.get('sync') == 'sshfs' or config.get('accept_vm_ssh'):
                 vm_ssh_config = """
 StrictHostKeyChecking=no
@@ -5509,16 +5903,23 @@ Host host
 {host_port}  User {user}
   ServerAliveInterval 1
 """.format(host_port=host_port_line, user=current_user)
-                
+
+                debuglog(config['debug'], "[trace] injecting VM .ssh/config via ssh ...")
                 p = subprocess.Popen(ssh_base_cmd + ["cat - > .ssh/config"], stdin=subprocess.PIPE)
                 p.communicate(input=vm_ssh_config.encode('utf-8'))
                 p.wait()
+                debuglog(config['debug'], "[trace] VM .ssh/config injection rc={}".format(p.returncode))
             # OmniOS DNS configuration
             if config['os'] == 'omnios':
+                debuglog(config['debug'], "[trace] writing /etc/resolv.conf on OmniOS ...")
                 p = subprocess.Popen(ssh_base_cmd + ["sh"], stdin=subprocess.PIPE)
                 p.communicate(input=b'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n')
                 p.wait()
+                debuglog(config['debug'], "[trace] OmniOS resolv.conf rc={}".format(p.returncode))
             # Mount Shared Folders
+            debuglog(config['debug'], "[trace] vpaths={!r} sync={!r} -> will mount: {}".format(
+                config['vpaths'], config.get('sync'),
+                bool(config['vpaths']) and config['sync'] != 'no'))
             if config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
                 if config['sync'] == 'nfs':
@@ -5591,10 +5992,30 @@ Host host
                              log("        Use '--remote-vnc off' to disable it.")
                  log("======================================")
 
+            debuglog(config['debug'], "[trace] reached final-SSH gate, detach={} console={}".format(
+                config['detach'], config['console']))
             if not config['detach']:
                 ssh_cmd = ssh_base_cmd + ssh_passthrough
                 debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
-                subprocess.call(ssh_cmd)
+                # Skip the final interactive SSH when there's nothing to run AND
+                # stdin isn't a TTY (typical CI environment). An empty session
+                # with EOF stdin makes some guests' login/csh hang on logout
+                # (observed on MidnightBSD 3.2.4), which then blocks anyvm
+                # forever. Users running interactively still get the shell;
+                # users with `-- cmd ...` still get their command executed.
+                stdin_is_tty = bool(hasattr(sys.stdin, 'isatty') and sys.stdin.isatty())
+                stdout_is_tty = bool(hasattr(sys.stdout, 'isatty') and sys.stdout.isatty())
+                skip_final_ssh = (not ssh_passthrough) and (not stdin_is_tty)
+                debuglog(config['debug'], "[trace] final-SSH decision: ssh_passthrough={!r} stdin_tty={} stdout_tty={} skip={}".format(
+                    ssh_passthrough, stdin_is_tty, stdout_is_tty, skip_final_ssh))
+                if skip_final_ssh:
+                    debuglog(config['debug'], "Skipping final interactive SSH: non-TTY stdin and no passthrough command.")
+                else:
+                    debuglog(config['debug'], "[trace] final-SSH calling subprocess.call ...")
+                    rc = subprocess.call(ssh_cmd)
+                    debuglog(config['debug'], "[trace] final-SSH returned rc={}".format(rc))
+            else:
+                debuglog(config['debug'], "[trace] detach mode -- skipping final SSH")
             # Avoid noisy banner when running as PID 1 inside a container or if QEMU already exited
             if os.getpid() != 1:
                 if not config['detach']:

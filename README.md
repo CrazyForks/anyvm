@@ -1,4 +1,8 @@
-﻿# Run any VM anywhere [![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
+﻿# Run any VM anywhere 
+
+[![Test](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/anyvm-org/anyvm?include_prereleases&sort=semver)](https://github.com/anyvm-org/anyvm/releases)
+
 
 anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
 
@@ -266,6 +270,17 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 
 - `--disktype <type>`: Disk interface type (e.g. `virtio`, `ide`).
   - Example: `python3 anyvm.py --os dragonflybsd --disktype ide`
+
+- `--boot-timeout-sec <n>`: Boot timeout in seconds before QEMU is killed and retried once. Default: `600` (10 minutes).
+  - Exception: OpenBSD on `aarch64` defaults to `1200` (20 minutes) because it boots much slower under emulation.
+  - Useful for slow hosts (emulated arches, low-resource CI runners) or for failing fast in tests.
+  - Example: `python3 anyvm.py --os openbsd --boot-timeout-sec 1200`
+
+- `--enable-pmu`: Expose the host PMU (performance monitoring unit / hardware performance counters) to the guest.
+  - **Disabled by default.** Exposing the host PMU via `-cpu host` can trigger intermittent `#GP`-in-`wrmsr` crashes during early guest boot when the host CPU generation exposes PMU MSRs that KVM refuses writes to. DragonFlyBSD is the most affected guest; this manifested as random boot failures across CI runners with different Intel CPU generations.
+  - Only applies to x86_64 with hardware acceleration (`kvm` / `whpx` / `hvf`). TCG and non-x86 arches are unaffected.
+  - Pass `--enable-pmu` if you need `perf` / `pmcstat` / VTune or similar profilers to work inside the guest.
+  - Example: `python3 anyvm.py --os ubuntu --enable-pmu -- perf stat ls`
 
 
 
