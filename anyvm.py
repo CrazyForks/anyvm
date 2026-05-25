@@ -3451,13 +3451,25 @@ fi
         )
 
     mounted = False
-    for _ in range(10):
+    for attempt in range(10):
         p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
-        p_mount.communicate(input=mount_script.encode('utf-8'))
+        try:
+            # Cap each attempt at 60s so a sshfs reconnect-loop inside the VM
+            # (when host-side ssh keeps dropping the inner connection) does NOT
+            # hang anyvm.py forever. sshfs runs with `-o reconnect`, so on a
+            # flaky connect it will retry without ever returning to the shell.
+            p_mount.communicate(input=mount_script.encode('utf-8'), timeout=60)
+        except subprocess.TimeoutExpired:
+            log("SSHFS mount attempt {} hung beyond 60s, killing".format(attempt + 1))
+            p_mount.kill()
+            try:
+                p_mount.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         if p_mount.returncode == 0:
             mounted = True
             break
-        log("SSHFS mount failed, retrying...")
+        log("SSHFS mount failed (attempt {}), retrying...".format(attempt + 1))
         time.sleep(2)
     
     if not mounted:
@@ -5927,7 +5939,7 @@ StrictHostKeyChecking=no
 Host host
   HostName  192.168.122.2
 {host_port}  User {user}
-  ServerAliveInterval 1
+  ServerAliveInterval 10
 """.format(host_port=host_port_line, user=current_user)
 
                 debuglog(config['debug'], "[trace] injecting VM .ssh/config via ssh ...")
