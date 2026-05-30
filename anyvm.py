@@ -3219,6 +3219,102 @@ def rewrite_hostfwd_target(monitor_port, hostfwd_specs, new_guest_ip, debug=Fals
             all_ok = False
     return all_ok
 
+def get_vm_ip_from_serial(serial_log_file, network_prefix=SLIRP_NETWORK_PREFIX):
+    """Detect the guest's DHCP-assigned IP by scanning the serial console log.
+
+    Many guests print their lease on the console during boot, e.g. FreeBSD's
+    dhclient logs "bound to 192.168.122.20 -- renewal in ...". This works even
+    before the guest makes any outbound TCP connection -- which is what
+    get_vm_ip_from_monitor relies on -- so it catches stale-lease cases on
+    headless arches (riscv64, -display none) where slirp's usernet table is
+    still empty during the boot-wait window.
+
+    Returns the most recent plausible guest IP found, or None.
+    """
+    if not serial_log_file or not os.path.exists(serial_log_file):
+        return None
+    try:
+        with open(serial_log_file, 'rb') as f:
+            data = f.read().decode('utf-8', errors='replace')
+    except OSError:
+        return None
+    reserved_last = {0, 1, 2, 3, 255}  # network/gateway/dns/broadcast in slirp's /24
+    prefix_re = re.escape(network_prefix)
+    found = None
+    # "bound to <ip>" (dhclient) is the strongest signal; "inet <ip>" covers
+    # ifconfig-style console output as a fallback. Keep the latest match.
+    for m in re.finditer(r'(?:bound to|inet)\s+(' + prefix_re + r'\d+)', data):
+        ip = m.group(1)
+        try:
+            last = int(ip.rsplit('.', 1)[1])
+        except ValueError:
+            continue
+        if last in reserved_last:
+            continue
+        found = ip
+    return found
+
+def probe_guest_by_ip_sweep(monitor_port, hostfwd_specs, ssh_probe_cmd,
+                            network_prefix=SLIRP_NETWORK_PREFIX,
+                            start=10, end=254, probe_timeout=2, time_budget=120,
+                            debug=False):
+    """Last-resort brute-force: find a booted-but-unreachable guest by IP sweep.
+
+    When the boot-wait loop times out, the VM may actually be up and listening
+    on SSH while slirp's hostfwd points at the wrong guest IP (e.g. the guest
+    took a stale DHCP lease and the IP-detection guard never saw it). Sweep
+    candidate guest IPs <prefix>.start .. <prefix>.end: for each, repoint just
+    the SSH hostfwd rule at it and probe SSH. On the first success, repoint ALL
+    hostfwd entries at the winning IP and return it; otherwise return None.
+
+    Requires the QEMU monitor (hostfwd_remove/_add) and slirp user networking.
+
+    Cost model: a live IP answers near-instantly here (the VM has already had
+    the full boot timeout to come up, so sshd responds over local TCP in well
+    under a second), while a dead IP costs the full probe_timeout. Keep
+    probe_timeout small. time_budget caps the total wall-clock so a genuinely
+    dead VM (kernel panic, hang) does not stall the whole sweep before we fall
+    through to the QEMU kill + retry. Realistic slirp DHCP leases are low in the
+    range, so the budget is reached only when nothing is actually listening.
+    """
+    if not monitor_port or not hostfwd_specs:
+        return None
+    # Drive the sweep off the SSH forward (guest port 22) only -- repoint one
+    # rule per candidate instead of all of them, then fix the rest once found.
+    ssh_spec = next((s for s in hostfwd_specs if s[3] == "22"), None)
+    if ssh_spec is None:
+        return None
+    proto, host_addr, host_port, guest_port = ssh_spec
+
+    reserved_last = {0, 1, 2, 3, 255}  # network/gateway/dns/broadcast in slirp's /24
+    sweep_start = time.time()
+    last_cand = None
+    for n in range(start, end + 1):
+        if n in reserved_last:
+            continue
+        if time.time() - sweep_start >= time_budget:
+            debuglog(debug, "IP sweep: hit {}s time budget at {}{}; giving up sweep".format(
+                time_budget, network_prefix, n))
+            break
+        cand = "{}{}".format(network_prefix, n)
+        last_cand = cand
+        # Repoint just the SSH rule at this candidate (remove drops whatever the
+        # previous iteration / original launch installed for this host port).
+        _qmon_send(monitor_port, "hostfwd_remove {}:{}:{}".format(proto, host_addr, host_port))
+        add = _qmon_send(monitor_port, "hostfwd_add {}:{}:{}-{}:{}".format(
+            proto, host_addr, host_port, cand, guest_port))
+        if add and ("Error" in add or "could not" in add.lower()):
+            continue
+        ret, _ = call_with_timeout(ssh_probe_cmd + ["exit"], timeout_seconds=probe_timeout,
+                                   stdout=DEVNULL, stderr=DEVNULL)
+        if ret == 0:
+            debuglog(debug, "IP sweep: guest reachable at {}; repointing all hostfwd entries".format(cand))
+            rewrite_hostfwd_target(monitor_port, hostfwd_specs, cand, debug=debug)
+            return cand
+        if debug and (n - start) % 20 == 0 and n != start:
+            debuglog(debug, "IP sweep: probed through {} (no response yet)".format(cand))
+    return None
+
 def sync_vm_time(config, ssh_base_cmd):
     """Synchronizes VM time using NTP-like commands inside the guest."""
     guest_os = config.get('os', '').lower()
@@ -5256,12 +5352,18 @@ def main():
             display_arch = config['arch'] if config['arch'] else host_arch
             vm_info = "-".join(filter(None, [config['os'], config['release'], display_arch]))
             
-            if not config['qmon']:
-                config['qmon'] = str(get_free_port(start=4444, end=4544))
-                debuglog(config['debug'], "Auto-selected QEMU monitor port: {}".format(config['qmon']))
     else:
         args_qemu.extend(["-display", "none"])
-    
+
+    # The QEMU monitor powers the stale-DHCP-lease hostfwd rewrite guard and the
+    # boot-debug snapshot. Allocate it for ALL configs, not only when a VNC web
+    # proxy is set up: headless arches (riscv64) and console-off runs use
+    # -display none and previously had no monitor, so the guard could never
+    # detect a mismatched guest IP or rebind hostfwd.
+    if not config['qmon']:
+        config['qmon'] = str(get_free_port(start=4444, end=4544))
+        debuglog(config['debug'], "Auto-selected QEMU monitor port: {}".format(config['qmon']))
+
     if config['qmon']:
         args_qemu.extend(["-monitor", "tcp:127.0.0.1:{},server,nowait,nodelay".format(config['qmon'])])
 
@@ -5744,7 +5846,11 @@ def main():
                 if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
                         and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
                     hostfwd_guard_last_check = time.time()
-                    actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                    # Prefer slirp's usernet table (outbound flows); fall back to
+                    # the serial console log, which shows the lease ("bound to
+                    # <ip>") even before any outbound TCP -- needed for headless
+                    # arches where usernet is still empty during boot-wait.
+                    actual_ip = get_vm_ip_from_monitor(config['qmon']) or get_vm_ip_from_serial(serial_log_file)
                     if actual_ip:
                         if actual_ip == SLIRP_EXPECTED_GUEST_IP:
                             debuglog(config['debug'], "VM IP {} matches expected, hostfwd OK".format(actual_ip))
@@ -5793,6 +5899,18 @@ def main():
                     except:
                         pass
             
+            if not success and config.get('qmon') and hostfwd_specs:
+                # Before tearing QEMU down, brute-force search for a booted VM
+                # that is simply behind a misrouted hostfwd (wrong guest IP).
+                # Cheaper than a full kill + 600s+ reboot if the VM is actually up.
+                log("Boot probe timed out; sweeping guest IPs {0}{1}-{0}254 before restart...".format(SLIRP_NETWORK_PREFIX, 10))
+                swept_ip = probe_guest_by_ip_sweep(
+                    config['qmon'], hostfwd_specs, ssh_base_cmd,
+                    probe_timeout=max(2, probe_timeout_sec), debug=config['debug'])
+                if swept_ip:
+                    success = True
+                    log("VM reachable at {} after hostfwd rewrite; skipping QEMU restart.".format(swept_ip))
+
             if not success:
                 # First timeout - dump diagnostics, then kill QEMU and retry once
                 log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
@@ -5864,7 +5982,7 @@ def main():
                     if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
                             and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
                         hostfwd_guard_last_check = time.time()
-                        actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                        actual_ip = get_vm_ip_from_monitor(config['qmon']) or get_vm_ip_from_serial(serial_log_file)
                         if actual_ip:
                             if actual_ip == SLIRP_EXPECTED_GUEST_IP:
                                 debuglog(config['debug'], "VM IP {} matches expected (retry)".format(actual_ip))
