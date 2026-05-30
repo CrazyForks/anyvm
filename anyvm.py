@@ -3219,6 +3219,41 @@ def rewrite_hostfwd_target(monitor_port, hostfwd_specs, new_guest_ip, debug=Fals
             all_ok = False
     return all_ok
 
+def get_vm_ip_from_serial(serial_log_file, network_prefix=SLIRP_NETWORK_PREFIX):
+    """Detect the guest's DHCP-assigned IP by scanning the serial console log.
+
+    Many guests print their lease on the console during boot, e.g. FreeBSD's
+    dhclient logs "bound to 192.168.122.20 -- renewal in ...". This works even
+    before the guest makes any outbound TCP connection -- which is what
+    get_vm_ip_from_monitor relies on -- so it catches stale-lease cases on
+    headless arches (riscv64, -display none) where slirp's usernet table is
+    still empty during the boot-wait window.
+
+    Returns the most recent plausible guest IP found, or None.
+    """
+    if not serial_log_file or not os.path.exists(serial_log_file):
+        return None
+    try:
+        with open(serial_log_file, 'rb') as f:
+            data = f.read().decode('utf-8', errors='replace')
+    except OSError:
+        return None
+    reserved_last = {0, 1, 2, 3, 255}  # network/gateway/dns/broadcast in slirp's /24
+    prefix_re = re.escape(network_prefix)
+    found = None
+    # "bound to <ip>" (dhclient) is the strongest signal; "inet <ip>" covers
+    # ifconfig-style console output as a fallback. Keep the latest match.
+    for m in re.finditer(r'(?:bound to|inet)\s+(' + prefix_re + r'\d+)', data):
+        ip = m.group(1)
+        try:
+            last = int(ip.rsplit('.', 1)[1])
+        except ValueError:
+            continue
+        if last in reserved_last:
+            continue
+        found = ip
+    return found
+
 def sync_vm_time(config, ssh_base_cmd):
     """Synchronizes VM time using NTP-like commands inside the guest."""
     guest_os = config.get('os', '').lower()
@@ -5256,12 +5291,18 @@ def main():
             display_arch = config['arch'] if config['arch'] else host_arch
             vm_info = "-".join(filter(None, [config['os'], config['release'], display_arch]))
             
-            if not config['qmon']:
-                config['qmon'] = str(get_free_port(start=4444, end=4544))
-                debuglog(config['debug'], "Auto-selected QEMU monitor port: {}".format(config['qmon']))
     else:
         args_qemu.extend(["-display", "none"])
-    
+
+    # The QEMU monitor powers the stale-DHCP-lease hostfwd rewrite guard and the
+    # boot-debug snapshot. Allocate it for ALL configs, not only when a VNC web
+    # proxy is set up: headless arches (riscv64) and console-off runs use
+    # -display none and previously had no monitor, so the guard could never
+    # detect a mismatched guest IP or rebind hostfwd.
+    if not config['qmon']:
+        config['qmon'] = str(get_free_port(start=4444, end=4544))
+        debuglog(config['debug'], "Auto-selected QEMU monitor port: {}".format(config['qmon']))
+
     if config['qmon']:
         args_qemu.extend(["-monitor", "tcp:127.0.0.1:{},server,nowait,nodelay".format(config['qmon'])])
 
@@ -5744,7 +5785,11 @@ def main():
                 if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
                         and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
                     hostfwd_guard_last_check = time.time()
-                    actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                    # Prefer slirp's usernet table (outbound flows); fall back to
+                    # the serial console log, which shows the lease ("bound to
+                    # <ip>") even before any outbound TCP -- needed for headless
+                    # arches where usernet is still empty during boot-wait.
+                    actual_ip = get_vm_ip_from_monitor(config['qmon']) or get_vm_ip_from_serial(serial_log_file)
                     if actual_ip:
                         if actual_ip == SLIRP_EXPECTED_GUEST_IP:
                             debuglog(config['debug'], "VM IP {} matches expected, hostfwd OK".format(actual_ip))
@@ -5864,7 +5909,7 @@ def main():
                     if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
                             and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
                         hostfwd_guard_last_check = time.time()
-                        actual_ip = get_vm_ip_from_monitor(config['qmon'])
+                        actual_ip = get_vm_ip_from_monitor(config['qmon']) or get_vm_ip_from_serial(serial_log_file)
                         if actual_ip:
                             if actual_ip == SLIRP_EXPECTED_GUEST_IP:
                                 debuglog(config['debug'], "VM IP {} matches expected (retry)".format(actual_ip))
