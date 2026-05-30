@@ -119,7 +119,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "omnios": "2.0.8",
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
-    "openindiana": "2.0.8"
+    "openindiana": "2.0.9"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
