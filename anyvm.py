@@ -4809,7 +4809,11 @@ def main():
     auto_reason = None
     
     if not vnc_val and not is_vnc_console:
-        if "x86_64" not in bin_name:
+        if config['os'] == "openindiana":
+            if "202510" in config['release']:
+                # Rule for OpenIndiana: Default to 'console' if not specified.
+                auto_reason = "OpenIndiana (requires console for login display)"
+        elif "x86_64" not in bin_name:
             # Rule for non-x86 architectures: Default to 'console' if not specified.
             # Exception: OpenBSD on aarch64 starting at 7.4 has a working
             # graphical framebuffer via virtio-gpu-pci, so prefer regular VNC
