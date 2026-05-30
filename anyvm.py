@@ -4809,10 +4809,7 @@ def main():
     auto_reason = None
     
     if not vnc_val and not is_vnc_console:
-        if config['os'] == "openindiana":
-            # Rule for OpenIndiana: Default to 'console' if not specified.
-            auto_reason = "OpenIndiana (requires console for login display)"
-        elif "x86_64" not in bin_name:
+        if "x86_64" not in bin_name:
             # Rule for non-x86 architectures: Default to 'console' if not specified.
             # Exception: OpenBSD on aarch64 starting at 7.4 has a working
             # graphical framebuffer via virtio-gpu-pci, so prefer regular VNC
@@ -5947,13 +5944,18 @@ Host host
                 p.communicate(input=vm_ssh_config.encode('utf-8'))
                 p.wait()
                 debuglog(config['debug'], "[trace] VM .ssh/config injection rc={}".format(p.returncode))
-            # OmniOS DNS configuration
-            if config['os'] == 'omnios':
-                debuglog(config['debug'], "[trace] writing /etc/resolv.conf on OmniOS ...")
+            # illumos DNS workaround (omnios/openindiana/solaris): the guest gets
+            # DNS = slirp's built-in proxy (x.x.x.3) via DHCP, but that proxy drops
+            # empty AAAA (NODATA) replies for IPv4-only hosts, so getaddrinfo() hangs
+            # ~15s and pkg intermittently fails with E_COULDNT_RESOLVE_HOST. Point the
+            # resolver at public DNS. Done post-boot so nwam (which rewrites resolv.conf
+            # from DHCP at boot) does not clobber it.
+            if config['os'] in ('omnios', 'openindiana', 'solaris'):
+                debuglog(config['debug'], "[trace] writing /etc/resolv.conf on {} ...".format(config['os']))
                 p = subprocess.Popen(ssh_base_cmd + ["sh"], stdin=subprocess.PIPE)
-                p.communicate(input=b'echo "nameserver 8.8.8.8" > /etc/resolv.conf\n')
+                p.communicate(input=b'echo "nameserver 1.1.1.1" > /etc/resolv.conf; echo "nameserver 8.8.8.8" >> /etc/resolv.conf\n')
                 p.wait()
-                debuglog(config['debug'], "[trace] OmniOS resolv.conf rc={}".format(p.returncode))
+                debuglog(config['debug'], "[trace] illumos resolv.conf rc={}".format(p.returncode))
             # Mount Shared Folders
             debuglog(config['debug'], "[trace] vpaths={!r} sync={!r} -> will mount: {}".format(
                 config['vpaths'], config.get('sync'),
