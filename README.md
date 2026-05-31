@@ -57,6 +57,12 @@ python3 anyvm.py --os freebsd  --release 15.0-gnome
 python3 anyvm.py --os freebsd  --release 15.0-kde6
 
 python3 anyvm.py --os openbsd  --release 7.9-xfce
+python3 anyvm.py --os openbsd  --release 7.9-gnome
+python3 anyvm.py --os openbsd  --release 7.9-kde6
+python3 anyvm.py --os openbsd  --release 7.9-mate
+python3 anyvm.py --os openbsd  --release 7.9-lxqt
+python3 anyvm.py --os openbsd  --release 7.9-lumina
+python3 anyvm.py --os openbsd  --release 7.9-enlightenment
 
 
 

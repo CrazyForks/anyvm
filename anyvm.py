@@ -4395,7 +4395,7 @@ def main():
             config['vga'] = "std"
         elif config['os'] == "openbsd" and config['release'] and any(
             config['release'].endswith(s)
-            for s in ("-xfce", "-gnome", "-kde", "-kde6", "-mate", "-lxqt", "-cinnamon")
+            for s in ("-xfce", "-gnome", "-kde", "-kde6", "-mate", "-lxqt", "-lumina", "-enlightenment", "-cinnamon")
         ):
             # OpenBSD has no DRM driver for virtio-gpu in base, so X cannot
             # get a framebuffer with the default virtio VGA: xenocara's wsfb
