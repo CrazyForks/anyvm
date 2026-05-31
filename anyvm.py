@@ -119,6 +119,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "omnios": "2.0.8",
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
+    "tribblix": "2.0.0",
     "openindiana": "2.0.9"
 }
 
@@ -2624,7 +2625,9 @@ Options:
                          Use "--remote-vnc no" to disable.
   --remote-vnc-link-file Specify a file to write the remote VNC link to (instead of the default .remote file).
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu, cirrus). Default: virtio
-                         (std for NetBSD and Haiku; cirrus for OpenBSD desktop releases like 7.9-xfce).
+                         (std for NetBSD and Haiku; cirrus for OpenBSD/amd64 desktop releases like
+                         7.9-xfce; virtio kept for OpenBSD/aarch64 desktop releases since
+                         cirrus_drv is amd64-only and viogpu+wsfb works on arm64).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1 + LAN IPs.
@@ -2632,6 +2635,18 @@ Options:
   --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1 + LAN IPs.
   --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
+  --tcg                  Force pure software emulation (no KVM/HVF/WHPX). Slow,
+                         but required for tribblix on some modern hosts where
+                         KVM exposes a CPUID.0xD/XSAVE layout the tribblix
+                         kernel mishandles (kernel boots, then init dies on
+                         SIGKILL in a restart loop). Note: for tribblix this is
+                         auto-enabled when the host CPU has XSAVE; pass --kvm
+                         to override.
+  --kvm                  Force hardware acceleration (KVM/HVF/WHPX) for
+                         tribblix, overriding the automatic TCG fallback
+                         applied on XSAVE-capable hosts. Only safe if the host
+                         CPU has no XSAVE, or the guest kernel tolerates the
+                         host's XSAVE layout.
   --debug                Enable verbose debug logging.
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
@@ -4129,6 +4144,8 @@ def main():
         'arch': "",
         'builder': "",
         'whpx': False,
+        'tcg': False,
+        'force_kvm': False,
         'serialport': "",
         # QEMU user networking (slirp) IPv6 is disabled by default.
         'enable_ipv6': False,
@@ -4285,6 +4302,10 @@ def main():
             config['accept_vm_ssh'] = True
         elif arg == "--whpx":
             config['whpx'] = True
+        elif arg == "--tcg":
+            config['tcg'] = True
+        elif arg == "--kvm":
+            config['force_kvm'] = True
         elif arg == "--serial":
             config['serialport'] = args[i+1]
             serial_user_specified = True
@@ -4393,18 +4414,27 @@ def main():
             config['vga'] = "std"
         elif config['os'] == "haiku":
             config['vga'] = "std"
-        elif config['os'] == "openbsd" and config['release'] and any(
+        elif config['os'] == "openbsd" and config['arch'] != "aarch64" and config['release'] and any(
             config['release'].endswith(s)
             for s in ("-xfce", "-gnome", "-kde", "-kde6", "-mate", "-lxqt", "-lumina", "-enlightenment", "-cinnamon")
         ):
-            # OpenBSD has no DRM driver for virtio-gpu in base, so X cannot
-            # get a framebuffer with the default virtio VGA: xenocara's wsfb
-            # gets ENOTTY on the wsdisplay text-mode console, and modesetting
-            # finds no /dev/drm0. cirrus is the one legacy VGA that ships a
-            # working xenocara driver (xf86-video-cirrus) for QEMU. Pair with
-            # the matching desktop hook (e.g. openbsd-builder/hooks/xfce.sh)
-            # which writes /etc/X11/xorg.conf.d/10-cirrus.conf and raises
+            # OpenBSD/amd64 has no DRM driver for virtio-gpu in base, so X
+            # cannot get a framebuffer with the default virtio VGA: xenocara's
+            # wsfb gets ENOTTY on the wsdisplay text-mode console, and
+            # modesetting finds no /dev/drm0. cirrus is the one legacy VGA
+            # that ships a working xenocara driver (xf86-video-cirrus) for
+            # QEMU. Pair with the matching desktop hook (e.g.
+            # openbsd-builder/hooks/xfce.sh) which writes
+            # /etc/X11/xorg.conf.d/10-cirrus.conf and raises
             # machdep.allowaperture so the driver can map the VGA aperture.
+            #
+            # Skipped on aarch64: there is no cirrus_drv for OpenBSD/arm64
+            # xenocara, but viogpu0 attaches wsdisplay over the default
+            # virtio-gpu, and the aarch64 desktop hook (e.g.
+            # openbsd-builder/hooks/xfce-aarch64.sh) pins wsfb with
+            # ShadowFB off and disables xfwm4's compositor so X actually
+            # pushes pixels to viogpu. So leave --vga at the default
+            # (virtio) for aarch64 desktop releases.
             config['vga'] = "cirrus"
         else:
             config['vga'] = "virtio"
@@ -4977,6 +5007,54 @@ def main():
                 else:
                     accel = "hvf"
 
+    # Force pure software emulation (TCG) when requested. The motivating case
+    # is tribblix on some modern hosts: KVM passes through a CPUID.0xD/XSAVE
+    # layout the tribblix kernel mishandles, so the kernel boots but init dies
+    # on SIGKILL in an endless restart loop. TCG returns a benign CPUID.0xD and
+    # boots. The flag itself is generic and applies to any guest.
+    if config['tcg'] and accel != "tcg":
+        debuglog(config['debug'], "Forcing TCG software emulation (--tcg); ignoring KVM/HVF/WHPX")
+        accel = "tcg"
+
+    # Auto-fallback to TCG for the tribblix guest on XSAVE-capable hosts.
+    # Under KVM/WHPX/HVF the guest's CPUID leaf 0xD (XSAVE enumeration) reflects
+    # the host CPU's real layout regardless of the -cpu model; the tribblix
+    # illumos kernel mishandles the layout modern CPUs advertise, so the kernel
+    # boots but init loops forever on SIGKILL. Hosts with no XSAVE are safe
+    # under hardware accel, so keep it there. Scoped to tribblix only; other
+    # guests are left untouched. Override: --kvm forces hardware accel, --tcg
+    # forces software emulation.
+    if (config['os'] == "tribblix"
+            and accel in ("kvm", "whpx", "hvf") and not config['force_kvm']):
+        host_xsave = True
+        try:
+            sysname = platform.system()
+            if sysname == "Linux":
+                host_xsave = False
+                with open("/proc/cpuinfo") as cpuinfo:
+                    for line in cpuinfo:
+                        if line.startswith("flags") or line.startswith("Features"):
+                            host_xsave = " xsave " in (" " + line.split(":", 1)[-1].strip() + " ")
+                            break
+            elif sysname == "Darwin":
+                feats = subprocess.check_output(["sysctl", "-n", "machdep.cpu.features"],
+                                                stderr=subprocess.DEVNULL, timeout=5).decode(errors="replace")
+                host_xsave = "XSAVE" in feats.upper().split()
+            elif IS_WINDOWS:
+                import ctypes
+                # PF_XSAVE_ENABLED = 17
+                host_xsave = bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(17))
+        except Exception:
+            host_xsave = True  # detection failed -> assume present -> safe (TCG)
+        if host_xsave:
+            log("tribblix on an XSAVE-capable host: using TCG software emulation "
+                "(hardware acceleration exposes a CPUID.0xD/XSAVE layout the tribblix "
+                "kernel mishandles, causing an init SIGKILL crash loop). "
+                "Pass --kvm to force hardware acceleration.")
+            accel = "tcg"
+        else:
+            debuglog(config['debug'], "tribblix, host CPU has no XSAVE: keeping '{}' acceleration".format(accel))
+
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":
         try:
@@ -4996,11 +5074,19 @@ def main():
     # Disk type selection
     if config['disktype']:
         disk_if = config['disktype']
+    elif config['os'] == "dragonflybsd":
+        disk_if = "ide"
+    elif config['os'] == "tribblix":
+        # The tribblix image is built on an AHCI SATA controller: the
+        # tribblix-builder libvirt XML pins <target bus='sata'> and the disk
+        # enumerates as c2t0d0 inside the guest (live_install.sh installs to
+        # c2t0d0). virtio-blk puts the disk on a different controller with a
+        # different device name, so the installed root pool's device paths no
+        # longer match. Match the builder. Scoped to tribblix only; other
+        # illumos distros are left on the virtio default.
+        disk_if = "sata"
     else:
-        if config['os'] != "dragonflybsd":
-            disk_if = "virtio"
-        else:
-            disk_if = "ide"
+        disk_if = "virtio"
 
     # Build Netdev Argument
     # Always include standard SSH mapping
@@ -5071,7 +5157,18 @@ def main():
         config['arch'] == "aarch64"
         or config.get('useefi')
     )
-    if disk_if == "virtio" and needs_bootindex_disk:
+    if disk_if == "sata":
+        # AHCI controller + ide-hd, matching how illumos images are built
+        # (libvirt <target bus='sata'>). The i440fx 'pc' machine already
+        # carries a PIIX IDE controller, so the AHCI disk enumerates as
+        # c2t0d0 in the guest -- the device name the installed system expects.
+        # No bootindex in BIOS mode so we don't confuse illumos GRUB.
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
+            "-device", "ich9-ahci,id=ahci0",
+            "-device", "ide-hd,bus=ahci0.0,drive=disk0"
+        ])
+    elif disk_if == "virtio" and needs_bootindex_disk:
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
             "-device", "virtio-blk-pci,drive=disk0,bootindex=0"
