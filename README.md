@@ -56,6 +56,8 @@ python3 anyvm.py --os freebsd  --release 15.0-xfce
 python3 anyvm.py --os freebsd  --release 15.0-gnome
 python3 anyvm.py --os freebsd  --release 15.0-kde6
 
+python3 anyvm.py --os openbsd  --release 7.9-xfce
+
 
 
 # Run a command inside the VM (everything after `--` is sent to the VM via ssh):
