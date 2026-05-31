@@ -2623,7 +2623,8 @@ Options:
                          Enabled by default if no local browser is detected (e.g., in Cloud Shell).
                          Use "--remote-vnc no" to disable.
   --remote-vnc-link-file Specify a file to write the remote VNC link to (instead of the default .remote file).
-  --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu). Default: virtio (std for NetBSD).
+  --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu, cirrus). Default: virtio
+                         (std for NetBSD and Haiku; cirrus for OpenBSD desktop releases like 7.9-xfce).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1 + LAN IPs.
@@ -4392,6 +4393,19 @@ def main():
             config['vga'] = "std"
         elif config['os'] == "haiku":
             config['vga'] = "std"
+        elif config['os'] == "openbsd" and config['release'] and any(
+            config['release'].endswith(s)
+            for s in ("-xfce", "-gnome", "-kde", "-kde6", "-mate", "-lxqt", "-lumina", "-enlightenment", "-cinnamon")
+        ):
+            # OpenBSD has no DRM driver for virtio-gpu in base, so X cannot
+            # get a framebuffer with the default virtio VGA: xenocara's wsfb
+            # gets ENOTTY on the wsdisplay text-mode console, and modesetting
+            # finds no /dev/drm0. cirrus is the one legacy VGA that ships a
+            # working xenocara driver (xf86-video-cirrus) for QEMU. Pair with
+            # the matching desktop hook (e.g. openbsd-builder/hooks/xfce.sh)
+            # which writes /etc/X11/xorg.conf.d/10-cirrus.conf and raises
+            # machdep.allowaperture so the driver can map the VGA aperture.
+            config['vga'] = "cirrus"
         else:
             config['vga'] = "virtio"
 
