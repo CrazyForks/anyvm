@@ -6241,6 +6241,11 @@ Host host
                      if supports_ansi_color():
                          display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                      log("VNC Web UI: {}".format(display_local_url))
+                     if config['vnc_password']:
+                         pwd_display = config['vnc_password']
+                         if supports_ansi_color():
+                             pwd_display = "\x1b[33m{}\x1b[0m".format(pwd_display)
+                         log("VNC password: {}".format(pwd_display))
                      if tunnel_url:
                          display_url = tunnel_url
                          if supports_ansi_color():
@@ -6293,6 +6298,11 @@ Host host
                         if supports_ansi_color():
                             display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                         log("VNC Web UI: {}".format(display_local_url))
+                        if config['vnc_password']:
+                            pwd_display = config['vnc_password']
+                            if supports_ansi_color():
+                                pwd_display = "\x1b[33m{}\x1b[0m".format(pwd_display)
+                            log("VNC password: {}".format(pwd_display))
                         if not (config['public'] or config['public_vnc']):
                             for ip in get_private_ips():
                                 lan_url = "http://{}:{}".format(ip, web_port)
