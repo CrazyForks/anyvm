@@ -45,6 +45,7 @@ python3 anyvm.py --os freebsd --release 14.3
 python3 anyvm.py --os freebsd --release 14.3 --arch aarch64
 python3 anyvm.py --os openbsd --release 7.5 --arch aarch64
 python3 anyvm.py --os solaris
+python3 anyvm.py --os tribblix
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
 
@@ -92,6 +93,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Solaris | [![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/solaris-builder) |
 | OmniOS | [![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/omnios-builder) |
 | OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/openindiana-builder) |
+| Tribblix | [![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/tribblix-builder) |
 | Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/haiku-builder) |
 
 ## 5. Host support
@@ -169,7 +171,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `haiku`
+  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
@@ -291,6 +293,10 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Only applies to x86_64 with hardware acceleration (`kvm` / `whpx` / `hvf`). TCG and non-x86 arches are unaffected.
   - Pass `--enable-pmu` if you need `perf` / `pmcstat` / VTune or similar profilers to work inside the guest.
   - Example: `python3 anyvm.py --os ubuntu --enable-pmu -- perf stat ls`
+
+- `--tcg`: Force pure software emulation (no KVM / HVF / WHPX). Slow; useful when hardware acceleration is unavailable or misbehaving. Generic -- works for any guest.
+  - Example: `python3 anyvm.py --os tribblix --tcg`
+  - Historical note: older `tribblix` releases froze a CPU-vendor-specific `libc_hwcap` variant into `/lib/libc.so.1` at build time, which crash-looped (`init` killed by `SIGKILL`) when run under KVM on the other vendor's CPU; anyvm used to auto-fall-back to TCG on Intel hosts to dodge it. Since `v2.0.3` (tribblix-builder's `finalizeImage` hook) the release ships the generic, capability-neutral libc that boots under KVM on both Intel and AMD and re-optimizes per-CPU at first boot, so no fallback is needed. Use `--tcg` only if you must run a pre-`v2.0.3` image on a mismatched CPU.
 
 
 

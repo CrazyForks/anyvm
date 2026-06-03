@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix"]
         arch: [""]
         runs: ["windows-latest"]
         sync: ["scp", "rsync"]
@@ -34,6 +34,8 @@ jobs:
           - os: omnios
             arch: aarch64
           - os: openindiana
+            arch: aarch64
+          - os: tribblix
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml

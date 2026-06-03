@@ -119,6 +119,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "omnios": "2.0.8",
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
+    "tribblix": "2.0.3",
     "openindiana": "2.0.9"
 }
 
@@ -2624,7 +2625,9 @@ Options:
                          Use "--remote-vnc no" to disable.
   --remote-vnc-link-file Specify a file to write the remote VNC link to (instead of the default .remote file).
   --vga <type>           VGA device type (e.g., virtio, std, virtio-gpu, cirrus). Default: virtio
-                         (std for NetBSD and Haiku; cirrus for OpenBSD desktop releases like 7.9-xfce).
+                         (std for NetBSD and Haiku; cirrus for OpenBSD/amd64 desktop releases like
+                         7.9-xfce; virtio kept for OpenBSD/aarch64 desktop releases since
+                         cirrus_drv is amd64-only and viogpu+wsfb works on arm64).
   --res, --resolution    Set initial screen resolution (e.g., 1280x800). Default: 1280x800.
   --mon <port>           QEMU monitor telnet port (localhost).
   --public               Listen on 0.0.0.0 for mapped ports instead of 127.0.0.1 + LAN IPs.
@@ -2632,6 +2635,9 @@ Options:
   --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1 + LAN IPs.
   --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
+  --tcg                  Force pure software emulation (no KVM/HVF/WHPX). Slow;
+                         useful when hardware acceleration is unavailable or
+                         misbehaving. Generic -- applies to any guest.
   --debug                Enable verbose debug logging.
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
@@ -4129,6 +4135,7 @@ def main():
         'arch': "",
         'builder': "",
         'whpx': False,
+        'tcg': False,
         'serialport': "",
         # QEMU user networking (slirp) IPv6 is disabled by default.
         'enable_ipv6': False,
@@ -4285,6 +4292,8 @@ def main():
             config['accept_vm_ssh'] = True
         elif arg == "--whpx":
             config['whpx'] = True
+        elif arg == "--tcg":
+            config['tcg'] = True
         elif arg == "--serial":
             config['serialport'] = args[i+1]
             serial_user_specified = True
@@ -4393,18 +4402,27 @@ def main():
             config['vga'] = "std"
         elif config['os'] == "haiku":
             config['vga'] = "std"
-        elif config['os'] == "openbsd" and config['release'] and any(
+        elif config['os'] == "openbsd" and config['arch'] != "aarch64" and config['release'] and any(
             config['release'].endswith(s)
             for s in ("-xfce", "-gnome", "-kde", "-kde6", "-mate", "-lxqt", "-lumina", "-enlightenment", "-cinnamon")
         ):
-            # OpenBSD has no DRM driver for virtio-gpu in base, so X cannot
-            # get a framebuffer with the default virtio VGA: xenocara's wsfb
-            # gets ENOTTY on the wsdisplay text-mode console, and modesetting
-            # finds no /dev/drm0. cirrus is the one legacy VGA that ships a
-            # working xenocara driver (xf86-video-cirrus) for QEMU. Pair with
-            # the matching desktop hook (e.g. openbsd-builder/hooks/xfce.sh)
-            # which writes /etc/X11/xorg.conf.d/10-cirrus.conf and raises
+            # OpenBSD/amd64 has no DRM driver for virtio-gpu in base, so X
+            # cannot get a framebuffer with the default virtio VGA: xenocara's
+            # wsfb gets ENOTTY on the wsdisplay text-mode console, and
+            # modesetting finds no /dev/drm0. cirrus is the one legacy VGA
+            # that ships a working xenocara driver (xf86-video-cirrus) for
+            # QEMU. Pair with the matching desktop hook (e.g.
+            # openbsd-builder/hooks/xfce.sh) which writes
+            # /etc/X11/xorg.conf.d/10-cirrus.conf and raises
             # machdep.allowaperture so the driver can map the VGA aperture.
+            #
+            # Skipped on aarch64: there is no cirrus_drv for OpenBSD/arm64
+            # xenocara, but viogpu0 attaches wsdisplay over the default
+            # virtio-gpu, and the aarch64 desktop hook (e.g.
+            # openbsd-builder/hooks/xfce-aarch64.sh) pins wsfb with
+            # ShadowFB off and disables xfwm4's compositor so X actually
+            # pushes pixels to viogpu. So leave --vga at the default
+            # (virtio) for aarch64 desktop releases.
             config['vga'] = "cirrus"
         else:
             config['vga'] = "virtio"
@@ -4977,6 +4995,20 @@ def main():
                 else:
                     accel = "hvf"
 
+    # Force pure software emulation (TCG) when requested (--tcg). Generic --
+    # applies to any guest; useful when hardware acceleration is unavailable or
+    # misbehaving.
+    #
+    # Note: tribblix no longer needs an Intel-specific TCG fallback. The release
+    # image (>= v2.0.3, built with tribblix-builder's finalizeImage hook) ships
+    # the generic, capability-neutral /lib/libc.so.1, so it boots under KVM on
+    # both Intel and AMD and re-optimizes libc per-CPU at first boot. (Older
+    # releases froze a vendor-specific libc_hwcap variant that crash-looped
+    # cross-vendor; if you must run one of those on a mismatched CPU, pass --tcg.)
+    if config['tcg'] and accel != "tcg":
+        debuglog(config['debug'], "Forcing TCG software emulation (--tcg); ignoring KVM/HVF/WHPX")
+        accel = "tcg"
+
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":
         try:
@@ -4996,11 +5028,19 @@ def main():
     # Disk type selection
     if config['disktype']:
         disk_if = config['disktype']
+    elif config['os'] == "dragonflybsd":
+        disk_if = "ide"
+    elif config['os'] == "tribblix":
+        # The tribblix image is built on an AHCI SATA controller: the
+        # tribblix-builder libvirt XML pins <target bus='sata'> and the disk
+        # enumerates as c2t0d0 inside the guest (live_install.sh installs to
+        # c2t0d0). virtio-blk puts the disk on a different controller with a
+        # different device name, so the installed root pool's device paths no
+        # longer match. Match the builder. Scoped to tribblix only; other
+        # illumos distros are left on the virtio default.
+        disk_if = "sata"
     else:
-        if config['os'] != "dragonflybsd":
-            disk_if = "virtio"
-        else:
-            disk_if = "ide"
+        disk_if = "virtio"
 
     # Build Netdev Argument
     # Always include standard SSH mapping
@@ -5071,7 +5111,18 @@ def main():
         config['arch'] == "aarch64"
         or config.get('useefi')
     )
-    if disk_if == "virtio" and needs_bootindex_disk:
+    if disk_if == "sata":
+        # AHCI controller + ide-hd, matching how illumos images are built
+        # (libvirt <target bus='sata'>). The i440fx 'pc' machine already
+        # carries a PIIX IDE controller, so the AHCI disk enumerates as
+        # c2t0d0 in the guest -- the device name the installed system expects.
+        # No bootindex in BIOS mode so we don't confuse illumos GRUB.
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
+            "-device", "ich9-ahci,id=ahci0",
+            "-device", "ide-hd,bus=ahci0.0,drive=disk0"
+        ])
+    elif disk_if == "virtio" and needs_bootindex_disk:
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
             "-device", "virtio-blk-pci,drive=disk0,bootindex=0"
