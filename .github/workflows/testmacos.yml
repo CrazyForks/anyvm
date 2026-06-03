@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu"]
         arch: ["aarch64", "x86_64"]
         runs: ["macos-latest"]
         sync: ["scp", "rsync"]
@@ -38,6 +38,10 @@ jobs:
           - os: tribblix
             arch: aarch64
           - os: midnightbsd
+            arch: aarch64
+          # ubuntu-builder v2.0.0 ships x86_64 only (no aarch64 image to fall
+          # back to); x86_64 runs under TCG on the arm64 macOS runner.
+          - os: ubuntu
             arch: aarch64
 
 

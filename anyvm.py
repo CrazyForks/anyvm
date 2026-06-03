@@ -120,7 +120,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
     "tribblix": "2.0.3",
-    "openindiana": "2.0.9"
+    "openindiana": "2.0.9",
+    "ubuntu": "2.0.0"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2586,7 +2587,8 @@ Description:
 
 Options:
   --os <name>            Operating System name (Required).
-                         Supported: freebsd, midnightbsd, openbsd, netbsd, dragonflybsd, solaris, haiku
+                         Supported: freebsd, midnightbsd, openbsd, netbsd, dragonflybsd,
+                                    solaris, omnios, openindiana, tribblix, haiku, ubuntu
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64 or aarch64.
@@ -2670,6 +2672,10 @@ Examples:
 
   # Run a command inside the VM (arguments after -- go to ssh)
   python qemu.py --os freebsd -- uname -a
+
+  # Ubuntu Linux guest
+  python qemu.py --os ubuntu
+  python qemu.py --os ubuntu --release 24.04
 
 """)
 
@@ -5167,6 +5173,13 @@ def main():
             net_card = "virtio-net-pci"
         elif config['os'] == "freebsd":
             net_card = "virtio-net-pci"
+        elif config['os'] == "ubuntu":
+            # The ubuntu-builder image is built and validated on a virtio NIC
+            # (conf VM_NIC=virtio / libvirt <model type='virtio'>). The baked
+            # cloud-init/netplan brings DHCP up on that interface; the x86
+            # default e1000 would enumerate under a different name and the
+            # guest could fail to obtain a lease. Match the builder.
+            net_card = "virtio-net-pci"
 
     # Platform specific args
     if config['arch'] == "aarch64":
@@ -6228,6 +6241,11 @@ Host host
                      if supports_ansi_color():
                          display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                      log("VNC Web UI: {}".format(display_local_url))
+                     if config['vnc_password']:
+                         pwd_display = config['vnc_password']
+                         if supports_ansi_color():
+                             pwd_display = "\x1b[33m{}\x1b[0m".format(pwd_display)
+                         log("VNC password: {}".format(pwd_display))
                      if tunnel_url:
                          display_url = tunnel_url
                          if supports_ansi_color():
@@ -6280,6 +6298,11 @@ Host host
                         if supports_ansi_color():
                             display_local_url = "\x1b[32m{}\x1b[0m".format(local_url)
                         log("VNC Web UI: {}".format(display_local_url))
+                        if config['vnc_password']:
+                            pwd_display = config['vnc_password']
+                            if supports_ansi_color():
+                                pwd_display = "\x1b[33m{}\x1b[0m".format(pwd_display)
+                            log("VNC password: {}".format(pwd_display))
                         if not (config['public'] or config['public_vnc']):
                             for ip in get_private_ips():
                                 lan_url = "http://{}:{}".format(ip, web_port)
