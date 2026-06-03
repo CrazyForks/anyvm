@@ -119,7 +119,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "omnios": "2.0.8",
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
-    "tribblix": "2.0.0",
+    "tribblix": "2.0.3",
     "openindiana": "2.0.9"
 }
 
@@ -2635,18 +2635,9 @@ Options:
   --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1 + LAN IPs.
   --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
   --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
-  --tcg                  Force pure software emulation (no KVM/HVF/WHPX). Slow,
-                         but required for tribblix on some modern hosts where
-                         KVM exposes a CPUID.0xD/XSAVE layout the tribblix
-                         kernel mishandles (kernel boots, then init dies on
-                         SIGKILL in a restart loop). Note: for tribblix this is
-                         auto-enabled when the host CPU has XSAVE; pass --kvm
-                         to override.
-  --kvm                  Force hardware acceleration (KVM/HVF/WHPX) for
-                         tribblix, overriding the automatic TCG fallback
-                         applied on XSAVE-capable hosts. Only safe if the host
-                         CPU has no XSAVE, or the guest kernel tolerates the
-                         host's XSAVE layout.
+  --tcg                  Force pure software emulation (no KVM/HVF/WHPX). Slow;
+                         useful when hardware acceleration is unavailable or
+                         misbehaving. Generic -- applies to any guest.
   --debug                Enable verbose debug logging.
   --detach, -d           Run QEMU in background.
   --console, -c          Run QEMU in foreground (console mode).
@@ -4145,7 +4136,6 @@ def main():
         'builder': "",
         'whpx': False,
         'tcg': False,
-        'force_kvm': False,
         'serialport': "",
         # QEMU user networking (slirp) IPv6 is disabled by default.
         'enable_ipv6': False,
@@ -4304,8 +4294,6 @@ def main():
             config['whpx'] = True
         elif arg == "--tcg":
             config['tcg'] = True
-        elif arg == "--kvm":
-            config['force_kvm'] = True
         elif arg == "--serial":
             config['serialport'] = args[i+1]
             serial_user_specified = True
@@ -5007,53 +4995,19 @@ def main():
                 else:
                     accel = "hvf"
 
-    # Force pure software emulation (TCG) when requested. The motivating case
-    # is tribblix on some modern hosts: KVM passes through a CPUID.0xD/XSAVE
-    # layout the tribblix kernel mishandles, so the kernel boots but init dies
-    # on SIGKILL in an endless restart loop. TCG returns a benign CPUID.0xD and
-    # boots. The flag itself is generic and applies to any guest.
+    # Force pure software emulation (TCG) when requested (--tcg). Generic --
+    # applies to any guest; useful when hardware acceleration is unavailable or
+    # misbehaving.
+    #
+    # Note: tribblix no longer needs an Intel-specific TCG fallback. The release
+    # image (>= v2.0.3, built with tribblix-builder's finalizeImage hook) ships
+    # the generic, capability-neutral /lib/libc.so.1, so it boots under KVM on
+    # both Intel and AMD and re-optimizes libc per-CPU at first boot. (Older
+    # releases froze a vendor-specific libc_hwcap variant that crash-looped
+    # cross-vendor; if you must run one of those on a mismatched CPU, pass --tcg.)
     if config['tcg'] and accel != "tcg":
         debuglog(config['debug'], "Forcing TCG software emulation (--tcg); ignoring KVM/HVF/WHPX")
         accel = "tcg"
-
-    # Auto-fallback to TCG for the tribblix guest on XSAVE-capable hosts.
-    # Under KVM/WHPX/HVF the guest's CPUID leaf 0xD (XSAVE enumeration) reflects
-    # the host CPU's real layout regardless of the -cpu model; the tribblix
-    # illumos kernel mishandles the layout modern CPUs advertise, so the kernel
-    # boots but init loops forever on SIGKILL. Hosts with no XSAVE are safe
-    # under hardware accel, so keep it there. Scoped to tribblix only; other
-    # guests are left untouched. Override: --kvm forces hardware accel, --tcg
-    # forces software emulation.
-    if (config['os'] == "tribblix"
-            and accel in ("kvm", "whpx", "hvf") and not config['force_kvm']):
-        host_xsave = True
-        try:
-            sysname = platform.system()
-            if sysname == "Linux":
-                host_xsave = False
-                with open("/proc/cpuinfo") as cpuinfo:
-                    for line in cpuinfo:
-                        if line.startswith("flags") or line.startswith("Features"):
-                            host_xsave = " xsave " in (" " + line.split(":", 1)[-1].strip() + " ")
-                            break
-            elif sysname == "Darwin":
-                feats = subprocess.check_output(["sysctl", "-n", "machdep.cpu.features"],
-                                                stderr=subprocess.DEVNULL, timeout=5).decode(errors="replace")
-                host_xsave = "XSAVE" in feats.upper().split()
-            elif IS_WINDOWS:
-                import ctypes
-                # PF_XSAVE_ENABLED = 17
-                host_xsave = bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(17))
-        except Exception:
-            host_xsave = True  # detection failed -> assume present -> safe (TCG)
-        if host_xsave:
-            log("tribblix on an XSAVE-capable host: using TCG software emulation "
-                "(hardware acceleration exposes a CPUID.0xD/XSAVE layout the tribblix "
-                "kernel mishandles, causing an init SIGKILL crash loop). "
-                "Pass --kvm to force hardware acceleration.")
-            accel = "tcg"
-        else:
-            debuglog(config['debug'], "tribblix, host CPU has no XSAVE: keeping '{}' acceleration".format(accel))
 
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":

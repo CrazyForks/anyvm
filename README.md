@@ -294,15 +294,9 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Pass `--enable-pmu` if you need `perf` / `pmcstat` / VTune or similar profilers to work inside the guest.
   - Example: `python3 anyvm.py --os ubuntu --enable-pmu -- perf stat ls`
 
-- `--tcg`: Force pure software emulation (no KVM / HVF / WHPX). Slow, but a reliable fallback.
-  - The motivating case is `tribblix`: under hardware acceleration the guest sees the host CPU's real `CPUID.0xD` (XSAVE) layout, which the tribblix kernel mishandles -- the kernel boots but `init` dies on `SIGKILL` in an endless restart loop. TCG advertises a benign XSAVE layout, so it boots cleanly.
-  - For `tribblix` this is **applied automatically** when the host CPU has XSAVE (true on virtually all modern x86 CPUs), so `python3 anyvm.py --os tribblix` just works -- no flag needed. Pass `--kvm` to override.
-  - The flag itself is generic and works for any guest.
+- `--tcg`: Force pure software emulation (no KVM / HVF / WHPX). Slow; useful when hardware acceleration is unavailable or misbehaving. Generic -- works for any guest.
   - Example: `python3 anyvm.py --os tribblix --tcg`
-
-- `--kvm`: Force hardware acceleration (KVM / HVF / WHPX) for `tribblix`, overriding the automatic TCG fallback applied on XSAVE-capable hosts.
-  - Only safe if the host CPU has no XSAVE, or the guest kernel tolerates the host's XSAVE layout. Otherwise the guest will crash-loop on boot.
-  - Example: `python3 anyvm.py --os tribblix --kvm`
+  - Historical note: older `tribblix` releases froze a CPU-vendor-specific `libc_hwcap` variant into `/lib/libc.so.1` at build time, which crash-looped (`init` killed by `SIGKILL`) when run under KVM on the other vendor's CPU; anyvm used to auto-fall-back to TCG on Intel hosts to dodge it. Since `v2.0.3` (tribblix-builder's `finalizeImage` hook) the release ships the generic, capability-neutral libc that boots under KVM on both Intel and AMD and re-optimizes per-CPU at first boot, so no fallback is needed. Use `--tcg` only if you must run a pre-`v2.0.3` image on a mismatched CPU.
 
 
 
