@@ -1,0 +1,43 @@
+
+name: Ubuntu
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/ubuntu.yml'
+      - '.github/workflows/testrun.yml'
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=ubuntu]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["22.04", "24.04", "26.04"]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+        # sshfs/scp/rsync: the ubuntu-builder image pre-installs sshfs and
+        # rsync. nfs is omitted -- the image has no nfs-common, so the guest
+        # lacks /sbin/mount.nfs.
+        sync: [ "sshfs", "scp", "rsync" ]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: ubuntu
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}

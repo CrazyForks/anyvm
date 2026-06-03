@@ -22,12 +22,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "midnightbsd", "netbsd", "openbsd"]
+        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "ubuntu"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
         exclude:
           - os: midnightbsd
+            arch: aarch64
+          # ubuntu-builder v2.0.0 ships x86_64 only; an explicit --arch aarch64
+          # has no image to fall back to, so test ubuntu on x86_64 only.
+          - os: ubuntu
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml

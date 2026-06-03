@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/anyvm-org/anyvm?sort=semver)](https://github.com/anyvm-org/anyvm/releases)
 
 
-anyvm is a single-file tool for bootstrapping BSD and Illumos guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
+anyvm is a single-file tool for bootstrapping BSD, Illumos, and Linux guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
 
 ## 1. Quick launch
 
@@ -46,6 +46,8 @@ python3 anyvm.py --os freebsd --release 14.3 --arch aarch64
 python3 anyvm.py --os openbsd --release 7.5 --arch aarch64
 python3 anyvm.py --os solaris
 python3 anyvm.py --os tribblix
+python3 anyvm.py --os ubuntu
+python3 anyvm.py --os ubuntu --release 24.04
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
 
@@ -95,6 +97,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/openindiana-builder) |
 | Tribblix | [![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/tribblix-builder) |
 | Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/haiku-builder) |
+| Ubuntu | [![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/ubuntu-builder) |
 
 ## 5. Host support
 
@@ -171,7 +174,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku`
+  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
