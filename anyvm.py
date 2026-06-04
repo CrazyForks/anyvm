@@ -2579,7 +2579,7 @@ def fatal(msg):
 
 def print_usage():
     print("""
-Usage: python qemu.py [OPTIONS]
+Usage: python anyvm.py [OPTIONS]
 
 Description:
   Automated QEMU VM launcher script. Downloads images/keys and boots a VM 
@@ -2591,7 +2591,7 @@ Options:
                                     solaris, omnios, openindiana, tribblix, haiku, ubuntu
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
-  --arch <arch>          Architecture: x86_64 or aarch64.
+  --arch <arch>          Architecture: x86_64, aarch64 or riscv64.
                          Default: Host architecture.
   --mem <MB>             Memory size in MB (Default: 2048).
   --cpu <num>            Number of CPU cores (Default: all host cores).
@@ -2617,6 +2617,16 @@ Options:
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
+  --firmware <path>      Path to the UEFI CODE firmware (e.g. OVMF_CODE.fd).
+                         Overrides auto-detection and implies --uefi. When
+                         omitted, anyvm searches next to the QEMU binary first
+                         (share/edk2/ovmf, share/OVMF, share/qemu) so a
+                         relocated install like ~/qemu-local works, then the
+                         usual system paths.
+  --firmware-vars <path> Path to the matching UEFI VARS template (e.g.
+                         OVMF_VARS.fd). Copied per-VM as the writable variable
+                         store. Auto-detected next to the CODE firmware if
+                         omitted.
   --vnc <display>        Enable VNC on specified display (e.g., 0 for :0). 
                          Default: enabled (display 0). Web UI starts at 6080 (increments if busy).
                          Use "--vnc off" to disable.
@@ -2662,20 +2672,20 @@ Options:
 
 Examples:
   # Basic FreeBSD VM
-  python qemu.py --os freebsd --release 14.0
+  python anyvm.py --os freebsd --release 14.0
 
   # ARM64 VM on x86_64 host with port mapping and folder sync
-  python qemu.py --os openbsd --arch aarch64 -p 8080:80 -v $(pwd):/data
+  python anyvm.py --os openbsd --arch aarch64 -p 8080:80 -v $(pwd):/data
 
   # Windows host using SCP sync
-  python qemu.py --os solaris --sync scp -v D:\\data:/data
+  python anyvm.py --os solaris --sync scp -v D:\\data:/data
 
   # Run a command inside the VM (arguments after -- go to ssh)
-  python qemu.py --os freebsd -- uname -a
+  python anyvm.py --os freebsd -- uname -a
 
   # Ubuntu Linux guest
-  python qemu.py --os ubuntu
-  python qemu.py --os ubuntu --release 24.04
+  python anyvm.py --os ubuntu
+  python anyvm.py --os ubuntu --release 24.04
 
 """)
 
@@ -4160,7 +4170,9 @@ def main():
         'remote_vnc_link_file': None,
         'vnc_password': "",
         'boot_timeout_sec': 600,
-        'enable_pmu': False
+        'enable_pmu': False,
+        'firmware': "",
+        'firmware_vars': ""
     }
 
     ssh_passthrough = []
@@ -4234,6 +4246,13 @@ def main():
             i += 1
         elif arg == "--uefi":
             config['useefi'] = True
+        elif arg == "--firmware":
+            config['firmware'] = args[i+1]
+            config['useefi'] = True
+            i += 1
+        elif arg == "--firmware-vars":
+            config['firmware_vars'] = args[i+1]
+            i += 1
         elif arg in ["--detach", "-d"]:
             config['detach'] = True
         elif arg in ["--console", "-c"]:
@@ -5185,29 +5204,78 @@ def main():
     if config['arch'] == "aarch64":
         efi_path = os.path.join(output_dir, vm_name + "-QEMU_EFI.fd")
         vars_path = os.path.join(output_dir, vm_name + "-QEMU_EFI_VARS.fd")
-        
+
+        # Locate the CODE firmware once (also used to find the VARS template).
+        # Search next to the QEMU binary first so a relocated, no-root install
+        # (e.g. ~/qemu-local) is honored, then the usual system paths.
+        fw_dirs = []
+        if qemu_bin:
+            try:
+                _qpref = os.path.dirname(os.path.dirname(os.path.realpath(qemu_bin)))
+                fw_dirs.append(os.path.join(_qpref, "share"))
+            except Exception:
+                pass
+        fw_dirs += ["/usr/share", "/opt/homebrew/share", "/usr/local/share"]
+        fw_rel_names = [
+            os.path.join("edk2", "aarch64", "QEMU_EFI.fd"),
+            os.path.join("qemu-efi-aarch64", "QEMU_EFI.fd"),
+            os.path.join("AAVMF", "AAVMF_CODE.fd"),
+            os.path.join("qemu", "edk2-aarch64-code.fd"),
+            os.path.join("edk2", "aarch64", "QEMU_EFI-pflash.raw"),
+        ]
+        code_candidates = []
+        if config['firmware']:
+            code_candidates.append(config['firmware'])
+        for d in fw_dirs:
+            for rn in fw_rel_names:
+                code_candidates.append(os.path.join(d, rn))
+        efi_src = ""
+        for c in code_candidates:
+            if os.path.exists(c):
+                efi_src = c
+                break
+
         if not os.path.exists(efi_path):
+            if not efi_src:
+                fatal("aarch64 UEFI firmware not found (e.g. edk2-aarch64 "
+                      "QEMU_EFI.fd). Install it or pass --firmware <path>.")
+            debuglog(config['debug'], "Found Aarch64 EFI firmware: {}".format(efi_src))
+            # ARM virt pflash is a fixed 64MB; pad the firmware into it.
             create_sized_file(efi_path, 64)
-            candidates = [
-                "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd", 
-                "/usr/share/AAVMF/AAVMF_CODE.fd",
-                "/usr/share/qemu/edk2-aarch64-code.fd",
-                "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
-                "/opt/homebrew/share/edk2/aarch64/QEMU_EFI.fd",
-                "/usr/local/share/qemu/edk2-aarch64-code.fd"
-            ]
-            for c in candidates:
-                if os.path.exists(c):
-                    debuglog(config['debug'], "Found Aarch64 EFI firmware: {}".format(c))
-                    copy_content_to_file(c, efi_path)
-                    break
-        
+            copy_content_to_file(efi_src, efi_path)
+
         if config['snapshot'] and os.path.exists(vars_path):
             try: os.remove(vars_path)
             except OSError: pass
-        
+
         if not os.path.exists(vars_path):
             create_sized_file(vars_path, 64)
+            # Prefer the matching VARS template (auto-detected next to the CODE
+            # firmware) so any preset variables are present; --firmware-vars
+            # overrides. A blank 64MB store is the last-resort fallback.
+            vars_src = config['firmware_vars']
+            if vars_src and not os.path.exists(vars_src):
+                fatal("Specified firmware vars not found: {}".format(vars_src))
+            if not vars_src and efi_src:
+                d = os.path.dirname(efi_src)
+                base = os.path.basename(efi_src)
+                guesses = []
+                for a, b in [("QEMU_EFI", "QEMU_VARS"), ("_CODE", "_VARS"),
+                             ("-code", "-vars"), ("CODE", "VARS")]:
+                    if a in base:
+                        guesses.append(os.path.join(d, base.replace(a, b)))
+                guesses += [
+                    os.path.join(d, "QEMU_VARS.fd"),
+                    os.path.join(d, "vars-template-pflash.raw"),
+                    os.path.join(d, "AAVMF_VARS.fd"),
+                ]
+                for g in guesses:
+                    if g != efi_src and os.path.exists(g):
+                        vars_src = g
+                        break
+            if vars_src:
+                debuglog(config['debug'], "Aarch64 VARS template: {}".format(vars_src))
+                copy_content_to_file(vars_src, vars_path)
 
         if config['cputype']:
             cpu = config['cputype']
@@ -5259,22 +5327,72 @@ def main():
         if not is_vnc_console:
              machine_opts += ",graphics=off"
         cpu_opts = "rv64"
-        
+
         args_qemu.extend([
             "-machine", machine_opts,
             "-cpu", cpu_opts,
             "-device", "qemu-xhci",
-            "-device", "{},netdev=net0".format(net_card)
-        ])
-
-        uboot_bin = "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin"
-        if not os.path.exists(uboot_bin):
-            fatal("RISC-V u-boot binary not found at {}.\nPlease install it: sudo apt-get install u-boot-qemu".format(uboot_bin))
-            
-        args_qemu.extend([
-            "-kernel", uboot_bin,
+            "-device", "{},netdev=net0".format(net_card),
             "-device", "virtio-balloon-pci"
         ])
+
+        # Prefer EDK2 UEFI firmware (RISCV_VIRT_CODE.fd) located the same way
+        # as the other arches (next to the QEMU binary first, so ~/qemu-local
+        # works without root, then system paths). Fall back to the legacy
+        # U-Boot -kernel payload when no UEFI firmware is available.
+        fw_dirs = []
+        if qemu_bin:
+            try:
+                _qpref = os.path.dirname(os.path.dirname(os.path.realpath(qemu_bin)))
+                fw_dirs.append(os.path.join(_qpref, "share"))
+            except Exception:
+                pass
+        fw_dirs += ["/usr/share", "/opt/homebrew/share", "/usr/local/share"]
+
+        code_candidates = []
+        if config['firmware']:
+            code_candidates.append(config['firmware'])
+        for d in fw_dirs:
+            code_candidates.append(os.path.join(d, "edk2", "riscv", "RISCV_VIRT_CODE.fd"))
+        code_src = ""
+        for c in code_candidates:
+            if os.path.exists(c):
+                code_src = c
+                break
+
+        if code_src:
+            # UEFI boot. The RISC-V virt flash bank is a fixed 32MB; pad the
+            # firmware images into that size (same scheme as aarch64).
+            efi_path = os.path.join(output_dir, vm_name + "-RISCV_VIRT_CODE.fd")
+            vars_path = os.path.join(output_dir, vm_name + "-RISCV_VIRT_VARS.fd")
+            if not os.path.exists(efi_path):
+                create_sized_file(efi_path, 32)
+                copy_content_to_file(code_src, efi_path)
+            if config['snapshot'] and os.path.exists(vars_path):
+                try: os.remove(vars_path)
+                except OSError: pass
+            if not os.path.exists(vars_path):
+                create_sized_file(vars_path, 32)
+                vars_src = config['firmware_vars']
+                if not vars_src:
+                    cand = os.path.join(os.path.dirname(code_src), "RISCV_VIRT_VARS.fd")
+                    if os.path.exists(cand):
+                        vars_src = cand
+                if vars_src and os.path.exists(vars_src):
+                    copy_content_to_file(vars_src, vars_path)
+            debuglog(config['debug'], "RISC-V UEFI firmware: {}".format(code_src))
+            args_qemu.extend([
+                "-drive", "if=pflash,format=raw,readonly=on,file={}".format(efi_path),
+                "-drive", "if=pflash,format=raw,file={},unit=1".format(vars_path)
+            ])
+        else:
+            # Legacy fallback: U-Boot S-mode payload as the kernel.
+            uboot_bin = "/usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin"
+            if not os.path.exists(uboot_bin):
+                fatal("No RISC-V firmware found. Install edk2-riscv64 "
+                      "(RISCV_VIRT_CODE.fd), pass --firmware <path>, or provide "
+                      "U-Boot at {}.".format(uboot_bin))
+            args_qemu.extend(["-kernel", uboot_bin])
     else:
         # x86_64
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
@@ -5337,48 +5455,95 @@ def main():
         
         # x86 UEFI handling
         if config['useefi']:
-            if IS_WINDOWS:
-                prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-                efi_src = os.path.join(prog_files, "qemu", "share", "edk2-x86_64-code.fd")
+            # Ordered list of directories to search for bundled firmware. The
+            # directory derived from the QEMU binary comes first so a relocated,
+            # no-root install (e.g. ~/qemu-local) is honored, followed by the
+            # usual system locations.
+            fw_dirs = []
+            if qemu_bin:
+                try:
+                    _qpref = os.path.dirname(os.path.dirname(os.path.realpath(qemu_bin)))
+                    fw_dirs.append(os.path.join(_qpref, "share"))
+                except Exception:
+                    pass
+            if platform.system() == "Darwin":
+                fw_dirs += ["/opt/homebrew/share", "/usr/local/share", "/usr/share"]
+            elif not IS_WINDOWS:
+                fw_dirs += ["/usr/share", "/usr/local/share"]
+
+            # Relative CODE firmware names tried under each directory.
+            fw_rel_names = [
+                os.path.join("qemu", "edk2-x86_64-code.fd"),
+                os.path.join("qemu", "OVMF.fd"),
+                os.path.join("OVMF", "OVMF_CODE.fd"),
+                os.path.join("ovmf", "OVMF_CODE.fd"),
+                os.path.join("edk2", "ovmf", "OVMF_CODE.fd"),
+                os.path.join("edk2", "x64", "OVMF_CODE.4m.fd"),
+            ]
+
+            efi_src = ""
+            if config['firmware']:
+                # Explicit override via --firmware <path>.
+                efi_src = config['firmware']
                 if not os.path.exists(efi_src):
-                    msys_efi = r"C:\msys64\ucrt64\share\qemu\edk2-x86_64-code.fd"
-                    if os.path.exists(msys_efi):
-                        efi_src = msys_efi
-            elif platform.system() == "Darwin":
-                candidates = [
-                    "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
-                    "/usr/local/share/qemu/edk2-x86_64-code.fd",
-                    "/usr/share/qemu/OVMF.fd"
+                    fatal("Specified firmware not found: {}".format(efi_src))
+            elif IS_WINDOWS:
+                prog_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+                win_candidates = [
+                    os.path.join(prog_files, "qemu", "share", "edk2-x86_64-code.fd"),
+                    r"C:\msys64\ucrt64\share\qemu\edk2-x86_64-code.fd",
                 ]
-                efi_src = ""
-                for c in candidates:
+                for c in win_candidates:
                     if os.path.exists(c):
                         efi_src = c
                         break
                 if not efi_src:
-                    efi_src = "/opt/homebrew/share/qemu/edk2-x86_64-code.fd" # Default fallback
+                    efi_src = win_candidates[0]  # Default fallback
             else:
-                candidates = [
-                    "/usr/share/qemu/OVMF.fd",
-                    "/usr/share/OVMF/OVMF_CODE.fd",
-                    "/usr/share/ovmf/OVMF_CODE.fd",
-                    "/usr/share/edk2/x64/OVMF_CODE.4m.fd"
-                ]
-                efi_src = ""
-                for c in candidates:
-                    if os.path.exists(c):
-                        efi_src = c
+                for d in fw_dirs:
+                    for rn in fw_rel_names:
+                        c = os.path.join(d, rn)
+                        if os.path.exists(c):
+                            efi_src = c
+                            break
+                    if efi_src:
                         break
                 if not efi_src:
-                    efi_src = "/usr/share/qemu/OVMF.fd"
+                    efi_src = "/usr/share/qemu/OVMF.fd"  # Default fallback
+            debuglog(config['debug'], "UEFI firmware CODE: {}".format(efi_src))
+
             vars_path = os.path.join(output_dir, vm_name + "-OVMF_VARS.fd")
             if config['snapshot'] and os.path.exists(vars_path):
                 try: os.remove(vars_path)
                 except OSError: pass
 
             if not os.path.exists(vars_path):
-                create_sized_file(vars_path, 4)
-            
+                # Prefer copying the matching VARS template so its size/layout
+                # pairs with the CODE firmware; only fall back to a blank store
+                # when no template can be located.
+                vars_template = config['firmware_vars']
+                if vars_template and not os.path.exists(vars_template):
+                    fatal("Specified firmware vars not found: {}".format(vars_template))
+                if not vars_template:
+                    base = os.path.basename(efi_src)
+                    d = os.path.dirname(efi_src)
+                    guesses = []
+                    if "CODE" in base:
+                        guesses.append(os.path.join(d, base.replace("CODE", "VARS")))
+                    if "code" in base:
+                        guesses.append(os.path.join(d, base.replace("code", "vars")))
+                    guesses.append(os.path.join(d, "OVMF_VARS.fd"))
+                    guesses.append(os.path.join(d, "edk2-i386-vars.fd"))
+                    for g in guesses:
+                        if g != efi_src and os.path.exists(g):
+                            vars_template = g
+                            break
+                if vars_template:
+                    debuglog(config['debug'], "UEFI firmware VARS template: {}".format(vars_template))
+                    shutil.copy2(vars_template, vars_path)
+                else:
+                    create_sized_file(vars_path, 4)
+
             args_qemu.extend([
                 "-drive", "if=pflash,format=raw,readonly=on,file={}".format(efi_src),
                 "-drive", "if=pflash,format=raw,file={}".format(vars_path)
@@ -6099,7 +6264,7 @@ def main():
             #      which drops empty AAAA (NODATA) replies for IPv4-only hosts and
             #      hangs getaddrinfo ~15s. So point resolv.conf at public DNS.
             # resolv.conf is re-asserted every iteration in case nwam rewrites it.
-            if config['os'] in ('omnios', 'openindiana', 'solaris'):
+            if config['os'] in ('omnios', 'openindiana', 'solaris', 'tribblix'):
                 debuglog(config['debug'], "[trace] waiting for dns/client and setting resolv.conf on {} ...".format(config['os']))
                 dns_setup = (
                     'i=0; '
