@@ -27,10 +27,7 @@ jobs:
         release: ["22.04", "24.04", "26.04"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        # sshfs/scp/rsync: the ubuntu-builder image pre-installs sshfs and
-        # rsync. nfs is omitted -- the image has no nfs-common, so the guest
-        # lacks /sbin/mount.nfs.
-        sync: [ "sshfs", "scp", "rsync" ]
+        sync: [ "sshfs", "scp", "rsync", "nfs" ]
 
 
     uses: ./.github/workflows/testrun.yml

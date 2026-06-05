@@ -121,7 +121,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "midnightbsd": "2.0.2",
     "tribblix": "2.0.3",
     "openindiana": "2.0.9",
-    "ubuntu": "2.0.0"
+    "ubuntu": "2.0.1",
+    "ghostbsd": "2.0.1"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2587,7 +2588,7 @@ Description:
 
 Options:
   --os <name>            Operating System name (Required).
-                         Supported: freebsd, midnightbsd, openbsd, netbsd, dragonflybsd,
+                         Supported: freebsd, ghostbsd, midnightbsd, openbsd, netbsd, dragonflybsd,
                                     solaris, omnios, openindiana, tribblix, haiku, ubuntu
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
@@ -2686,6 +2687,10 @@ Examples:
   # Ubuntu Linux guest
   python anyvm.py --os ubuntu
   python anyvm.py --os ubuntu --release 24.04
+
+  # GhostBSD guest (FreeBSD-based desktop OS)
+  python anyvm.py --os ghostbsd
+  python anyvm.py --os ghostbsd --release 26.1-xfce
 
 """)
 
@@ -3347,7 +3352,7 @@ def sync_vm_time(config, ssh_base_cmd):
         try:
             # Try to get date with milliseconds
             cmd = "date '+%Y-%m-%d %H:%M:%S.%3N'"
-            if guest_os in ['freebsd', 'midnightbsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
+            if guest_os in ['freebsd', 'ghostbsd', 'midnightbsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
                 cmd = "date '+%Y-%m-%d %H:%M:%S.000'"
             
             p = subprocess.Popen(ssh_base_cmd + [cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -3383,7 +3388,7 @@ def sync_vm_time(config, ssh_base_cmd):
                     "/usr/sbin/ntpdate -u {0} || /usr/bin/ntpdate -u {0} || "
                     "/usr/sbin/ntpdig -S {0} || /usr/bin/ntpdig -S {0} || "
                     "/usr/sbin/rdate time.nist.gov || /usr/bin/rdate time.nist.gov || rdate time.nist.gov").format(ntp_servers)
-    elif guest_os in ['freebsd', 'netbsd']:
+    elif guest_os in ['freebsd', 'ghostbsd', 'netbsd']:
         # Try common BSD NTP tools with rdate fallback
         sync_cmd = "ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || rdate pool.ntp.org || rdate time.nist.gov".format(ntp_servers)
     elif guest_os == 'midnightbsd':
@@ -3549,7 +3554,7 @@ if [ "{os}" = "netbsd" ]; then
     exit 1
   fi
 else
-  if [ "{os}" = "freebsd" ] || [ "{os}" = "midnightbsd" ]; then
+  if [ "{os}" = "freebsd" ] || [ "{os}" = "ghostbsd" ] || [ "{os}" = "midnightbsd" ]; then
     kldload fusefs >/dev/null 2>&1 || kldload fuse >/dev/null 2>&1 || true
   fi
   if sshfs -o reconnect,ServerAliveCountMax=2,allow_other,default_permissions host:"{vhost}" "{vguest}" ; then
@@ -3779,7 +3784,7 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
     
     # Specify remote rsync path as it might not be in default non-interactive PATH.
     # These MUST come before the source/destination arguments.
-    if os_name in ("freebsd", "midnightbsd"):
+    if os_name in ("freebsd", "ghostbsd", "midnightbsd"):
         cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])
@@ -5054,6 +5059,14 @@ def main():
     if config['disktype']:
         disk_if = config['disktype']
     elif config['os'] == "dragonflybsd":
+        disk_if = "ide"
+    elif config['os'] == "ghostbsd":
+        # GhostBSD ships only a live GUI installer, so the image is built by
+        # driving pc-sysinstall under SeaBIOS onto an emulated SATA/IDE disk
+        # (ghostbsd-builder conf VM_DISK="ide"); the installed system enumerates
+        # it as ada0 and a BIOS bootloader is written there. Boot it the same
+        # way: IDE controller, no UEFI (useefi stays unset -> SeaBIOS). virtio-blk
+        # would change the device name and miss the installed bootloader.
         disk_if = "ide"
     elif config['os'] == "tribblix":
         # The tribblix image is built on an AHCI SATA controller: the
