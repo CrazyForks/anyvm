@@ -121,8 +121,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "midnightbsd": "2.0.2",
     "tribblix": "2.0.3",
     "openindiana": "2.0.9",
-    "ubuntu": "2.0.0",
-    "ghostbsd": "2.0.0"
+    "ubuntu": "2.0.1",
+    "ghostbsd": "2.0.1"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")

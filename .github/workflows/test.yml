@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -66,8 +66,9 @@ jobs:
             arch: aarch64
           - os: midnightbsd
             arch: aarch64
-          # ghostbsd-builder v2.0.0 ships amd64 (x86_64) only.
           - os: ghostbsd
+            arch: aarch64
+          - os: ubuntu
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
