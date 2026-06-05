@@ -48,6 +48,7 @@ python3 anyvm.py --os solaris
 python3 anyvm.py --os tribblix
 python3 anyvm.py --os ubuntu
 python3 anyvm.py --os ubuntu --release 24.04
+python3 anyvm.py --os ghostbsd
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
 
@@ -66,6 +67,10 @@ python3 anyvm.py --os openbsd  --release 7.9-mate
 python3 anyvm.py --os openbsd  --release 7.9-lxqt
 python3 anyvm.py --os openbsd  --release 7.9-lumina
 python3 anyvm.py --os openbsd  --release 7.9-enlightenment
+
+python3 anyvm.py --os ghostbsd                       # MATE (default)
+python3 anyvm.py --os ghostbsd --release 26.1-xfce
+python3 anyvm.py --os ghostbsd --release 26.1-gershwin
 
 
 
@@ -92,6 +97,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | NetBSD | [![Test NetBSD](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml) | ✅ | ✅ | ❌ | [Builder](https://github.com/anyvm-org/netbsd-builder) |
 | DragonFlyBSD | [![Test DragonflyBSD](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/dragonflybsd-builder) |
 | MidnightBSD | [![Test MidnightBSD](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/midnightbsd-builder) |
+| GhostBSD | [![Test GhostBSD](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/ghostbsd-builder) |
 | Solaris | [![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/solaris-builder) |
 | OmniOS | [![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/omnios-builder) |
 | OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | ❌ | ❌ | [Builder](https://github.com/anyvm-org/openindiana-builder) |
@@ -174,7 +180,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu`
   - Example:
     - `python3 anyvm.py --os freebsd`
 

@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "ubuntu"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "ubuntu"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
@@ -32,6 +32,9 @@ jobs:
           # ubuntu-builder v2.0.0 ships x86_64 only; an explicit --arch aarch64
           # has no image to fall back to, so test ubuntu on x86_64 only.
           - os: ubuntu
+            arch: aarch64
+          # ghostbsd-builder v2.0.0 ships amd64 (x86_64) only.
+          - os: ghostbsd
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
@@ -47,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -62,6 +65,9 @@ jobs:
           - os: tribblix
             arch: aarch64
           - os: midnightbsd
+            arch: aarch64
+          # ghostbsd-builder v2.0.0 ships amd64 (x86_64) only.
+          - os: ghostbsd
             arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
