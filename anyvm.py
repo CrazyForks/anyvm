@@ -111,7 +111,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.1.3",
+    "freebsd": "2.1.4",
     "openbsd": "2.0.3",
     "netbsd": "2.0.3",
     "dragonflybsd": "2.0.4",
@@ -122,7 +122,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "tribblix": "2.0.3",
     "openindiana": "2.0.9",
     "ubuntu": "2.0.1",
-    "ghostbsd": "2.0.1"
+    "ghostbsd": "2.0.4"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
