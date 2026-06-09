@@ -23,6 +23,7 @@ anyvm is a single-file tool for bootstrapping BSD, Illumos, and Linux guests wit
   zstd ovmf xz-utils qemu-utils ca-certificates \
   qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
   qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc u-boot-qemu \
+  qemu-system-ppc \
   openssh-client
   
   ```
@@ -51,6 +52,7 @@ python3 anyvm.py --os ubuntu --release 24.04
 python3 anyvm.py --os ghostbsd
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
+python3 anyvm.py --os freebsd --release 15.0 --arch powerpc64
 
 
 
@@ -90,20 +92,20 @@ More examples and tags: https://github.com/anyvm-org/docker
 
 ## 4. Guest build matrix (CI)
 
-| Guest | Workflow | x86_64 | aarch64 (arm64) | riscv64 | Builder |
-|-------|----------|--------|-----------------|---------|---------|
-| FreeBSD | [![Test FreeBSD](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml) | ✅ | ✅ | ✅ | [Builder](https://github.com/anyvm-org/freebsd-builder) [![Build FreeBSD](https://github.com/anyvm-org/freebsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/freebsd-builder/actions/workflows/build.yml) |
-| OpenBSD | [![Test OpenBSD](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml) | ✅ | ✅ | ✅ | [Builder](https://github.com/anyvm-org/openbsd-builder) [![Build OpenBSD](https://github.com/anyvm-org/openbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openbsd-builder/actions/workflows/build.yml) |
-| NetBSD | [![Test NetBSD](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml) | ✅ | ✅ | — | [Builder](https://github.com/anyvm-org/netbsd-builder) [![Build NetBSD](https://github.com/anyvm-org/netbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/netbsd-builder/actions/workflows/build.yml) |
-| DragonFlyBSD | [![Test DragonflyBSD](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/dragonflybsd-builder) [![Build DragonflyBSD](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml) |
-| MidnightBSD | [![Test MidnightBSD](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/midnightbsd-builder) [![Build MidnightBSD](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml) |
-| GhostBSD | [![Test GhostBSD](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/ghostbsd-builder) [![Build GhostBSD](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml) |
-| Solaris | [![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/solaris-builder) [![Build Solaris](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml) |
-| OmniOS | [![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/omnios-builder) [![Build OmniOS](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml) |
-| OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/openindiana-builder) [![Build OpenIndiana](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml) |
-| Tribblix | [![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/tribblix-builder) [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml) |
-| Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/haiku-builder) [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml) |
-| Ubuntu | [![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | — | — | [Builder](https://github.com/anyvm-org/ubuntu-builder) [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml) |
+| Guest | Workflow | x86_64 | aarch64 (arm64) | riscv64 | powerpc64 | Builder |
+|-------|----------|--------|-----------------|---------|-----------|---------|
+| FreeBSD | [![Test FreeBSD](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml) | ✅ | ✅ | ✅ | ✅ | [Builder](https://github.com/anyvm-org/freebsd-builder) [![Build FreeBSD](https://github.com/anyvm-org/freebsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/freebsd-builder/actions/workflows/build.yml) |
+| OpenBSD | [![Test OpenBSD](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml) | ✅ | ✅ | ✅ | — | [Builder](https://github.com/anyvm-org/openbsd-builder) [![Build OpenBSD](https://github.com/anyvm-org/openbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openbsd-builder/actions/workflows/build.yml) |
+| NetBSD | [![Test NetBSD](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml) | ✅ | ✅ | — | — | [Builder](https://github.com/anyvm-org/netbsd-builder) [![Build NetBSD](https://github.com/anyvm-org/netbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/netbsd-builder/actions/workflows/build.yml) |
+| DragonFlyBSD | [![Test DragonflyBSD](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/dragonflybsd-builder) [![Build DragonflyBSD](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml) |
+| MidnightBSD | [![Test MidnightBSD](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/midnightbsd-builder) [![Build MidnightBSD](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml) |
+| GhostBSD | [![Test GhostBSD](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/ghostbsd-builder) [![Build GhostBSD](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml) |
+| Solaris | [![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/solaris-builder) [![Build Solaris](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml) |
+| OmniOS | [![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/omnios-builder) [![Build OmniOS](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml) |
+| OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/openindiana-builder) [![Build OpenIndiana](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml) |
+| Tribblix | [![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/tribblix-builder) [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml) |
+| Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/haiku-builder) [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml) |
+| Ubuntu | [![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/ubuntu-builder) [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml) |
 
 ## 5. Host support
 
@@ -124,6 +126,7 @@ sudo apt-get --no-install-recommends -y install \
   zstd ovmf xz-utils qemu-utils ca-certificates \
   qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
   qemu-efi-riscv64 qemu-system-riscv64 u-boot-qemu \
+  qemu-system-ppc \
   ssh-client
 ```
 
@@ -190,7 +193,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Example: `python3 anyvm.py --os freebsd --release 14.3`
 
 - `--arch <arch>`: Guest architecture.
-  - Common values: `x86_64` / `aarch64` / `riscv64`
+  - Common values: `x86_64` / `aarch64` / `riscv64` / `powerpc64`
   - Example: `python3 anyvm.py --os openbsd --release 7.5 --arch aarch64`
 
 - `--mem <MB>`: Memory size in MB (default: 2048).

@@ -111,9 +111,9 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.1.4",
+    "freebsd": "2.1.5",
     "openbsd": "2.0.3",
-    "netbsd": "2.0.3",
+    "netbsd": "2.0.4",
     "dragonflybsd": "2.0.4",
     "solaris": "2.0.5",
     "omnios": "2.0.8",
@@ -2592,8 +2592,8 @@ Options:
                                     solaris, omnios, openindiana, tribblix, haiku, ubuntu
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
-  --arch <arch>          Architecture: x86_64, aarch64 or riscv64.
-                         Default: Host architecture.
+  --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64
+                         or powerpc64. Default: Host architecture.
   --mem <MB>             Memory size in MB (Default: 2048).
   --cpu <num>            Number of CPU cores (Default: all host cores).
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
@@ -4957,6 +4957,13 @@ def main():
         bin_name = "qemu-system-riscv64"
     elif config['arch'] == "aarch64":
         bin_name = "qemu-system-aarch64"
+    elif config['arch'] == "sparc64":
+        bin_name = "qemu-system-sparc64"
+    elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
+        # QEMU ships powerpc64 (big-endian) and powerpc64le (little-endian)
+        # under the same qemu-system-ppc64 binary; -M pseries + -cpu picks
+        # the guest mode.
+        bin_name = "qemu-system-ppc64"
     qemu_bin = find_qemu(bin_name)
     
     if not qemu_bin:
@@ -5009,6 +5016,13 @@ def main():
                 accel = "hvf"
     elif config['arch'] == "riscv64":
         accel = "tcg"
+    elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
+        # KVM-HV / KVM-PR is only available when the host is also ppc64
+        # (real POWER8/9 hardware). On an amd64 / aarch64 host we must use
+        # TCG: pseries,accel=kvm on a non-ppc host would fail at launch.
+        if host_arch in ["ppc64", "ppc64le", "powerpc64", "powerpc64le"]:
+            if os.path.exists("/dev/kvm") and os.access("/dev/kvm", os.R_OK | os.W_OK):
+                accel = "kvm"
     else: # x86_64
         if host_arch in ["x86_64", "amd64"]:
             if IS_WINDOWS:
@@ -5048,6 +5062,30 @@ def main():
         except (ValueError, TypeError):
             pass
 
+    # sparc64 (QEMU sun4u) is uniprocessor, and its kernel's early OpenFirmware
+    # pmap bootstrap panics ("Can't claim two pages of memory") with more than
+    # ~2 GB of RAM. Force 1 CPU and cap memory to 2048 MB so the built image
+    # boots. (The image is built on the same limits; see netbsd-builder.)
+    if config['arch'] == "sparc64":
+        config['cpu'] = "1"
+        try:
+            mem_mb = int(str(config['mem']).rstrip("MmGg"))
+            if str(config['mem']).rstrip()[-1:].lower() == "g":
+                mem_mb *= 1024
+            if mem_mb > 2048:
+                config['mem'] = "2048"
+        except (ValueError, TypeError, IndexError):
+            config['mem'] = "2048"
+
+    # powerpc64/le (QEMU pseries) under TCG: SMP bring-up on a cold boot from
+    # the installed disk reproducibly wedges at the kernel's "Launching APs"
+    # line (the same hang the builder pins VM_CPU=1 to avoid). TCG is
+    # round-robin, so extra vCPUs give no speedup anyway. Force 1 CPU under
+    # TCG; real POWER + KVM can use more.
+    if (config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le")
+            and accel == "tcg"):
+        config['cpu'] = "1"
+
     # TCG (pure software emulation) is 10-50x slower than KVM/HVF/WHPX, so the
     # default 600s boot timeout is often not enough for heavier guests
     # (Solaris, DragonFlyBSD, etc.). Bump it unless the user pinned a value.
@@ -5077,6 +5115,10 @@ def main():
         # longer match. Match the builder. Scoped to tribblix only; other
         # illumos distros are left on the virtio default.
         disk_if = "sata"
+    elif config['arch'] == "sparc64":
+        # QEMU sun4u only has the onboard CMD646 PCI IDE (the disk enumerates as
+        # wd0); there is no virtio bus. The image is built on IDE too.
+        disk_if = "ide"
     else:
         disk_if = "virtio"
 
@@ -5147,6 +5189,7 @@ def main():
     # and avoids confusing some guest bootloaders (e.g. illumos GRUB).
     needs_bootindex_disk = (
         config['arch'] == "aarch64"
+        or config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le")
         or config.get('useefi')
     )
     if disk_if == "sata":
@@ -5200,6 +5243,8 @@ def main():
             if config['release'] != "6.4.0":
                 net_card = "virtio-net-pci"
         elif config['arch'] == "riscv64":
+            net_card = "virtio-net-pci"
+        elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
             net_card = "virtio-net-pci"
         elif config['os'] == "netbsd" and config['arch'] == "aarch64":
             net_card = "virtio-net-pci"
@@ -5406,6 +5451,46 @@ def main():
                       "(RISCV_VIRT_CODE.fd), pass --firmware <path>, or provide "
                       "U-Boot at {}.".format(uboot_bin))
             args_qemu.extend(["-kernel", uboot_bin])
+    elif config['arch'] == "sparc64":
+        # QEMU sun4u (UltraSPARC IIi + OpenBIOS), TCG only. Console is on com0
+        # serial -- the sun4u VGA only works in firmware -- so remove the VGA
+        # with -vga none and OpenBIOS + the kernel fall back to ttya. The NIC
+        # goes on the empty secondary Simba-bridge bus pciB (the primary bus is
+        # full, so an auto-placed NIC fails). No virtio at all: no balloon, and
+        # virtio-rng is skipped further down. wd0 (the IDE disk_if) boots via
+        # OpenBIOS with -boot order=c.
+        args_qemu.extend([
+            "-machine", "sun4u",
+            "-vga", "none",
+            "-device", "{},netdev=net0,bus=pciB".format(net_card),
+            "-boot", "order=c",
+        ])
+    elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
+        # QEMU pseries (sPAPR / PAPR) machine + bundled SLOF firmware
+        # (auto-loaded from /usr/share/qemu/slof.bin -- no -bios, no pflash;
+        # pseries uses OpenFirmware/SLOF, not UEFI). This is the FreeBSD /
+        # Linux guest target on ppc64; powernv* is OPAL bare-metal and won't
+        # boot a stock distro image. The published anyvm image is big-endian
+        # FreeBSD/powerpc64 (ELFv1); -cpu power9 (PowerISA 3.0, POWER8+
+        # baseline) drives it well under TCG and would equally serve a
+        # little-endian guest since POWER8+ is bi-endian. Console is the
+        # SPAPR virtual teletype (spapr-vty -> /dev/ttyu0 in FreeBSD) on the
+        # -serial chardev, so no VGA device is added (console-only, like
+        # riscv64). cap-cfpc/sbbc/ibs/ccf-assist are set to broken/off to
+        # silence the harmless "TCG doesn't support requested feature"
+        # warnings the default pseries-noble emits under TCG.
+        if config['cputype']:
+            cpu_opts = config['cputype']
+        else:
+            cpu_opts = "power9"
+        machine_opts = ("pseries,accel={},usb=off,cap-cfpc=broken,"
+                        "cap-sbbc=broken,cap-ibs=broken,"
+                        "cap-ccf-assist=off").format(accel)
+        args_qemu.extend([
+            "-machine", machine_opts,
+            "-cpu", cpu_opts,
+            "-device", "{},netdev=net0".format(net_card),
+        ])
     else:
         # x86_64
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
@@ -5581,8 +5666,9 @@ def main():
         else:
             vnc_addr = "127.0.0.1"
 
-        # Add audio support if the vnc driver is available (and not in console-only mode)
-        if not is_vnc_console and check_qemu_audio_backend(qemu_bin, "vnc"):
+        # Add audio support if the vnc driver is available (and not in console-only mode).
+        # Skipped on sparc64: the sun4u machine has no slot for intel-hda/usb-audio.
+        if not is_vnc_console and config['arch'] != "sparc64" and check_qemu_audio_backend(qemu_bin, "vnc"):
             if config['arch'] == "aarch64":
                  # Use usb-audio on aarch64 to avoid intel-hda driver issues
                  args_qemu.extend(["-device", "usb-audio,audiodev=vnc_audio"])
@@ -5595,8 +5681,10 @@ def main():
             args_qemu.append("-display")
             args_qemu.append("vnc={}:{}".format(vnc_addr, disp))
 
-        # Use appropriate input devices for better VNC support
-        if not is_vnc_console:
+        # Use appropriate input devices for better VNC support. sparc64 (sun4u)
+        # has no USB controller, so usb-tablet would fail to attach; skip it (the
+        # console is serial anyway).
+        if not is_vnc_console and config['arch'] != "sparc64":
             if config['arch'] == "aarch64":
                 args_qemu.extend(["-device", "usb-kbd", "-device", "virtio-tablet-pci"])
             else:
@@ -5624,7 +5712,9 @@ def main():
         args_qemu.extend(["-monitor", "tcp:127.0.0.1:{},server,nowait,nodelay".format(config['qmon'])])
 
     # Always provide RNG to guest. Use rng-builtin as a cross-platform source of entropy.
-    if config['os'] != "solaris":
+    # Skipped on sparc64: the sun4u machine has no free PCI slot for virtio-rng
+    # (and NetBSD has no virtio bus there), so QEMU would abort at launch.
+    if config['os'] != "solaris" and config['arch'] != "sparc64":
         args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000"])
 
     # Execution

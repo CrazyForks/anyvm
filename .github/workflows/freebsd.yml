@@ -92,3 +92,22 @@ jobs:
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
       sync: scp
+
+  testscp-powerpc64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["13.5", "14.3", "14.4", "15.0"]
+        arch: ["powerpc64"]
+        runs: ["ubuntu-24.04"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: freebsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: scp
