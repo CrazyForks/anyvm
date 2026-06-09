@@ -109,13 +109,13 @@ More examples and tags: https://github.com/anyvm-org/docker
 
 ## 5. Host support
 
-| Host | x86_64 guests | aarch64 guests | riscv64 guests |
-|------|---------------|----------------|----------------|
-| Linux x86_64 | ✅ | ✅ | ✅ |
-| Linux aarch64 (arm64)  | — | ✅ | — |
-| MacOS Apple silicon  | ✅ | ✅ | — |
-| Windows x86_64 Native | ✅ | — | — |
-| Windows x86_64 WSL | ✅ | ✅ | ✅ |
+| Host | x86_64 guests | aarch64 guests | riscv64 guests | powerpc64 guests |
+|------|---------------|----------------|----------------|------------------|
+| Linux x86_64 | ✅ | ✅ | ✅ | ✅ |
+| Linux aarch64 (arm64)  | — | ✅ | — | — |
+| MacOS Apple silicon  | ✅ | ✅ | — | — |
+| Windows x86_64 Native | ✅ | — | — | — |
+| Windows x86_64 WSL | ✅ | ✅ | ✅ | ✅ |
 
 ## 6. Install dependencies
 
