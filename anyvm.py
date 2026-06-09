@@ -6059,7 +6059,20 @@ def main():
             ])
             
             boot_timeout_seconds = config['boot_timeout_sec']
-            probe_timeout_sec = 5 if (IS_WINDOWS or config['arch'] == "aarch64") else 3
+            # The SSH handshake (KEX + pubkey auth) needs a few seconds of
+            # headroom after TCP connect; 3s proved too tight, so use 5s as the
+            # floor for every host/arch (Windows and aarch64 already used 5s).
+            probe_timeout_sec = 5
+            # TCG (pure software emulation) slows the guest 10-50x, so a single
+            # SSH handshake (KEX + pubkey auth on the emulated CPU) routinely
+            # takes longer than the few-second default. The TCP connect already
+            # succeeded by this point (a closed port fails fast as "refused",
+            # not a timeout), so a probe that hits the deadline is almost always
+            # a slow-but-progressing handshake, not a stuck VM. The boot timeout
+            # is already bumped for TCG above; give each probe a matching grace
+            # so we don't SIGTERM a live handshake and make a ready VM look dead.
+            if accel == "tcg":
+                probe_timeout_sec = max(probe_timeout_sec, 15)
             boot_start_time = time.time()
 
             # Fallback for stale-DHCP-lease scenarios: if the VM ends up with an IP
