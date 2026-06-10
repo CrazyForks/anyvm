@@ -100,7 +100,7 @@ jobs:
       matrix:
         release: ["13.5", "14.3", "14.4", "15.0"]
         arch: ["powerpc64"]
-        runs: ["ubuntu-24.04"]
+        runs: ["ubuntu-24.04", "windows-latest", "macos-latest"]
 
 
     uses: ./.github/workflows/testrun.yml

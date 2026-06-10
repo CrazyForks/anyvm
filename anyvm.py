@@ -121,8 +121,9 @@ DEFAULT_BUILDER_VERSIONS = {
     "midnightbsd": "2.0.2",
     "tribblix": "2.0.3",
     "openindiana": "2.0.9",
-    "ubuntu": "2.0.1",
-    "ghostbsd": "2.0.4"
+    "ubuntu": "2.0.3",
+    "ghostbsd": "2.0.4",
+    "blissos": "2.0.1"
 }
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -2589,7 +2590,7 @@ Description:
 Options:
   --os <name>            Operating System name (Required).
                          Supported: freebsd, ghostbsd, midnightbsd, openbsd, netbsd, dragonflybsd,
-                                    solaris, omnios, openindiana, tribblix, haiku, ubuntu
+                                    solaris, omnios, openindiana, tribblix, haiku, ubuntu, blissos
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64
@@ -2691,6 +2692,10 @@ Examples:
   # GhostBSD guest (FreeBSD-based desktop OS)
   python anyvm.py --os ghostbsd
   python anyvm.py --os ghostbsd --release 26.1-xfce
+
+  # BlissOS guest (Android-x86; root ssh + Android desktop on the VNC console)
+  python anyvm.py --os blissos
+  python anyvm.py --os blissos --release 14
 
 """)
 
@@ -3347,6 +3352,13 @@ def sync_vm_time(config, ssh_base_cmd):
     """Synchronizes VM time using NTP-like commands inside the guest."""
     guest_os = config.get('os', '').lower()
     debug = config.get('debug')
+
+    if guest_os == 'blissos':
+        # Android/toybox ships no ntpdate/sntp/chrony and the shell cannot set
+        # the system clock; Android keeps time itself (and the VM boots with
+        # -rtc base=utc,clock=host anyway).
+        log("Time sync is not supported on Android/BlissOS guests; skipping.")
+        return
     
     def get_guest_time():
         try:
@@ -4182,6 +4194,8 @@ def main():
 
     ssh_passthrough = []
     cpu_specified = False
+    mem_user_specified = False
+    sync_user_specified = False
     serial_user_specified = False
     vnc_user_specified = False
     arch_specified = False
@@ -4223,6 +4237,7 @@ def main():
             i += 1
         elif arg == "--mem":
             config['mem'] = args[i+1]
+            mem_user_specified = True
             i += 1
         elif arg == "--cpu":
             config['cpu'] = args[i+1]
@@ -4290,6 +4305,7 @@ def main():
                 val = "rsync"
             if val in ["no", "off"]:
                 val = "no"
+            sync_user_specified = True
             if val not in ["sshfs", "nfs", "rsync", "scp", "no"]:
                  fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, scp, no/off.".format(val))
             config['sync'] = val
@@ -4427,10 +4443,27 @@ def main():
         config['boot_timeout_sec'] = 1200
         debuglog(config['debug'], "OpenBSD/aarch64: default boot timeout raised to 1200s")
 
+    # BlissOS (Android-x86): the image is built and verified on std VGA
+    # (bochs-drm KMS + HWACCEL=0 software GLES renders the Android desktop to
+    # VNC at 1280x800; virtio-vga is unverified there), and Android under
+    # software rendering is memory-hungry -- the builder builds/verifies with
+    # 6144 MB, so default to that unless the user pinned --mem.
+    if config['os'] == "blissos" and not mem_user_specified:
+        config['mem'] = "6144"
+        debuglog(config['debug'], "BlissOS: defaulting memory to 6144 MB (override with --mem)")
+    # scp is the only sync backend a BlissOS guest supports (a static scp from
+    # the dropbear tree is baked into /system/bin; there is no rsync/sshfs/nfs
+    # on Android). Default to it so plain `-v dir:/path` just works.
+    if config['os'] == "blissos" and not sync_user_specified:
+        config['sync'] = "scp"
+        debuglog(config['debug'], "BlissOS: defaulting sync mode to scp (override with --sync)")
+
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
             config['vga'] = "std"
         elif config['os'] == "haiku":
+            config['vga'] = "std"
+        elif config['os'] == "blissos":
             config['vga'] = "std"
         elif config['os'] == "openbsd" and config['arch'] != "aarch64" and config['release'] and any(
             config['release'].endswith(s)
@@ -5256,6 +5289,10 @@ def main():
             # cloud-init/netplan brings DHCP up on that interface; the x86
             # default e1000 would enumerate under a different name and the
             # guest could fail to obtain a lease. Match the builder.
+            net_card = "virtio-net-pci"
+        elif config['os'] == "blissos":
+            # blissos-builder builds and verifies on virtio-net (conf
+            # VM_NIC=virtio); the BlissOS kernel drives it as eth0. Match it.
             net_card = "virtio-net-pci"
 
     # Platform specific args
@@ -6460,7 +6497,15 @@ Host host
             debuglog(config['debug'], "[trace] vpaths={!r} sync={!r} -> will mount: {}".format(
                 config['vpaths'], config.get('sync'),
                 bool(config['vpaths']) and config['sync'] != 'no'))
-            if config['vpaths'] and config['sync'] != 'no':
+            if (config['vpaths'] and config['sync'] != 'no'
+                    and config['os'] == 'blissos' and config['sync'] != 'scp'):
+                # Android/toybox has no rsync, sshfs, or NFS client. The only
+                # working backend is scp (a static scp from the dropbear tree
+                # is baked into /system/bin as the legacy-protocol receiver,
+                # builder release >= v2.0.1). Skip other modes instead of
+                # failing one by one.
+                log("Warning: only --sync scp works on BlissOS/Android guests; skipping {} sync.".format(config['sync']))
+            elif config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
                 if config['sync'] == 'nfs':
                     # Check if sudo exists in path (unix only)

@@ -50,6 +50,7 @@ python3 anyvm.py --os tribblix
 python3 anyvm.py --os ubuntu
 python3 anyvm.py --os ubuntu --release 24.04
 python3 anyvm.py --os ghostbsd
+python3 anyvm.py --os blissos
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
 python3 anyvm.py --os freebsd --release 15.0 --arch powerpc64
@@ -73,6 +74,12 @@ python3 anyvm.py --os openbsd  --release 7.9-enlightenment
 python3 anyvm.py --os ghostbsd                       # MATE (default)
 python3 anyvm.py --os ghostbsd --release 26.1-xfce
 python3 anyvm.py --os ghostbsd --release 26.1-gershwin
+
+# BlissOS (Android-x86): root ssh + the Android desktop on the VNC console
+# -v folder sync uses scp (the only backend the Android guest supports).
+python3 anyvm.py --os blissos                        # latest (16, Android 13)
+python3 anyvm.py --os blissos --release 15           # Android 12L
+python3 anyvm.py --os blissos --release 14           # Android 11
 
 
 
@@ -106,6 +113,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Tribblix | [![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/tribblix-builder) [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml) |
 | Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/haiku-builder) [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml) |
 | Ubuntu | [![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/ubuntu-builder) [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml) |
+| BlissOS (Android) | [![Test BlissOS](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml) | ✅ | — | — | — | [Builder](https://github.com/anyvm-org/blissos-builder) [![Build BlissOS](https://github.com/anyvm-org/blissos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/blissos-builder/actions/workflows/build.yml) |
 
 ## 5. Host support
 
@@ -183,7 +191,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `blissos`
   - Example:
     - `python3 anyvm.py --os freebsd`
 

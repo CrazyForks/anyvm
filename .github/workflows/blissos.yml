@@ -1,0 +1,47 @@
+
+name: BlissOS
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/blissos.yml'
+      - '.github/workflows/testrun.yml'
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # scp is the only sync backend the Android guest supports (a static scp from
+  # the dropbear tree is baked into /system/bin, builder release >= v2.0.1; no
+  # rsync/sshfs/nfs on Android). vmpath goes under /data, the writable
+  # partition (the default /mnt/host is a vold-managed tmpfs on Android).
+  test:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=blissos]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14", "15", "16"]
+        arch: [""]
+        runs: ["ubuntu-24.04", "macos-latest", "windows-latest"]
+        sync: ["scp"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: blissos
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}
+      vmpath: "/data/hostshare"
+      # macOS (arm64, x86_64 guest under TCG) and Windows (TCG) boot slower;
+      # the pause between ssh probes mirrors testmacos.yml.
+      sleep: ${{ matrix.runs != 'ubuntu-24.04' && 'sleep 10;' || '' }}
