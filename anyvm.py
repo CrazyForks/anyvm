@@ -113,7 +113,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.1.5",
     "openbsd": "2.0.3",
-    "netbsd": "2.0.4",
+    "netbsd": "2.0.5",
     "dragonflybsd": "2.0.4",
     "solaris": "2.0.5",
     "omnios": "2.0.8",
@@ -4233,7 +4233,12 @@ def main():
             i += 1
         elif arg == "--arch":
             config['arch'] = args[i+1].lower()
-            arch_specified = True
+            # `--arch ""` (how testrun.yml passes an unset matrix arch) means
+            # "not specified": leave arch_specified False so the
+            # aarch64 -> x86_64 image fallback stays available when the host
+            # is arm64 but the builder only publishes x86_64 images.
+            if config['arch']:
+                arch_specified = True
             i += 1
         elif arg == "--mem":
             config['mem'] = args[i+1]
