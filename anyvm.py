@@ -121,7 +121,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "midnightbsd": "2.0.2",
     "tribblix": "2.0.3",
     "openindiana": "2.0.9",
-    "ubuntu": "2.0.3",
+    "ubuntu": "2.0.4",
     "ghostbsd": "2.0.4",
     "blissos": "2.0.1"
 }
@@ -5385,6 +5385,20 @@ def main():
             elif config['os'] == "openbsd":
                 # OpenBSD fails with "FP exception in kernel" on cpu=max
                 cpu = "neoverse-n1"
+            elif config['os'] == "ubuntu":
+                # Two empirically verified problems with -cpu max on TCG:
+                #  * Ubuntu 26.04's kernel 7.0 uses VHE when the CPU offers
+                #    it, and QEMU 8.2 (ubuntu noble's package) aborts with
+                #    "ERROR:target/arm/internals.h:767:regime_is_user: code
+                #    should not be reached" (SIGABRT mid-boot) -- the E20
+                #    regimes were only handled in QEMU >= 9.0.
+                #  * 26.04's shim/grub also hangs at BdsDxe under -cpu max
+                #    during image builds (SVE/SME mishandling).
+                # cortex-a72 (ARMv8.0, no VHE/SVE) sidesteps both and boots
+                # every ubuntu release artifact; ubuntu-builder pins the
+                # same model for its 26.04 aarch64 builds. Use --cpu-type
+                # to override.
+                cpu = "cortex-a72"
             else:
                 cpu = "max"
         
