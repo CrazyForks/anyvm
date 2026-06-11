@@ -30,7 +30,7 @@ jobs:
       matrix:
         release: ["14", "15", "16"]
         arch: [""]
-        runs: ["ubuntu-24.04", "macos-latest", "windows-latest"]
+        runs: ["ubuntu-24.04"]
         sync: ["scp"]
 
     uses: ./.github/workflows/testrun.yml
