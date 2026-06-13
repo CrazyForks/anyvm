@@ -111,20 +111,47 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.1.5",
-    "openbsd": "2.0.3",
-    "netbsd": "2.0.5",
+    "freebsd": "2.1.7",
+    "openbsd": "2.0.5",
+    "netbsd": "2.0.7",
     "dragonflybsd": "2.0.4",
     "solaris": "2.0.5",
-    "omnios": "2.0.8",
+    "omnios": "2.0.9",
     "haiku": "2.0.0",
     "midnightbsd": "2.0.2",
     "tribblix": "2.0.3",
     "openindiana": "2.0.9",
-    "ubuntu": "2.0.4",
+    "ubuntu": "2.0.6",
     "ghostbsd": "2.0.4",
     "blissos": "2.0.1"
 }
+
+# Pinned, self-contained QEMU builds published as release assets by
+# ubuntu-builder's release-files job (Linux x86_64 binaries built on/for
+# ubuntu noble; see that repo's files/README.md). The builder no longer
+# commits these tarballs to git -- its release-files job compiles them on
+# the fly with files/build-qemu10.sh and uploads them to the release, so
+# the release asset is the only place to fetch them. Downloaded on demand
+# by ensure_pinned_qemu() when the system QEMU is too old for a guest (the
+# asset file names are explicit on purpose -- they match
+# ubuntu-builder/.github/data/uploadfiles.yml one to one).
+PINNED_QEMU_REPO = "anyvm-org/ubuntu-builder"
+PINNED_QEMU_ASSETS = {
+    "riscv64": "qemu-10.2.3-riscv64-noble.tar.zst",
+    "s390x": "qemu-10.2.3-s390x-noble.tar.zst",
+    "ppc64le": "qemu-10.2.3-ppc64le-noble.tar.zst",
+}
+
+# Patched OpenBIOS published as a release asset by openbsd-builder (see that
+# repo's bios/README.md): the OpenBIOS bundled with QEMU crashes every
+# OpenBSD >= 7.3 sparc64 kernel on cold boot and names IDE channel nodes
+# "ide" instead of OBP's "ata", which breaks root-device autodetection.
+# The builder no longer commits the blob to git -- its release-files job
+# rebuilds it from source (bios/build-openbios.sh) and uploads it to the
+# release, so the release asset is the only place to fetch it. Downloaded
+# on demand for openbsd/sparc64 guests and passed via -bios.
+OPENBIOS_SPARC64_REPO = "anyvm-org/openbsd-builder"
+OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
 
@@ -2593,7 +2620,7 @@ Options:
                                     solaris, omnios, openindiana, tribblix, haiku, ubuntu, blissos
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
-  --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64
+  --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64, powerpc64, s390x
                          or powerpc64. Default: Host architecture.
   --mem <MB>             Memory size in MB (Default: 2048).
   --cpu <num>            Number of CPU cores (Default: all host cores).
@@ -3515,11 +3542,107 @@ def check_qemu_audio_backend(qemu_bin, backend_name):
     try:
         proc = subprocess.Popen([qemu_bin, "-audiodev", "help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = proc.communicate()
-        output = (stdout.decode('utf-8', errors='ignore') + 
+        output = (stdout.decode('utf-8', errors='ignore') +
                   stderr.decode('utf-8', errors='ignore'))
         return backend_name in output
     except Exception:
         return False
+
+def qemu_version(qemu_bin):
+    """Returns the QEMU version as a (major, minor) int tuple, or None."""
+    if not qemu_bin:
+        return None
+    try:
+        out = subprocess.check_output([qemu_bin, "--version"], stderr=DEVNULL)
+        m = re.search(r"version\s+(\d+)\.(\d+)", out.decode('utf-8', errors='ignore'))
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        pass
+    return None
+
+def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bin_name=None):
+    """Returns a qemu-system binary that is at least min_version for arch.
+
+    If the system binary is new enough it is returned unchanged. Otherwise,
+    on Linux x86_64 hosts, the pinned build published by ubuntu-builder
+    (PINNED_QEMU_ASSETS) is downloaded into <working_dir>/tools, extracted,
+    and returned instead. QEMU locates its firmware (opensbi, s390-ccw.img,
+    ...) relative to the binary, so the extracted tree is self-contained.
+    On any failure (no pinned build for this host, download or extraction
+    error, binary that does not run) the system binary is returned with a
+    warning so the caller can still try it.
+    """
+    asset = PINNED_QEMU_ASSETS.get(arch)
+    if not asset:
+        return qemu_bin
+    ver = qemu_version(qemu_bin)
+    if ver and ver >= min_version:
+        return qemu_bin
+    want = "{}.{}".format(min_version[0], min_version[1])
+    if ver:
+        have = "{}.{}".format(ver[0], ver[1])
+    else:
+        have = "missing" if not qemu_bin else "unknown"
+
+    # The published binaries are built on/for ubuntu noble (Linux x86_64).
+    if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
+        log("Warning: system QEMU for {} is {} (recommended >= {}) and no "
+            "pinned build exists for this host platform; the guest may "
+            "misbehave.".format(arch, have, want))
+        return qemu_bin
+
+    tools_dir = os.path.join(working_dir, "tools")
+    extract_dir = os.path.join(tools_dir, removesuffix(asset, ".tar.zst"))
+    # The binary name usually follows the arch key; ppc64le is the
+    # exception (qemu-system-ppc64 serves both endiannesses).
+    bin_rel = os.path.join("bin", bin_name or ("qemu-system-" + arch))
+
+    def find_extracted():
+        # Find the binary by scanning the single top-level dir instead of
+        # hardcoding its name: build-qemu10.sh now packs every arch under
+        # qemu10-<arch>/, but tarballs published before that normalization
+        # used qemu10/ for riscv64. Scanning handles both.
+        if not os.path.isdir(extract_dir):
+            return None
+        for entry in sorted(os.listdir(extract_dir)):
+            cand = os.path.join(extract_dir, entry, bin_rel)
+            if os.path.isfile(cand):
+                return cand
+        return None
+
+    pinned = find_extracted()
+    if not pinned:
+        if not os.path.isdir(extract_dir):
+            os.makedirs(extract_dir)
+        tar_path = os.path.join(tools_dir, asset)
+        url = "https://github.com/{}/releases/latest/download/{}".format(PINNED_QEMU_REPO, asset)
+        if not os.path.exists(tar_path):
+            log("System QEMU for {} is {} (need >= {}); downloading pinned build...".format(arch, have, want))
+            if not download_file(url, tar_path, debug):
+                log("Warning: failed to download {}; continuing with system QEMU ({}).".format(url, have))
+                return qemu_bin
+        # tarfile in the Python versions we target has no zstd support;
+        # GNU tar on any current Linux does.
+        rc = subprocess.call(["tar", "--zstd", "-xf", tar_path, "-C", extract_dir])
+        if rc != 0:
+            log("Warning: failed to extract {} (is zstd installed?); continuing with system QEMU ({}).".format(tar_path, have))
+            return qemu_bin
+        try:
+            os.remove(tar_path)
+        except OSError:
+            pass
+        pinned = find_extracted()
+        if not pinned:
+            log("Warning: {} did not contain {}; continuing with system QEMU ({}).".format(asset, bin_rel, have))
+            return qemu_bin
+
+    pver = qemu_version(pinned)
+    if not pver:
+        log("Warning: pinned QEMU at {} does not run on this host; continuing with system QEMU ({}).".format(pinned, have))
+        return qemu_bin
+    log("Using pinned QEMU {}.{}: {} (system QEMU is {})".format(pver[0], pver[1], pinned, have))
+    return pinned
 
 def find_rsync():
     """Find rsync on host; returns absolute path or None."""
@@ -4931,6 +5054,44 @@ def main():
             else:
                 download_file(vmpub_url, vmpub_file, config['debug'])
 
+    # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
+    # (see OPENBIOS_SPARC64_REPO above); fetch the patched blob published
+    # next to the VM images. Preferred from the same builder tag as the
+    # image so firmware and image stay version-matched; releases that
+    # predate the release-files job fall back to the newest release's copy.
+    sparc64_bios_file = None
+    if config['os'] == "openbsd" and config['arch'] == "sparc64":
+        sparc64_bios_file = os.path.join(output_dir, OPENBIOS_SPARC64_ASSET)
+        if not os.path.exists(sparc64_bios_file):
+            bios_url = "https://github.com/{}/releases/latest/download/{}".format(
+                OPENBIOS_SPARC64_REPO, OPENBIOS_SPARC64_ASSET)
+            if config['builder']:
+                tagged_url = "https://github.com/{}/releases/download/v{}/{}".format(
+                    OPENBIOS_SPARC64_REPO, config['builder'], OPENBIOS_SPARC64_ASSET)
+                if check_url_exists(tagged_url, config['debug']):
+                    bios_url = tagged_url
+                else:
+                    debuglog(config['debug'], "No {} in builder release v{}; using latest".format(
+                        OPENBIOS_SPARC64_ASSET, config['builder']))
+            if config.get('cachedir'):
+                rel_path = os.path.relpath(output_dir, working_dir)
+                cache_output_dir = os.path.join(config['cachedir'], rel_path)
+                if not os.path.exists(cache_output_dir):
+                    debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
+                    os.makedirs(cache_output_dir)
+                cached_bios = os.path.join(cache_output_dir, OPENBIOS_SPARC64_ASSET)
+                if not os.path.exists(cached_bios):
+                    debuglog(config['debug'], "OpenBIOS not found in cache, downloading to: {}".format(cached_bios))
+                    download_file(bios_url, cached_bios, config['debug'])
+                if os.path.exists(cached_bios):
+                    debuglog(config['debug'], "Copying OpenBIOS from cache to: {}".format(sparc64_bios_file))
+                    shutil.copy2(cached_bios, sparc64_bios_file)
+            else:
+                download_file(bios_url, sparc64_bios_file, config['debug'])
+        if not os.path.exists(sparc64_bios_file):
+            fatal("Could not download {} from {} (OpenBSD sparc64 cannot boot "
+                  "on QEMU's bundled OpenBIOS).".format(OPENBIOS_SPARC64_ASSET, OPENBIOS_SPARC64_REPO))
+
     vm_user = "user" if config['os'] == "haiku" else "root"
 
     # Ports
@@ -5002,8 +5163,40 @@ def main():
         # under the same qemu-system-ppc64 binary; -M pseries + -cpu picks
         # the guest mode.
         bin_name = "qemu-system-ppc64"
+    elif config['arch'] == "s390x":
+        # Ubuntu/Debian package this in its own qemu-system-s390x package
+        # (NOT in qemu-system-misc).
+        bin_name = "qemu-system-s390x"
     qemu_bin = find_qemu(bin_name)
-    
+
+    # Distro QEMU 8.2 (ubuntu noble et al.) cannot run some guests reliably;
+    # swap in the pinned build published by ubuntu-builder when the system
+    # one is too old (no-op when it is new enough, see ensure_pinned_qemu):
+    #  * ubuntu 26.04 riscv64 needs -cpu rva23s64, a CPU model QEMU grew in
+    #    9.1 (and its 7.0 kernel hangs at entry on 8.2 TCG anyway);
+    #  * 8.2's s390x TCG intermittently freezes guest systemd at startup
+    #    ("Failed to fork off sandboxing environment ... Freezing
+    #    execution.", roughly 1 in 4 boots); QEMU >= 10 is verified clean.
+    #  * 8.2's pseries TCG mistranslates ubuntu 22.04 ppc64el userspace
+    #    under -cpu power9: python3.10 segfaults reproducibly (every
+    #    cloud-init stage dies, ssh host keys are never generated on a
+    #    fresh image). 24.04 / 26.04 do not hit it.
+    # Skipped entirely when the HOST is the guest's arch (real IBM Z /
+    # POWER): these are TCG-only bugs (such hosts run KVM, see the accel
+    # selection below), and the pinned build is an x86_64 binary that
+    # could not run there anyway.
+    if (config['arch'] == "riscv64" and config['os'] == "ubuntu"
+            and (config['release'] or "").startswith("26.")):
+        qemu_bin = ensure_pinned_qemu("riscv64", qemu_bin, (9, 1), working_dir, config['debug'])
+    elif config['arch'] == "s390x" and host_arch != "s390x":
+        qemu_bin = ensure_pinned_qemu("s390x", qemu_bin, (10, 0), working_dir, config['debug'])
+    elif (config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le")
+            and config['os'] == "ubuntu"
+            and (config['release'] or "").startswith("22.")
+            and host_arch not in ("ppc64", "ppc64le", "powerpc64", "powerpc64le")):
+        qemu_bin = ensure_pinned_qemu("ppc64le", qemu_bin, (10, 0), working_dir,
+                                      config['debug'], bin_name="qemu-system-ppc64")
+
     if not qemu_bin:
         fatal("QEMU binary '{}' not found. Please install QEMU or check PATH.".format(bin_name))
 
@@ -5054,6 +5247,15 @@ def main():
                 accel = "hvf"
     elif config['arch'] == "riscv64":
         accel = "tcg"
+    elif config['arch'] == "s390x":
+        # KVM for s390x exists only on real IBM Z hosts; use it when running
+        # on one (host s390x + usable /dev/kvm), TCG everywhere else.
+        if host_arch == "s390x":
+            if os.path.exists("/dev/kvm"):
+                if os.access("/dev/kvm", os.R_OK | os.W_OK):
+                    accel = "kvm"
+                else:
+                    log("Warning: /dev/kvm exists but is not writable. Falling back to TCG.")
     elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
         # KVM-HV / KVM-PR is only available when the host is also ppc64
         # (real POWER8/9 hardware). On an amd64 / aarch64 host we must use
@@ -5104,16 +5306,19 @@ def main():
     # pmap bootstrap panics ("Can't claim two pages of memory") with more than
     # ~2 GB of RAM. Force 1 CPU and cap memory to 2048 MB so the built image
     # boots. (The image is built on the same limits; see netbsd-builder.)
+    # OpenBSD is capped tighter: OpenBIOS memory claims get flaky near the
+    # 2 GB boundary and openbsd-builder builds/verifies its image at 1024 MB.
     if config['arch'] == "sparc64":
         config['cpu'] = "1"
+        mem_cap = 1024 if config['os'] == "openbsd" else 2048
         try:
             mem_mb = int(str(config['mem']).rstrip("MmGg"))
             if str(config['mem']).rstrip()[-1:].lower() == "g":
                 mem_mb *= 1024
-            if mem_mb > 2048:
-                config['mem'] = "2048"
+            if mem_mb > mem_cap:
+                config['mem'] = str(mem_cap)
         except (ValueError, TypeError, IndexError):
-            config['mem'] = "2048"
+            config['mem'] = str(mem_cap)
 
     # powerpc64/le (QEMU pseries) under TCG: SMP bring-up on a cold boot from
     # the installed disk reproducibly wedges at the kernel's "Launching APs"
@@ -5271,7 +5476,12 @@ def main():
             net_card = "virtio-net-pci"
         else:
             net_card = "e1000"
-        if config['os'] == "openbsd" and config['release']:
+        if config['os'] == "openbsd" and config['arch'] == "sparc64":
+            # sun4u has no virtio. ne2k_pci on the empty secondary
+            # Simba-bridge bus pciB (-> ne0 in the guest) is the model
+            # openbsd-builder builds and verifies the image on.
+            net_card = "ne2k_pci"
+        elif config['os'] == "openbsd" and config['release']:
             release_base = config['release'].split('-')[0]
             if release_base in OPENBSD_E1000_RELEASES:
                 net_card = "e1000"
@@ -5282,6 +5492,9 @@ def main():
                 net_card = "virtio-net-pci"
         elif config['arch'] == "riscv64":
             net_card = "virtio-net-pci"
+        elif config['arch'] == "s390x":
+            # Devices on s390-ccw-virtio sit on the CCW bus, not PCI.
+            net_card = "virtio-net-ccw"
         elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
             net_card = "virtio-net-pci"
         elif config['os'] == "netbsd" and config['arch'] == "aarch64":
@@ -5440,7 +5653,20 @@ def main():
         machine_opts = "virt,accel=tcg,usb=on,acpi=off"
         if not is_vnc_console:
              machine_opts += ",graphics=off"
-        cpu_opts = "rv64"
+        if config['cputype']:
+            cpu_opts = config['cputype']
+        elif config['os'] == "ubuntu" and (config['release'] or "").startswith("26."):
+            # Ubuntu 26.04 riscv64 userspace targets the RVA23 profile
+            # baseline: under plain rv64 init dies with SIGILL
+            # (do_trap_insn_illegal), and its 7.0 kernel additionally hangs
+            # at entry with zero output on QEMU 8.2 TCG. The rva23s64 CPU
+            # model exists in QEMU >= 9.1; an older QEMU fails fast at
+            # launch ("unable to find CPU definition"), which is the
+            # clearest available signal that the host QEMU is too old for
+            # this guest. 22.04 / 24.04 keep booting on plain rv64.
+            cpu_opts = "rva23s64"
+        else:
+            cpu_opts = "rv64"
 
         args_qemu.extend([
             "-machine", machine_opts,
@@ -5507,6 +5733,35 @@ def main():
                       "(RISCV_VIRT_CODE.fd), pass --firmware <path>, or provide "
                       "U-Boot at {}.".format(uboot_bin))
             args_qemu.extend(["-kernel", uboot_bin])
+    elif config['arch'] == "s390x":
+        # QEMU s390-ccw-virtio (IBM Z). The bundled s390-ccw.img firmware
+        # reads the zipl boot map straight off the virtio disk, so no
+        # external bootloader/EFI files are involved. Every device sits on
+        # the CCW bus (virtio-*-ccw; net_card and the rng device below are
+        # picked accordingly), the machine has no VGA and no USB, and the
+        # guest console is the SCLP line console (ttysclp0), which QEMU
+        # routes through -serial -- the auto-enabled VNC console mode
+        # drives it like the other serial-only arches. KVM on real IBM Z
+        # hosts, TCG everywhere else. CPU model default: 'host' under KVM;
+        # under TCG the 'qemu' model boots the ubuntu artifacts (validated
+        # by ubuntu-builder, which builds them the same way; the 'qemu'
+        # model is TCG's, not meant for KVM). --cpu-type overrides both.
+        # NOTE: distro QEMU 8.2 (ubuntu noble) TCG intermittently freezes
+        # guest systemd at startup ("Failed to fork off sandboxing
+        # environment ... Freezing execution.", roughly 1 in 4 boots) --
+        # QEMU >= 10 does not; ensure_pinned_qemu() above swaps in a newer
+        # one on Linux x86_64 hosts.
+        if config['cputype']:
+            scpu = config['cputype']
+        elif accel == "kvm":
+            scpu = "host"
+        else:
+            scpu = "qemu"
+        args_qemu.extend([
+            "-machine", "s390-ccw-virtio,accel={}".format(accel),
+            "-cpu", scpu,
+            "-device", "{},netdev=net0".format(net_card),
+        ])
     elif config['arch'] == "sparc64":
         # QEMU sun4u (UltraSPARC IIi + OpenBIOS), TCG only. Console is on com0
         # serial -- the sun4u VGA only works in firmware -- so remove the VGA
@@ -5521,6 +5776,10 @@ def main():
             "-device", "{},netdev=net0,bus=pciB".format(net_card),
             "-boot", "order=c",
         ])
+        if sparc64_bios_file:
+            # openbsd: replace the bundled OpenBIOS with the patched blob
+            # downloaded above (-bios overrides the machine firmware).
+            args_qemu.extend(["-bios", sparc64_bios_file])
     elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
         # QEMU pseries (sPAPR / PAPR) machine + bundled SLOF firmware
         # (auto-loaded from /usr/share/qemu/slof.bin -- no -bios, no pflash;
@@ -5770,8 +6029,10 @@ def main():
     # Always provide RNG to guest. Use rng-builtin as a cross-platform source of entropy.
     # Skipped on sparc64: the sun4u machine has no free PCI slot for virtio-rng
     # (and NetBSD has no virtio bus there), so QEMU would abort at launch.
+    # s390x has no PCI by default -- its rng is a CCW device.
     if config['os'] != "solaris" and config['arch'] != "sparc64":
-        args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "virtio-rng-pci,rng=rng0,max-bytes=1024,period=1000"])
+        rng_dev = "virtio-rng-ccw" if config['arch'] == "s390x" else "virtio-rng-pci"
+        args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "{},rng=rng0,max-bytes=1024,period=1000".format(rng_dev)])
 
     # Execution
     cmd_list = [qemu_bin] + args_qemu
