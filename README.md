@@ -57,6 +57,7 @@ python3 anyvm.py --os freebsd --release 15.0 --arch powerpc64
 python3 anyvm.py --os ubuntu --release 24.04 --arch aarch64
 python3 anyvm.py --os ubuntu --release 24.04 --arch riscv64
 python3 anyvm.py --os ubuntu --release 24.04 --arch s390x
+python3 anyvm.py --os ubuntu --release 24.04 --arch ppc64le
 
 
 
@@ -115,7 +116,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | OpenIndiana | [![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | — | — | — | — | [![Build OpenIndiana](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openindiana-builder) |
 | Tribblix | [![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | — | — | [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder) |
 | Haiku | [![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | — | — | [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder) |
-| Ubuntu | [![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | ✅ | ✅ | ✅ | — | [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder) |
+| Ubuntu | [![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | ✅ | ✅ | ✅ | ✅ | [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder) |
 | BlissOS (Android) | [![Test BlissOS](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml) | ✅ | — | — | — | — | [![Build BlissOS](https://github.com/anyvm-org/blissos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/blissos-builder) |
 
 ## 5. Host support
@@ -205,7 +206,8 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Example: `python3 anyvm.py --os freebsd --release 14.3`
 
 - `--arch <arch>`: Guest architecture.
-  - Common values: `x86_64` / `aarch64` / `riscv64` / `s390x` / `powerpc64`
+  - Common values: `x86_64` / `aarch64` / `riscv64` / `s390x` / `powerpc64` /
+    `ppc64le` / `sparc64`
   - Example: `python3 anyvm.py --os openbsd --release 7.5 --arch aarch64`
   - Notes for ubuntu guests on emulated arches (always TCG, slow):
     - `aarch64` defaults to `-cpu cortex-a72` (distro QEMU 8.2 aborts with a
@@ -218,11 +220,22 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
       freezes guest systemd at startup (a TCG-only bug). On a real IBM Z
       host with `/dev/kvm`, KVM is used automatically (`-cpu host`) and
       stock QEMU is fine.
-    - For both cases, on Linux x86_64 hosts anyvm.py automatically downloads
-      and uses the pinned QEMU 10.2.3 builds that
-      [ubuntu-builder](https://github.com/anyvm-org/ubuntu-builder) publishes
-      as release assets (see its `files/README.md` for provenance) whenever
-      the system QEMU is too old -- no manual setup needed.
+    - `ppc64le` 22.04 requires QEMU >= 10; under the distro 8.2 pseries TCG
+      the jammy python3.10 segfaults (every cloud-init / apt run crashes).
+      24.04 / 26.04 work on stock QEMU.
+    - For the riscv64 26.04, s390x and ppc64le 22.04 cases, on Linux x86_64
+      hosts anyvm.py automatically downloads and uses pinned QEMU 10.2.3
+      whenever the system QEMU is too old -- no manual setup needed.
+      [ubuntu-builder](https://github.com/anyvm-org/ubuntu-builder) compiles
+      these from source in its release-files job (they are no longer
+      committed to git) and publishes them as release assets; see its
+      `files/README.md`.
+  - `openbsd --arch sparc64`: anyvm.py automatically downloads the patched
+    OpenBIOS firmware the image needs (QEMU's bundled OpenBIOS crashes every
+    OpenBSD >= 7.3 sparc64 kernel on cold boot) and passes it via `-bios`.
+    [openbsd-builder](https://github.com/anyvm-org/openbsd-builder) rebuilds
+    it from source in its release-files job and publishes it as a release
+    asset; see its `bios/README.md`.
 
 - `--mem <MB>`: Memory size in MB (default: 2048).
   - Example: `python3 anyvm.py --os freebsd --mem 4096`
