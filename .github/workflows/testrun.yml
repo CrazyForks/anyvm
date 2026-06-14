@@ -69,6 +69,7 @@ jobs:
         qemu-system-misc u-boot-qemu ipxe-qemu \
         qemu-system-ppc \
         qemu-system-s390x \
+        qemu-system-sparc \
         nfs-kernel-server rsync
         sudo chmod 666 /dev/kvm || true
 

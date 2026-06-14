@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1"]
+        release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1", "11.0"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -55,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1"]
+        release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1", "11.0"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -78,4 +78,88 @@ jobs:
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
       sync: "nfs"
-   
+
+
+  # sparc64 (QEMU sun4u, TCG only) ships for 10.0 / 10.1 / 11.0. Dedicated
+  # blocks with an explicit release list, like the openbsd riscv64 jobs above,
+  # because sparc64 does not exist for the 9.x releases the cartesian matrix
+  # covers. Slow under TCG (~30-60 min/boot); fail-fast off so one flaky boot
+  # does not cancel the others.
+  testsshfs-sparc64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["10.0", "10.1", "11.0"]
+        arch: ["sparc64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: netbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "sshfs"
+
+
+  testnfs-sparc64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["10.0", "10.1", "11.0"]
+        arch: ["sparc64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: netbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "nfs"
+
+
+  # riscv64 (QEMU virt + u-boot/EDK2) ships only for 11.0 -- the riscv port
+  # does not exist on the netbsd-9 / netbsd-10 branches. Dedicated blocks with
+  # an explicit release list, like the sparc64 ones above.
+  testsshfs-riscv64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["11.0"]
+        arch: ["riscv64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: netbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "sshfs"
+
+
+  testnfs-riscv64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["11.0"]
+        arch: ["riscv64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: netbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "nfs"
+
