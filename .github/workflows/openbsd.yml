@@ -145,5 +145,46 @@ jobs:
       sync: "rsync"
 
 
+  # sparc64 (QEMU sun4u + the patched OpenBIOS anyvm.py auto-downloads) ships
+  # for 7.9. Like riscv64 it is headless (console build), so use the scp/rsync
+  # sync backends rather than sshfs/nfs.
+  testscp-sparc64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.9"]
+        arch: ["sparc64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "scp"
+
+
+  testrsync-sparc64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.9"]
+        arch: ["sparc64"]
+        runs: ["ubuntu-24.04"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: openbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: "rsync"
+
+
 
 
