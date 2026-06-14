@@ -5247,6 +5247,16 @@ def main():
                 accel = "hvf"
     elif config['arch'] == "riscv64":
         accel = "tcg"
+    elif config['arch'] == "sparc64":
+        # QEMU has no KVM (or any hardware) accelerator for sparc64 on any
+        # host -- the sun4u machine is TCG-only everywhere. Pin it explicitly
+        # so the generic else-branch below cannot mis-set accel="kvm" on an
+        # x86 host with a usable /dev/kvm. That misclassification was harmless
+        # to the QEMU launch (the sun4u machine string carries no accel=), but
+        # it skipped the TCG-only boot-timeout bump (left boot on the 600s
+        # default) and the TCG ssh-probe grace (left it at 5s) -- which is what
+        # timed out the very slow sparc64 boots in CI.
+        accel = "tcg"
     elif config['arch'] == "s390x":
         # KVM for s390x exists only on real IBM Z hosts; use it when running
         # on one (host s390x + usable /dev/kvm), TCG everywhere else.
@@ -5477,10 +5487,15 @@ def main():
         else:
             net_card = "e1000"
         if config['os'] == "openbsd" and config['arch'] == "sparc64":
-            # sun4u has no virtio. ne2k_pci on the empty secondary
-            # Simba-bridge bus pciB (-> ne0 in the guest) is the model
-            # openbsd-builder builds and verifies the image on.
-            net_card = "ne2k_pci"
+            # sun4u has no virtio. The NIC sits on the empty secondary
+            # Simba-bridge bus pciB. e1000 (-> em0 in the guest) is the
+            # model openbsd-builder builds and verifies the image on:
+            # ne2k_pci (-> ne0) wedges QEMU's cmd646 PCI-IDE into a
+            # "lost interrupt" write-timeout storm when network and disk
+            # DMA overlap at "starting network", stalling boot on a slow
+            # TCG host; e1000's DMA model keeps boot clean. The published
+            # image is configured for em0, so this must match it.
+            net_card = "e1000"
         elif config['os'] == "openbsd" and config['release']:
             release_base = config['release'].split('-')[0]
             if release_base in OPENBSD_E1000_RELEASES:
