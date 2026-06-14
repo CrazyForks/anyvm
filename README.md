@@ -22,7 +22,7 @@ anyvm is a single-file tool for bootstrapping BSD, Illumos, and Linux guests wit
   zstd ovmf xz-utils qemu-utils ca-certificates \
   qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
   qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc u-boot-qemu \
-  qemu-system-ppc qemu-system-s390x \
+  qemu-system-ppc qemu-system-s390x qemu-system-sparc \
   openssh-client
   
   ```
@@ -53,6 +53,10 @@ python3 anyvm.py --os blissos
 
 python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
 python3 anyvm.py --os freebsd --release 15.0 --arch powerpc64
+
+python3 anyvm.py --os netbsd --release 11.0 --arch sparc64
+python3 anyvm.py --os netbsd --release 11.0 --arch riscv64
+python3 anyvm.py --os openbsd --release 7.9 --arch sparc64
 
 python3 anyvm.py --os ubuntu --release 24.04 --arch aarch64
 python3 anyvm.py --os ubuntu --release 24.04 --arch riscv64
@@ -121,14 +125,14 @@ More examples and tags: https://github.com/anyvm-org/docker
 
 ## 5. Host support
 
-| Host | x86_64 guests | aarch64 guests | riscv64 guests | s390x guests | powerpc64 guests |
-|------|---------------|----------------|----------------|--------------|------------------|
-| Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Linux aarch64 (arm64)  | — | ✅ | — | — | — |
-| Linux s390x (IBM Z)  | — | — | — | ✅ (KVM) | — |
-| MacOS Apple silicon  | ✅ | ✅ | — | — | — |
-| Windows x86_64 Native | ✅ | — | — | — | — |
-| Windows x86_64 WSL | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Host | x86_64 guests | aarch64 guests | riscv64 guests | s390x guests | powerpc64 guests | sparc64 guests |
+|------|---------------|----------------|----------------|--------------|------------------|----------------|
+| Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Linux aarch64 (arm64)  | — | ✅ | — | — | — | — |
+| Linux s390x (IBM Z)  | — | — | — | ✅ (KVM) | — | — |
+| MacOS Apple silicon  | ✅ | ✅ | — | — | — | — |
+| Windows x86_64 Native | ✅ | — | — | — | — | — |
+| Windows x86_64 WSL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## 6. Install dependencies
 
@@ -138,8 +142,8 @@ More examples and tags: https://github.com/anyvm-org/docker
 sudo apt-get --no-install-recommends -y install \
   zstd ovmf xz-utils qemu-utils ca-certificates \
   qemu-system-x86 qemu-system-arm qemu-efi-aarch64 \
-  qemu-efi-riscv64 qemu-system-riscv64 u-boot-qemu \
-  qemu-system-ppc \
+  qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc u-boot-qemu \
+  qemu-system-ppc qemu-system-s390x qemu-system-sparc \
   ssh-client
 ```
 
