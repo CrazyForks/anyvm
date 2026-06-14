@@ -4586,6 +4586,20 @@ def main():
         config['sync'] = "scp"
         debuglog(config['debug'], "BlissOS: defaulting sync mode to scp (override with --sync)")
 
+    # netbsd sparc64: the QEMU sun4u machine boots only off the CMD646 PCI IDE,
+    # whose TCG emulation loses interrupts under SUSTAINED concurrent net+disk
+    # DMA. A live sshfs/nfs mount drives exactly that and wedges the guest (the
+    # cmdide driver recovers ~10 s per lost IRQ, so the mount crawls), and the
+    # rsync default does not even exist on the 11.0 sparc64 base image (dropped
+    # over a libcrypto ABI break). A one-shot scp does not sustain the load and
+    # is always present (base ssh), so default to it -- `-v dir:/path` then just
+    # works. (Pinning a newer QEMU does not change the lost-interrupt rate, and
+    # OpenBIOS cannot boot a SCSI disk on sun4u, so the IDE cannot be avoided.)
+    if (config['os'] == "netbsd" and config['arch'] == "sparc64"
+            and not sync_user_specified):
+        config['sync'] = "scp"
+        debuglog(config['debug'], "netbsd/sparc64: defaulting sync mode to scp (override with --sync)")
+
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
             config['vga'] = "std"

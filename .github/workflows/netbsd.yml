@@ -81,11 +81,24 @@ jobs:
 
 
   # sparc64 (QEMU sun4u, TCG only) ships for 10.0 / 10.1 / 11.0. Dedicated
-  # blocks with an explicit release list, like the openbsd riscv64 jobs above,
+  # block with an explicit release list, like the openbsd sparc64 jobs,
   # because sparc64 does not exist for the 9.x releases the cartesian matrix
   # covers. Slow under TCG (~30-60 min/boot); fail-fast off so one flaky boot
   # does not cancel the others.
-  testsshfs-sparc64:
+  #
+  # Sync is scp ONLY (not sshfs/nfs): QEMU sun4u's only bootable disk is the
+  # CMD646 PCI IDE, whose TCG emulation loses interrupts under SUSTAINED
+  # concurrent net+disk DMA. A live sshfs/nfs mount drives exactly that and
+  # wedges the guest (the NetBSD cmdide driver then recovers ~10 s per lost
+  # IRQ, so mounts crawl and time out -- this is what failed the old
+  # testnfs-sparc64 10.0 job). A one-shot scp of a couple of small files does
+  # not sustain the load, so it stays clean. Locally confirmed that the lost-
+  # interrupt rate is identical on QEMU 8.2 and 10.2.3 (pinning a newer QEMU
+  # does not help) and that OpenBIOS cannot boot a SCSI disk on sun4u (so the
+  # IDE controller cannot be swapped out) -- scp is the durable fix. rsync is
+  # also out: the 11.0 sparc64 base image ships no rsync (libcrypto ABI break).
+  # This matches the headless openbsd sparc64/riscv64 jobs, which use scp too.
+  testscp-sparc64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
     strategy:
       fail-fast: false
@@ -101,26 +114,7 @@ jobs:
       os: netbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "sshfs"
-
-
-  testnfs-sparc64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["10.0", "10.1", "11.0"]
-        arch: ["sparc64"]
-        runs: ["ubuntu-24.04"]
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: netbsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "nfs"
+      sync: "scp"
 
 
   # riscv64 (QEMU virt + u-boot/EDK2) ships only for 11.0 -- the riscv port

@@ -240,6 +240,12 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
     [openbsd-builder](https://github.com/anyvm-org/openbsd-builder) rebuilds
     it from source in its release-files job and publishes it as a release
     asset; see its `bios/README.md`.
+  - `netbsd --arch sparc64`: host-dir sync (`-v`) defaults to `scp`
+    (override with `--sync`). The QEMU sun4u machine boots only off the
+    CMD646 PCI IDE, whose TCG emulation loses interrupts under sustained
+    concurrent net+disk DMA -- a live `sshfs`/`nfs` mount drives exactly that
+    and wedges the guest, and the 11.0 base image ships no `rsync`. A one-shot
+    `scp` avoids both. (sparc64 is headless / console-only on either OS.)
 
 - `--mem <MB>`: Memory size in MB (default: 2048).
   - Example: `python3 anyvm.py --os freebsd --mem 4096`
