@@ -2685,10 +2685,7 @@ Options:
   --builder <ver>        Specify a specific vmactions builder version tag.
   --snapshot             Enable QEMU snapshot mode (changes are not saved).
   --boot-timeout-sec <n> Boot timeout in seconds before QEMU is killed and retried once.
-                         Default: 600. Exceptions (only when this flag is not
-                         explicitly passed): OpenBSD/aarch64 -> 1200; TCG mode
-                         (no KVM/HVF/WHPX) -> 1800, since software emulation
-                         is 10-50x slower than hardware acceleration.
+                         Default: 600.
   --enable-pmu           Expose the host PMU (performance counters) to the guest.
                          Disabled by default to avoid intermittent #GP-in-wrmsr
                          crashes seen on some host CPUs (DragonFlyBSD is the
@@ -4606,11 +4603,6 @@ def main():
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
-    # OpenBSD on aarch64 boots much slower under emulation; bump default timeout
-    # unless the user passed --boot-timeout-sec explicitly.
-    if not boot_timeout_user_specified and config['os'] == "openbsd" and config['arch'] == "aarch64":
-        config['boot_timeout_sec'] = 1200
-        debuglog(config['debug'], "OpenBSD/aarch64: default boot timeout raised to 1200s")
 
     # BlissOS (Android-x86): the image is built and verified on std VGA
     # (bochs-drm KMS + HWACCEL=0 software GLES renders the Android desktop to
@@ -5416,12 +5408,6 @@ def main():
             and accel == "tcg"):
         config['cpu'] = "1"
 
-    # TCG (pure software emulation) is 10-50x slower than KVM/HVF/WHPX, so the
-    # default 600s boot timeout is often not enough for heavier guests
-    # (Solaris, DragonFlyBSD, etc.). Bump it unless the user pinned a value.
-    if not boot_timeout_user_specified and accel == "tcg" and config['boot_timeout_sec'] < 1800:
-        config['boot_timeout_sec'] = 1800
-        debuglog(config['debug'], "TCG (no hardware acceleration): default boot timeout raised to {}s".format(config['boot_timeout_sec']))
 
     # Disk type selection. A user --disktype wins; otherwise the guest profile
     # (when present) is authoritative -- it carries the exact bus the image was
