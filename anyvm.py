@@ -113,7 +113,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.1.7",
     "openbsd": "2.0.7",
-    "netbsd": "2.0.7",
+    "netbsd": "2.0.8",
     "dragonflybsd": "2.0.4",
     "solaris": "2.0.5",
     "omnios": "2.1.0",
@@ -3498,6 +3498,47 @@ def copy_content_to_file(src, dest):
     except IOError as e:
         fatal("Failed to copy content from {} to {}: {}".format(src, dest, e))
 
+# Highest guest-profile schema this anyvm.py understands. A profile carrying a
+# different version is ignored (we fall back to the built-in launch logic), so
+# a newer builder can never break an older anyvm.py. Mirrors
+# base-builder/build.py GUEST_PROFILE_VERSION.
+GUEST_PROFILE_SUPPORTED_VERSION = 1
+
+
+def load_guest_profile(path, debug=False):
+    """Parse a guest hardware profile published beside the image as
+    <vm_name>.profile.json (written by base-builder/build.py
+    build_guest_profile).
+
+    The profile is the single source of truth for the guest's QEMU hardware
+    shape (machine, NIC, disk bus, VGA, RNG, firmware kind, ...), emitted by the
+    same code that built the image. Reading it keeps the launch in lock-step
+    with the build instead of re-deriving every per-(os,arch,release) device
+    choice here -- those two assemblers silently drifted and shipped images that
+    built green but would not boot.
+
+    Best-effort: returns None when the asset is absent (releases predating it),
+    unreadable, malformed, or carries a schema this anyvm.py does not
+    understand. In every such case the caller falls back to its built-in logic,
+    so old images and forward compatibility both keep working."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            prof = json.load(f)
+    except (OSError, ValueError) as e:
+        debuglog(debug, "Guest profile {}: unreadable ({}); using built-in launch logic".format(path, e))
+        return None
+    if not isinstance(prof, dict):
+        return None
+    ver = prof.get("anyvm_profile_version")
+    if ver != GUEST_PROFILE_SUPPORTED_VERSION:
+        debuglog(debug, "Guest profile schema v{} unsupported (this anyvm.py understands v{}); using built-in launch logic".format(ver, GUEST_PROFILE_SUPPORTED_VERSION))
+        return None
+    debuglog(debug, "Guest profile loaded: {}".format(prof))
+    return prof
+
+
 def find_qemu(binary_name):
     """Finds QEMU binary in PATH or default Windows location."""
     path = None
@@ -4687,6 +4728,11 @@ def main():
         return []
 
     zst_link = ""
+    # Populated from the published <vm>.profile.json when running a release
+    # image (see load_guest_profile). Stays None for a local --qcow2 file or an
+    # older release with no profile asset, in which case the launch falls back
+    # to the built-in per-(os,arch,release) logic below.
+    guest_profile = None
 
     if not config['qcow2']:
         search_builder = config['builder']
@@ -5068,6 +5114,23 @@ def main():
             else:
                 download_file(vmpub_url, vmpub_file, config['debug'])
 
+        # Guest hardware profile: the single source of truth for the launch
+        # (see load_guest_profile). Published beside the image and named like
+        # it (<vm_name>.profile.json). Gated on check_url_exists so a release
+        # that predates the profile asset never caches a 404 body; absent /
+        # unreadable -> guest_profile stays None -> built-in logic.
+        profile_file = os.path.join(output_dir, vm_name + ".profile.json")
+        if os.path.exists(profile_file):
+            guest_profile = load_guest_profile(profile_file, config['debug'])
+        else:
+            profile_url = "https://github.com/{}/releases/download/v{}/{}.profile.json".format(
+                builder_repo, config['builder'], vm_name)
+            if check_url_exists(profile_url, config['debug']):
+                download_file(profile_url, profile_file, config['debug'])
+                guest_profile = load_guest_profile(profile_file, config['debug'])
+            else:
+                debuglog(config['debug'], "No guest profile at {} (release predates it); using built-in launch logic".format(profile_url))
+
     # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
     # (see OPENBIOS_SPARC64_REPO above); fetch the patched blob published
     # next to the VM images. Preferred from the same builder tag as the
@@ -5360,9 +5423,15 @@ def main():
         config['boot_timeout_sec'] = 1800
         debuglog(config['debug'], "TCG (no hardware acceleration): default boot timeout raised to {}s".format(config['boot_timeout_sec']))
 
-    # Disk type selection
+    # Disk type selection. A user --disktype wins; otherwise the guest profile
+    # (when present) is authoritative -- it carries the exact bus the image was
+    # built on. The per-OS fallbacks below are kept for local --qcow2 files and
+    # releases that predate the profile asset.
     if config['disktype']:
         disk_if = config['disktype']
+    elif guest_profile and guest_profile.get('disk_if'):
+        disk_if = guest_profile['disk_if']
+        debuglog(config['debug'], "Disk bus from guest profile: {}".format(disk_if))
     elif config['os'] == "dragonflybsd":
         disk_if = "ide"
     elif config['os'] == "ghostbsd":
@@ -5514,9 +5583,16 @@ def main():
     if IS_WINDOWS and host_arch == "aarch64":
         args_qemu.extend(["-audiodev", "none,id=snd"])
 
-    # Network card selection
+    # Network card selection. A user --nc wins; otherwise the guest profile
+    # (when present) is authoritative -- it carries the exact NIC model the
+    # installed guest kernel was built to drive (this is the field that drifted
+    # most: a wrong model means no DHCP / no sshd). The per-OS fallback chain
+    # below serves local --qcow2 files and releases without a profile asset.
     if config['nc']:
         net_card = config['nc']
+    elif guest_profile and guest_profile.get('net_card'):
+        net_card = guest_profile['net_card']
+        debuglog(config['debug'], "Network card from guest profile: {}".format(net_card))
     else:
         if config['arch'] == "aarch64":
             net_card = "virtio-net-pci"
