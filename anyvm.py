@@ -5475,6 +5475,28 @@ def main():
             "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
             "-device", "virtio-blk-pci,drive=disk0,bootindex=0"
         ])
+    elif config['os'] == "netbsd" and config['arch'] == "riscv64":
+        # NetBSD/riscv GENERIC64 has no PCI virtio driver -- a virtio-blk-pci
+        # enumerates "not configured", so the kernel finds no root and hangs at
+        # "boot device: <unknown>" / the root-device prompt (never reaching
+        # sshd). Attach the disk on the MMIO virtio transport (virtio-blk-device)
+        # like netbsd-builder does. Ubuntu riscv64 keeps the PCI shortcut (else).
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
+            "-device", "virtio-blk-device,drive=disk0"
+        ])
+    elif config['arch'] == "sparc64":
+        # QEMU sun4u's CMD646 PCI IDE under TCG loses completion interrupts on
+        # TRIM/UNMAP: discard=unmap + detect-zeroes=unmap turn zero-writes into
+        # ATA DATA SET MANAGEMENT (TRIM) ops, and the cmd646 BMDMA path
+        # mishandles their completion -> a "lost interrupt" storm that wedges the
+        # guest (worst on 10.0). netbsd-builder builds the image with a PLAIN
+        # `-drive if=ide,index=0` (no discard) and its boots show ZERO lost
+        # interrupts; match it exactly so the runtime boot stays clean. (Thinness
+        # from discard does not matter for the small 4G ephemeral sparc64 disk.)
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=ide,index=0".format(qcow_name)
+        ])
     else:
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
@@ -5520,7 +5542,14 @@ def main():
             if config['release'] != "6.4.0":
                 net_card = "virtio-net-pci"
         elif config['arch'] == "riscv64":
-            net_card = "virtio-net-pci"
+            # NetBSD/riscv GENERIC64 has no PCI virtio driver: a virtio-net-pci
+            # enumerates "not configured" -> no NIC -> no DHCP/sshd. Drive the
+            # NIC over the MMIO virtio transport for NetBSD (matches
+            # netbsd-builder); Ubuntu riscv64 keeps PCI.
+            if config['os'] == "netbsd":
+                net_card = "virtio-net-device"
+            else:
+                net_card = "virtio-net-pci"
         elif config['arch'] == "s390x":
             # Devices on s390-ccw-virtio sit on the CCW bus, not PCI.
             net_card = "virtio-net-ccw"
@@ -5702,8 +5731,11 @@ def main():
             "-cpu", cpu_opts,
             "-device", "qemu-xhci",
             "-device", "{},netdev=net0".format(net_card),
-            "-device", "virtio-balloon-pci"
         ])
+        # virtio-balloon-pci is a PCI device NetBSD/riscv cannot drive (it would
+        # enumerate "not configured"); skip it for NetBSD. Ubuntu keeps it.
+        if config['os'] != "netbsd":
+            args_qemu.extend(["-device", "virtio-balloon-pci"])
 
         # Prefer EDK2 UEFI firmware (RISCV_VIRT_CODE.fd) located the same way
         # as the other arches (next to the QEMU binary first, so ~/qemu-local
