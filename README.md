@@ -41,8 +41,9 @@ anyvm is a single-file tool for bootstrapping BSD, Illumos, and Linux guests wit
 
 #command line release
 python3 anyvm.py --os freebsd
-python3 anyvm.py --os freebsd --release 14.3
-python3 anyvm.py --os freebsd --release 14.3 --arch aarch64
+python3 anyvm.py --os freebsd --release 15.1
+python3 anyvm.py --os freebsd --release 14.4
+python3 anyvm.py --os freebsd --release 14.4 --arch aarch64
 python3 anyvm.py --os openbsd --release 7.5 --arch aarch64
 python3 anyvm.py --os solaris
 python3 anyvm.py --os tribblix
@@ -51,8 +52,9 @@ python3 anyvm.py --os ubuntu --release 24.04
 python3 anyvm.py --os ghostbsd
 python3 anyvm.py --os blissos
 
-python3 anyvm.py --os freebsd --release 14.3 --arch riscv64
-python3 anyvm.py --os freebsd --release 15.0 --arch powerpc64
+python3 anyvm.py --os freebsd --release 14.4 --arch riscv64
+python3 anyvm.py --os freebsd --release 15.1 --arch riscv64
+python3 anyvm.py --os freebsd --release 15.1 --arch powerpc64
 
 python3 anyvm.py --os netbsd --release 11.0 --arch sparc64
 python3 anyvm.py --os netbsd --release 11.0 --arch riscv64
@@ -67,9 +69,9 @@ python3 anyvm.py --os ubuntu --release 24.04 --arch ppc64le
 
 #desktop release
 
-python3 anyvm.py --os freebsd  --release 15.0-xfce
-python3 anyvm.py --os freebsd  --release 15.0-gnome
-python3 anyvm.py --os freebsd  --release 15.0-kde6
+python3 anyvm.py --os freebsd  --release 15.1-xfce
+python3 anyvm.py --os freebsd  --release 15.1-gnome
+python3 anyvm.py --os freebsd  --release 15.1-kde6
 
 python3 anyvm.py --os openbsd  --release 7.9-xfce
 python3 anyvm.py --os openbsd  --release 7.9-gnome
@@ -207,7 +209,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Release / arch / resources
 
 - `--release <ver>`: Guest release version. If omitted, anyvm auto-selects an available release.
-  - Example: `python3 anyvm.py --os freebsd --release 14.3`
+  - Example: `python3 anyvm.py --os freebsd --release 14.4`
 
 - `--arch <arch>`: Guest architecture.
   - Common values: `x86_64` / `aarch64` / `riscv64` / `s390x` / `powerpc64` /
@@ -262,7 +264,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Example: `python3 anyvm.py --os netbsd --builder 2.0.1`
 
 - `--qcow2 <path>`: Use a local qcow2 image (skip downloading).
-  - Example: `python3 anyvm.py --os freebsd --qcow2 .\\output\\freebsd\\freebsd-14.3.qcow2`
+  - Example: `python3 anyvm.py --os freebsd --qcow2 .\\output\\freebsd\\freebsd-14.4.qcow2`
 
 - `--snapshot`: Enable QEMU snapshot mode. Changes made to the disk are not saved. 
   - Works with `--cache-dir` to run directly from the cache without copying to the data directory.
