@@ -18,6 +18,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Coverage tracks solaris-builder v2.0.6, x86_64 only. Tests the base 11.4
+# image and the gcc toolchain variant. Each conf's VM_SYNC_METHODS is
+# rsync,scp,nfs -- Solaris has no FUSE sshfs (VM_SSHFS_PKG is unset), so sshfs
+# is omitted; rsync ships in the base IPS install.
 jobs:
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=solaris]') }}
@@ -27,7 +31,7 @@ jobs:
         release: ["11.4", "11.4-gcc"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["nfs", "scp"]
+        sync: ["nfs", "scp", "rsync"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -38,7 +42,3 @@ jobs:
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
-
-
-
-   

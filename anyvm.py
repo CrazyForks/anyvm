@@ -111,19 +111,19 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.1.8",
-    "openbsd": "2.0.7",
-    "netbsd": "2.0.8",
-    "dragonflybsd": "2.0.4",
-    "solaris": "2.0.5",
-    "omnios": "2.1.0",
-    "haiku": "2.0.0",
-    "midnightbsd": "2.0.2",
-    "tribblix": "2.0.3",
-    "openindiana": "2.0.9",
-    "ubuntu": "2.0.6",
-    "ghostbsd": "2.0.4",
-    "blissos": "2.0.1"
+    "freebsd": "2.2.1",
+    "openbsd": "2.0.8",
+    "netbsd": "2.0.9",
+    "dragonflybsd": "2.0.5",
+    "solaris": "2.0.6",
+    "omnios": "2.1.1",
+    "haiku": "2.0.2",
+    "midnightbsd": "2.0.3",
+    "tribblix": "2.0.4",
+    "openindiana": "2.1.0",
+    "ubuntu": "2.0.7",
+    "ghostbsd": "2.0.5",
+    "blissos": "2.0.2"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
@@ -5933,7 +5933,10 @@ def main():
         # x86_64
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
         
-        if accel in ["kvm", "whpx", "hvf"]:
+        if config['cputype']:
+            # Explicit --cpu-type wins (the x86_64 branch previously ignored it).
+            cpu_opts = config['cputype']
+        elif accel in ["kvm", "whpx", "hvf"]:
             if accel == "kvm":
                 if config['os'] == 'dragonflybsd':
                     # DragonFlyBSD's early-boot init writes to MSRs that vary by
@@ -5950,7 +5953,14 @@ def main():
             else:
                 cpu_opts = "host,+rdrand,+rdseed"
         else:
-            cpu_opts = "qemu64,+rdrand,+rdseed"
+            # TCG (pure software emulation): default to -cpu max, which exposes
+            # every feature QEMU can emulate. The previous minimal qemu64 model
+            # (~x86-64-v1) lacks SSSE3/SSE4.x/POPCNT, which the Android x86_64
+            # userland (BlissOS) SIGILLs on; max is a strict superset, so any
+            # guest that booted on qemu64 still boots, and modern userlands
+            # that assume the x86-64-v2+ baseline now work too. Override with
+            # --cpu-type for a leaner/faster named model (e.g. Nehalem/Haswell).
+            cpu_opts = "max"
 
         # Disable the guest PMU by default. Exposing the host PMU via -cpu host
         # can trigger intermittent #GP-in-wrmsr crashes during early guest boot

@@ -19,8 +19,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Coverage tracks omnios-builder v2.1.1 (base releases r151046 .. r151058),
+# x86_64 only. Each conf's VM_SYNC_METHODS is rsync,scp,nfs -- OmniOS has no
+# FUSE sshfs (VM_SSHFS_PKG is empty), so sshfs is not offered; rsync is
+# pre-installed, scp/nfs come from base.
 jobs:
-  nfs:
+  test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=omnios]') }}
     strategy:
       fail-fast: false
@@ -28,6 +32,7 @@ jobs:
         release: ["r151046", "r151048", "r151050", "r151052", "r151054", "r151056", "r151058"]
         arch: [""]
         runs: ["ubuntu-24.04"]
+        sync: ["nfs", "scp", "rsync"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -37,8 +42,4 @@ jobs:
       os: omnios
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "nfs"
-
-
-
-   
+      sync: ${{ matrix.sync }}

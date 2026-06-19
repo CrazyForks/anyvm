@@ -19,22 +19,31 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Releases anyvm can actually fetch and run = the current anyvm-org/freebsd-
+# builder set (13.5 / 14.3 / 14.4 / 15.0 / 15.1) PLUS the older releases the
+# legacy fallback repo vmactions/freebsd-builder still serves (12.4 / 13.2 /
+# 13.3 / 13.4 / 14.0 / 14.1 / 14.2 -- published there as .qcow2.xz / .qcow2.zst;
+# anyvm searches [anyvm-org, vmactions] and accepts either extension).
+#
+# Current releases install rsync + fusefs-sshfs -> all four sync backends on
+# x86_64/aarch64. The legacy vmactions images were only ever proven on
+# sshfs + nfs, so they are kept on sshfs + nfs + scp (scp is always available
+# over ssh; rsync is left off as unverified on those old images).
+#   riscv64   -> scp only (no FreeBSD riscv64 pkg repo)
+#   powerpc64 -> nfs,scp (no powerpc64 pkg repo; base only)
+# 12.4 / 13.2 / 14.0 have no aarch64 image; 12.4 has no working sshfs (EOL pkg
+# repo can't supply fusefs-sshfs -- it was nfs-only before).
 jobs:
-  testsshfs:
+  test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["13.2", "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "14.4", "15.0", "15.1"]
+        release: ["13.5", "14.3", "14.4", "15.0", "15.1"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
         exclude:
-          - release: 12.4
-            arch: aarch64
-          - release: 13.2
-            arch: aarch64
-          - release: 14.0
-            arch: aarch64
           - runs: ubuntu-24.04-arm
             arch: ""
 
@@ -46,24 +55,33 @@ jobs:
       os: freebsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "sshfs"
+      sync: ${{ matrix.sync }}
 
 
-  testnfs:
+  # Older releases still served by the vmactions fallback repo.
+  testold:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["12.4", "13.2", "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "14.4", "15.0", "15.1"]
+        release: ["12.4", "13.2", "13.3", "13.4", "14.0", "14.1", "14.2"]
         arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
+        runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
         exclude:
-          - release: 12.4
+          - runs: ubuntu-24.04-arm
+            arch: ""
+          # No aarch64 image for these releases.
+          - release: "12.4"
             arch: aarch64
-          - release: 13.2
+          - release: "13.2"
             arch: aarch64
-          - release: 14.0
+          - release: "14.0"
             arch: aarch64
+          # 12.4 has no usable sshfs (EOL pkg repo); it was nfs-only before.
+          - release: "12.4"
+            sync: sshfs
+
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -72,16 +90,18 @@ jobs:
       os: freebsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: nfs
+      sync: ${{ matrix.sync }}
 
-  testscp-riscv64:
+
+  testriscv64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["13.5", "14.2", "14.3", "15.0", "15.1"]
+        release: ["13.5", "14.2", "14.3", "14.4", "15.0", "15.1"]
         arch: ["riscv64"]
         runs: ["ubuntu-24.04"]
+        sync: ["scp"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -91,16 +111,18 @@ jobs:
       os: freebsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: scp
+      sync: ${{ matrix.sync }}
 
-  testscp-powerpc64:
+
+  testpowerpc64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
         release: ["13.5", "14.3", "14.4", "15.0", "15.1"]
         arch: ["powerpc64"]
-        runs: ["ubuntu-24.04", "windows-latest", "macos-latest"]
+        runs: ["ubuntu-24.04"]
+        sync: ["nfs", "scp"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -110,4 +132,29 @@ jobs:
       os: freebsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: scp
+      sync: ${{ matrix.sync }}
+
+
+  # powerpc64 is a fully-emulated (TCG) guest, so it doubles as a host-
+  # portability smoke test on the non-Linux runners. nfs needs a Linux host
+  # NFS server (set up only in testrun.yml's Linux path), so the cross-host
+  # jobs stay on scp, which works over plain ssh on every host.
+  testpowerpc64-hosts:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["13.5", "14.3", "14.4", "15.0", "15.1"]
+        arch: ["powerpc64"]
+        runs: ["windows-latest", "macos-latest"]
+        sync: ["scp"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: freebsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}

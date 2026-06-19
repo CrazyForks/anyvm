@@ -18,53 +18,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Releases anyvm can fetch and run: 7.7 / 7.8 / 7.9 from the current
+# anyvm-org/openbsd-builder (x86_64, aarch64, riscv64; sparc64 for 7.9), plus
+# 7.3 / 7.4 / 7.5 / 7.6 still served by the vmactions fallback repo.
+# Sync: x86_64 / aarch64 / riscv64 run all four backends. sparc64 is scp+rsync
+# only -- the QEMU sun4u CMD646 PCI-IDE loses interrupts under sustained
+# net+disk DMA (a live sshfs/nfs mount wedges the guest); one-shot scp/rsync
+# stay clean. 7.3 has no aarch64 image.
 jobs:
-  testsshfs-old:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["7.3", "7.4", "7.5", "7.6"]
-        arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
-        exclude:
-          - release: 7.3
-            arch: aarch64
-
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: openbsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "sshfs"
-
-
-  testnfs-old:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["7.3", "7.4", "7.5", "7.6"]
-        arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04"]
-        exclude:
-          - release: 7.3
-            arch: aarch64
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: openbsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "nfs"
-
-
-  testsshfs:
+  test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
@@ -72,6 +34,7 @@ jobs:
         release: ["7.7", "7.8", "7.9"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
         exclude:
           - runs: ubuntu-24.04-arm
             arch: ""
@@ -83,19 +46,23 @@ jobs:
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "sshfs"
+      sync: ${{ matrix.sync }}
 
-  testnfs:
+
+  # 7.3 - 7.6 from the vmactions fallback repo.
+  testold:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["7.7", "7.8", "7.9"]
+        release: ["7.3", "7.4", "7.5", "7.6"]
         arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
+        runs: ["ubuntu-24.04"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
         exclude:
-          - runs: ubuntu-24.04-arm
-            arch: ""
+          # No aarch64 image for 7.3.
+          - release: "7.3"
+            arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -104,10 +71,10 @@ jobs:
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "nfs"
+      sync: ${{ matrix.sync }}
 
 
-  testscp-riscv64:
+  testriscv64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
@@ -115,6 +82,7 @@ jobs:
         release: ["7.7", "7.8", "7.9"]
         arch: ["riscv64"]
         runs: ["ubuntu-24.04"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -123,32 +91,13 @@ jobs:
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "scp"
-
-
-  testrsync-riscv64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["7.7", "7.8", "7.9"]
-        arch: ["riscv64"]
-        runs: ["ubuntu-24.04"]
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: openbsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "rsync"
+      sync: ${{ matrix.sync }}
 
 
   # sparc64 (QEMU sun4u + the patched OpenBIOS anyvm.py auto-downloads) ships
-  # for 7.9. Like riscv64 it is headless (console build), so use the scp/rsync
-  # sync backends rather than sshfs/nfs.
-  testscp-sparc64:
+  # for 7.9. scp/rsync only -- a live sshfs/nfs mount drives the sun4u CMD646
+  # IDE into the sustained lost-interrupt state and wedges the guest.
+  testsparc64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
     strategy:
       fail-fast: false
@@ -156,6 +105,7 @@ jobs:
         release: ["7.9"]
         arch: ["sparc64"]
         runs: ["ubuntu-24.04"]
+        sync: ["scp", "rsync"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -164,27 +114,4 @@ jobs:
       os: openbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "scp"
-
-
-  testrsync-sparc64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["7.9"]
-        arch: ["sparc64"]
-        runs: ["ubuntu-24.04"]
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: openbsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "rsync"
-
-
-
-
+      sync: ${{ matrix.sync }}

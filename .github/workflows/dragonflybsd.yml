@@ -18,30 +18,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# x86_64 only. 6.4.1 / 6.4.2 are built by the current anyvm-org builder; 6.4.0
+# is still downloadable from the older releases / the vmactions fallback. All
+# three confs install rsync + fusefs-sshfs, so all four backends are exercised.
 jobs:
-  sshfs:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=dragonflybsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["6.4.1", "6.4.2"]
-        arch: [""]
-        runs: ["ubuntu-24.04"]
-
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: dragonflybsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: "sshfs"
-
-
-
-
-  nfs:
+  test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=dragonflybsd]') }}
     strategy:
       fail-fast: false
@@ -49,6 +30,7 @@ jobs:
         release: ["6.4.0", "6.4.1", "6.4.2"]
         arch: [""]
         runs: ["ubuntu-24.04"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -58,8 +40,4 @@ jobs:
       os: dragonflybsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "nfs"
-
-
-
-   
+      sync: ${{ matrix.sync }}

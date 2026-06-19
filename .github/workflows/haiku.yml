@@ -18,15 +18,28 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Coverage tracks haiku-builder v2.0.1 (ALL_RELEASES = r1beta5), x86_64 only.
+# Sync backends are rsync + scp. Haiku has no NFS client, so nfs is not
+# offered. sshfs is NOT usable either: the sshfs_fuse pkg installs only as a
+# userlandfs add-on (there is no `sshfs` CLI command), and the native
+# `mount -t userlandfs -p "sshfs ..."` fails with "Bad port ID" on r1beta5
+# (userlandfs_server will not start; syslog logs a userlandfs ELF-load error).
+# Verified by booting the image under QEMU/KVM and testing the mount directly.
+# The guest user is "user" and the share lands under /boot/home.
+#
+# Both backends run on the Linux runner plus the macOS / Windows runners as a
+# host-portability check. Those guests run under TCG and boot slowly, so a
+# pause is inserted between the ssh probes.
 jobs:
-  testrsync:
+  test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=haiku]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: [""]
+        release: ["r1beta5"]
         arch: [""]
-        runs: ["ubuntu-24.04"]
+        runs: ["ubuntu-24.04", "windows-latest", "macos-latest"]
+        sync: ["rsync", "scp"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -36,28 +49,7 @@ jobs:
       os: haiku
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: rsync
+      sync: ${{ matrix.sync }}
       user: user
       vmpath: /boot/home/host
-
-
-  testscp:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=haiku]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: [""]
-        arch: [""]
-        runs: ["ubuntu-24.04"]
-
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: haiku
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: scp
-      user: user
-      vmpath: /boot/home/host
+      sleep: ${{ matrix.runs != 'ubuntu-24.04' && 'sleep 10;' || '' }}

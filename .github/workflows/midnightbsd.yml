@@ -19,8 +19,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Coverage tracks midnightbsd-builder v2.0.3 (ALL_RELEASES = 2.2.8, 3.2.4,
+# 4.0.4), x86_64 only. Each conf's VM_SYNC_METHODS is rsync,scp,sshfs,nfs
+# (rsync + fusefs-sshfs pre-installed), so all four backends are exercised.
 jobs:
-  testsshfs:
+  test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=midnightbsd]') }}
     strategy:
       fail-fast: false
@@ -28,6 +31,7 @@ jobs:
         release: ["2.2.8", "3.2.4", "4.0.4"]
         arch: [""]
         runs: ["ubuntu-24.04"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -37,23 +41,4 @@ jobs:
       os: midnightbsd
       release: ${{ matrix.release }}
       arch: ${{ matrix.arch }}
-      sync: "sshfs"
-
-
-  testnfs:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=midnightbsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["2.2.8", "3.2.4", "4.0.4"]
-        arch: [""]
-        runs: ["ubuntu-24.04"]
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: midnightbsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: nfs
+      sync: ${{ matrix.sync }}

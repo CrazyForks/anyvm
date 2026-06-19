@@ -18,11 +18,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Coverage tracks blissos-builder v2.0.2 (ALL_RELEASES = 14, 15, 16), x86_64.
+# scp is the only sync backend the Android guest supports (a static scp from
+# the dropbear tree is baked into /system/bin, builder release >= v2.0.1; no
+# rsync/sshfs/nfs on Android). vmpath goes under /data, the writable
+# partition (the default /mnt/host is a vold-managed tmpfs on Android).
+#
+# The Linux runner uses KVM; the macOS (arm64) and Windows runners run the
+# x86_64 guest under TCG with software GLES rendering, which boots slowly, so a
+# pause is inserted between the ssh probes (mirrors testmacos.yml).
 jobs:
-  # scp is the only sync backend the Android guest supports (a static scp from
-  # the dropbear tree is baked into /system/bin, builder release >= v2.0.1; no
-  # rsync/sshfs/nfs on Android). vmpath goes under /data, the writable
-  # partition (the default /mnt/host is a vold-managed tmpfs on Android).
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=blissos]') }}
     strategy:
@@ -30,7 +35,7 @@ jobs:
       matrix:
         release: ["14", "15", "16"]
         arch: [""]
-        runs: ["ubuntu-24.04"]
+        runs: ["ubuntu-24.04", "windows-latest", "macos-latest"]
         sync: ["scp"]
 
     uses: ./.github/workflows/testrun.yml
@@ -42,6 +47,4 @@ jobs:
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
       vmpath: "/data/hostshare"
-      # macOS (arm64, x86_64 guest under TCG) and Windows (TCG) boot slower;
-      # the pause between ssh probes mirrors testmacos.yml.
       sleep: ${{ matrix.runs != 'ubuntu-24.04' && 'sleep 10;' || '' }}
