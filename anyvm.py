@@ -113,7 +113,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.2.1",
     "openbsd": "2.0.8",
-    "netbsd": "2.0.9",
+    "netbsd": "2.1.0",
     "dragonflybsd": "2.0.6",
     "solaris": "2.0.6",
     "omnios": "2.1.2",
@@ -3839,7 +3839,7 @@ fi
     if not mounted:
         log("Warning: Failed to mount shared folder via NFS.")
 
-def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=None):
+def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=None, arch=None):
     """Syncs a host directory to the guest using rsync (Push mode)."""
     host_rsync = find_rsync()
     if not host_rsync:
@@ -3959,6 +3959,18 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
     # These MUST come before the source/destination arguments.
     if os_name in ("freebsd", "ghostbsd", "midnightbsd"):
         cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
+    elif os_name == "netbsd" and arch == "aarch64":
+        # NetBSD has no rsync in the base system; it comes from pkgsrc and lives
+        # in /usr/pkg/bin (confirmed: `command -v rsync` -> /usr/pkg/bin/rsync).
+        # The aarch64 11.0 image does not put /usr/pkg/bin on the non-interactive
+        # PATH used by rsync's remote shell, so a bare "rsync" fails with
+        # "sh: rsync: not found" (the x86_64 image is fine, so this is scoped to
+        # aarch64 to leave the passing x86_64 path untouched). Augment PATH
+        # rather than hardcoding an absolute path: keeping the existing $PATH
+        # means a future image that already has rsync on PATH still works. The
+        # remote shell is sh, so "PATH=... rsync" is valid (rsync man page
+        # documents this --rsync-path form).
+        cmd.extend(["--rsync-path", "PATH=/usr/pkg/bin:/usr/local/bin:$PATH rsync"])
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])
         
@@ -6958,7 +6970,7 @@ Host host
                         if config['sync'] == 'nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
                         elif config['sync'] == 'rsync':
-                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, excludes=excludes)
+                            sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, excludes=excludes, arch=config['arch'])
                         elif config['sync'] == 'scp':
                             sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user, excludes=excludes)
                         else:
