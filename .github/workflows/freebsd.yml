@@ -19,66 +19,41 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Releases anyvm can actually fetch and run = the current anyvm-org/freebsd-
-# builder set (13.5 / 14.3 / 14.4 / 15.0 / 15.1) PLUS the older releases the
-# legacy fallback repo vmactions/freebsd-builder still serves (12.4 / 13.2 /
-# 13.3 / 13.4 / 14.0 / 14.1 / 14.2 -- published there as .qcow2.xz / .qcow2.zst;
-# anyvm searches [anyvm-org, vmactions] and accepts either extension).
-#
-# Current releases install rsync + fusefs-sshfs -> all four sync backends on
-# x86_64/aarch64. The legacy vmactions images were only ever proven on
-# sshfs + nfs, so they are kept on sshfs + nfs + scp (scp is always available
-# over ssh; rsync is left off as unverified on those old images).
-#   riscv64   -> scp only (no FreeBSD riscv64 pkg repo)
-#   powerpc64 -> nfs,scp (no powerpc64 pkg repo; base only)
-# 12.4 / 13.2 / 14.0 have no aarch64 image; 12.4 has no working sshfs (EOL pkg
-# repo can't supply fusefs-sshfs -- it was nfs-only before).
+# All FreeBSD releases now ship from anyvm-org/freebsd-builder (>= v2.2.3, the
+# DEFAULT_BUILDER_VERSIONS["freebsd"] pin in anyvm.py), which publishes the full
+# 12.4 -> 15.1 matrix on x86_64 / aarch64 / riscv64 / powerpc64. The old
+# "current vs vmactions-legacy-fallback" split is gone -- anyvm fetches every
+# release from anyvm-org for builder >= 2.0.0. Sync support per the builder's
+# verified table.md:
+#   x86_64 / aarch64 (13.2+) -> rsync + scp + sshfs + nfs (image ships rsync +
+#                               fusefs-sshfs); all four backends.
+#   12.4 (x86_64 + aarch64)  -> nfs + scp only. 12.4 is EOL: the FreeBSD:12 pkg
+#                               repo is gone, so the image is base-only (no
+#                               rsync / fusefs-sshfs to install).
+#   riscv64                  -> nfs + scp (base only; no FreeBSD riscv64 pkg
+#                               repo). No 12.4 (riscv64 began at 13.0); no 13.4
+#                               (upstream qcow2 is a broken stub).
+#   powerpc64                -> nfs + scp (base only; no powerpc64 pkg repo). No
+#                               12.4 (12.x panics under QEMU pseries -- needs
+#                               16M large pages the host can't back).
 jobs:
+  # x86_64 + aarch64. Every release now has both arches. aarch64 runs on the
+  # x86 runner (TCG) and the native arm runner; amd64 on the x86 runner only.
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["13.5", "14.3", "14.4", "15.0", "15.1"]
+        release: ["12.4", "13.2", "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "14.4", "15.0", "15.1"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
         sync: ["sshfs", "nfs", "scp", "rsync"]
         exclude:
           - runs: ubuntu-24.04-arm
             arch: ""
-
-
-    uses: ./.github/workflows/testrun.yml
-    secrets: inherit
-    with:
-      runs: ${{ matrix.runs }}
-      os: freebsd
-      release: ${{ matrix.release }}
-      arch: ${{ matrix.arch }}
-      sync: ${{ matrix.sync }}
-
-
-  # Older releases still served by the vmactions fallback repo.
-  testold:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["12.4", "13.2", "13.3", "13.4", "14.0", "14.1", "14.2"]
-        arch: ["aarch64", ""]
-        runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
-        sync: ["sshfs", "nfs", "scp", "rsync"]
-        exclude:
-          - runs: ubuntu-24.04-arm
-            arch: ""
-          # No aarch64 image for these releases.
+          # 12.4 is base-only (EOL FreeBSD:12 pkg repo): no rsync, no sshfs.
           - release: "12.4"
-            arch: aarch64
-          - release: "13.2"
-            arch: aarch64
-          - release: "14.0"
-            arch: aarch64
-          # 12.4 has no usable sshfs (EOL pkg repo); it was nfs-only before.
+            sync: rsync
           - release: "12.4"
             sync: sshfs
 
@@ -93,15 +68,18 @@ jobs:
       sync: ${{ matrix.sync }}
 
 
+  # riscv64: nfs + scp (base only). No 12.4 image (riscv64 began at 13.0); no
+  # 13.4 image (upstream qcow2 is a broken stub). nfs needs the Linux-host NFS
+  # server that testrun.yml sets up, so these stay on the Linux runner.
   testriscv64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["13.5", "14.2", "14.3", "14.4", "15.0", "15.1"]
+        release: ["13.2", "13.3", "13.5", "14.0", "14.1", "14.2", "14.3", "14.4", "15.0", "15.1"]
         arch: ["riscv64"]
         runs: ["ubuntu-24.04"]
-        sync: ["scp"]
+        sync: ["nfs", "scp"]
 
 
     uses: ./.github/workflows/testrun.yml
@@ -114,12 +92,15 @@ jobs:
       sync: ${{ matrix.sync }}
 
 
+  # powerpc64: nfs + scp (base only). No 12.4 image (12.x panics under QEMU
+  # pseries). nfs needs the Linux-host NFS server, so these stay on the Linux
+  # runner.
   testpowerpc64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["13.5", "14.3", "14.4", "15.0", "15.1"]
+        release: ["13.2", "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "14.4", "15.0", "15.1"]
         arch: ["powerpc64"]
         runs: ["ubuntu-24.04"]
         sync: ["nfs", "scp"]
@@ -138,13 +119,14 @@ jobs:
   # powerpc64 is a fully-emulated (TCG) guest, so it doubles as a host-
   # portability smoke test on the non-Linux runners. nfs needs a Linux host
   # NFS server (set up only in testrun.yml's Linux path), so the cross-host
-  # jobs stay on scp, which works over plain ssh on every host.
+  # jobs stay on scp, which works over plain ssh on every host. A representative
+  # release subset is enough for a host smoke -- not the full matrix.
   testpowerpc64-hosts:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=freebsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["13.5", "14.3", "14.4", "15.0", "15.1"]
+        release: [""]
         arch: ["powerpc64"]
         runs: ["windows-latest", "macos-latest"]
         sync: ["scp"]
