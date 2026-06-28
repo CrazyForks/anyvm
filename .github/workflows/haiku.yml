@@ -38,7 +38,7 @@ jobs:
       matrix:
         release: ["r1beta5"]
         arch: [""]
-        runs: ["ubuntu-24.04", "windows-latest", "macos-latest"]
+        runs: ["ubuntu-24.04"]
         sync: ["rsync", "scp"]
 
 
