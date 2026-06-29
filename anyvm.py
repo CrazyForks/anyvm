@@ -113,7 +113,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.2.3",
     "openbsd": "2.0.8",
-    "netbsd": "2.1.2",
+    "netbsd": "2.1.3",
     "dragonflybsd": "2.0.6",
     "solaris": "2.0.6",
     "omnios": "2.1.2",
@@ -5731,6 +5731,16 @@ def main():
                 # every ubuntu release artifact; ubuntu-builder pins the
                 # same model for its 26.04 aarch64 builds. Use --cpu-type
                 # to override.
+                cpu = "cortex-a72"
+            elif config['os'] == "netbsd" and config['release'].split('.')[0] == "9":
+                # NetBSD 9.x aarch64's sshd is corrupted by -cpu max under QEMU
+                # TCG: it completes one connection, then the listener crashes, so
+                # every later ssh gets "connection closed before banner" (boot
+                # probe hangs). cortex-a72 (ARMv8.0, no VHE/SVE) is stable.
+                # 10.x/11.0 are unaffected (newer userland). Mirrors the
+                # VM_CPU_MODEL pin in netbsd-builder's netbsd-9.x-aarch64.conf
+                # (anyvm does not read cpu_model from the profile). Override
+                # with --cpu-type.
                 cpu = "cortex-a72"
             else:
                 cpu = "max"

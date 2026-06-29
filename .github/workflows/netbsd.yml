@@ -20,8 +20,8 @@ concurrency:
   cancel-in-progress: true
 
 # Releases anyvm can fetch and run: 9.0 / 9.1 / 9.2 / 9.3 / 9.4 / 10.0 / 10.1 /
-# 11.0 from anyvm-org/netbsd-builder. aarch64 ships from 10.0 on; riscv64 only
-# on 11.0.
+# 11.0 from anyvm-org/netbsd-builder. aarch64 ships for every release (9.0+);
+# riscv64 only on 11.0.
 # Sync: x86_64 / aarch64 / riscv64 run all four backends (sshfs uses NetBSD's
 # base mount_psshfs).
 # sparc64 (QEMU sun4u, TCG) IS built and published for 10.0 / 10.1 / 11.0, but
@@ -39,18 +39,6 @@ jobs:
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "nfs", "scp", "rsync"]
-        exclude:
-          # aarch64 ships only from 10.0 onward.
-          - release: "9.0"
-            arch: aarch64
-          - release: "9.1"
-            arch: aarch64
-          - release: "9.2"
-            arch: aarch64
-          - release: "9.3"
-            arch: aarch64
-          - release: "9.4"
-            arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
