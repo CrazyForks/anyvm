@@ -50,6 +50,33 @@ jobs:
       sync: ${{ matrix.sync }}
 
 
+  # aarch64 on a NATIVE ARM host (ubuntu-24.04-arm). GitHub's arm64 runners
+  # have no /dev/kvm, so QEMU still runs under TCG -- but TCG on an aarch64 host
+  # is a different code path than aarch64-guest-on-x86-host (the `test` job
+  # above), and some guest / CPU-model combinations only misbehave there (e.g.
+  # NetBSD 10.x under -cpu max). Exercising it here keeps that path covered at
+  # the source instead of only catching regressions downstream in the *-vm
+  # action repos. aarch64 only -- there is no point running the x86_64 guest on
+  # an ARM host.
+  testarm:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1", "11.0"]
+        arch: ["aarch64"]
+        runs: ["ubuntu-24.04-arm"]
+        sync: ["sshfs", "nfs", "scp", "rsync"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: netbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}
+
   # riscv64 (QEMU virt + u-boot/EDK2) ships only for 11.0 -- the riscv port
   # does not exist on the netbsd-9 / netbsd-10 branches.
   testriscv64:
