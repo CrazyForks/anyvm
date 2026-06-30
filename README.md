@@ -173,6 +173,10 @@ choco install qemu
 ## 7. Notes
 
 - Hardware virtualization (KVM, HVF, or Hyper-V) is applied automatically when available for best performance.
+- On a nested AMD KVM host (e.g. KVM inside WSL2 / Hyper-V), AVX512 is
+  dropped from `-cpu host` automatically: nested AMD-V corrupts the guest's
+  AVX512 state, which makes modern guests (Ubuntu 26.04+) randomly
+  segfault. Bare-metal hosts keep full AVX512; override with `--cpu-type`.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
 
 ## 8. VNC Web UI (Display)

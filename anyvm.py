@@ -113,7 +113,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.2.3",
     "openbsd": "2.0.8",
-    "netbsd": "2.1.3",
+    "netbsd": "2.1.4",
     "dragonflybsd": "2.0.6",
     "solaris": "2.0.6",
     "omnios": "2.1.2",
@@ -3710,6 +3710,31 @@ def hvf_supported():
     except Exception:
         return False
 
+def host_nested_amd_with_avx512():
+    """True if the host is an AMD CPU that exposes AVX512 AND is itself
+    running under a hypervisor (i.e. nested virtualization).
+
+    Nested AMD-V -- e.g. KVM inside WSL2 / Hyper-V -- mishandles the L2
+    guest's AVX512 XSAVE state. A modern guest whose glibc selects the
+    AVX512 string/memory routines (Ubuntu 26.04 and newer) then suffers
+    random SIGSEGV across nearly every dynamically linked binary while the
+    kernel itself stays up. Detected so the x86_64 KVM path can drop just
+    AVX512 from -cpu host in that exact case; bare-metal hosts have no
+    'hypervisor' flag and keep full AVX512.
+    """
+    if platform.system() != "Linux":
+        return False
+    try:
+        with open("/proc/cpuinfo") as f:
+            info = f.read()
+    except Exception:
+        return False
+    # 'hypervisor' is a CPU flag present only when we are ourselves a guest;
+    # the other two are distinctive enough that a plain substring test is safe.
+    return ("AuthenticAMD" in info
+            and "hypervisor" in info
+            and "avx512f" in info)
+
 def sync_sshfs(ssh_cmd, vhost, vguest, os_name, os_release=None):
     """Mounts a host directory into the guest using SSHFS."""
     if IS_WINDOWS:
@@ -5960,6 +5985,18 @@ def main():
                     debuglog(config['debug'], "DragonFlyBSD: using Broadwell-v4 named CPU model (avoids -cpu host MSR variance)")
                 else:
                     cpu_opts = "host,kvm=on,l3-cache=on,+hypervisor,migratable=no,+invtsc"
+                    if host_nested_amd_with_avx512():
+                        # Nested AMD-V (KVM inside WSL2 / Hyper-V) corrupts the
+                        # guest's AVX512 XSAVE state, so any guest whose glibc
+                        # uses AVX512 string/mem routines (Ubuntu 26.04+) randomly
+                        # SIGSEGVs across nearly every binary. Dropping just
+                        # avx512f (validated fix) makes glibc fall back to the AVX2
+                        # paths; AVX2 and the rest of -cpu host stay, so the guest
+                        # keeps near-native speed. Bare-metal hosts are unaffected
+                        # (no 'hypervisor' flag). Override with --cpu-type.
+                        cpu_opts += ",-avx512f"
+                        log("Nested AMD KVM detected: dropping AVX512 from -cpu host "
+                            "(works around guest SIGSEGV; pass --cpu-type to override)")
             else:
                 cpu_opts = "host,+rdrand,+rdseed"
         else:
