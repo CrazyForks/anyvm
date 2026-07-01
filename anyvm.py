@@ -5757,22 +5757,15 @@ def main():
                 # same model for its 26.04 aarch64 builds. Use --cpu-type
                 # to override.
                 cpu = "cortex-a72"
-            elif config['os'] == "netbsd":
-                # NetBSD aarch64 is unstable under -cpu max + QEMU TCG, so pin the
-                # plain ARMv8.0 cortex-a72 (no VHE/SVE) for the whole 9 / 10 / 11
-                # family. Two distinct failure modes, same trigger:
-                #  * 9.x: -cpu max corrupts sshd -- it serves one connection, then
-                #    the listener crashes, so every later ssh gets "connection
-                #    closed before banner" and the boot probe hangs.
-                #  * 10.x: on a NATIVE arm64 host (GitHub's ubuntu-24.04-arm
-                #    runners -- still TCG, they have no /dev/kvm) -cpu max flakes
-                #    at boot ~39% of CI runs: the guest comes up but virtio-net
-                #    never gets a carrier, DHCP fails, and the ssh probe times
-                #    out. aarch64 emulated on an x86 host is unaffected; 11.0
-                #    shares the path and is pinned pre-emptively.
-                # Mirrors the VM_CPU_MODEL pin in netbsd-builder's
-                # netbsd-*-aarch64.conf (anyvm does not read cpu_model from the
-                # profile). Override with --cpu-type.
+            elif config['os'] == "netbsd" and config['release'].split('.')[0] == "9":
+                # NetBSD 9.x aarch64's sshd is corrupted by -cpu max under QEMU
+                # TCG: it completes one connection, then the listener crashes, so
+                # every later ssh gets "connection closed before banner" (boot
+                # probe hangs). cortex-a72 (ARMv8.0, no VHE/SVE) is stable.
+                # 10.x/11.0 are unaffected (newer userland). Mirrors the
+                # VM_CPU_MODEL pin in netbsd-builder's netbsd-9.x-aarch64.conf
+                # (anyvm does not read cpu_model from the profile). Override
+                # with --cpu-type.
                 cpu = "cortex-a72"
             else:
                 cpu = "max"
