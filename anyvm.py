@@ -3748,13 +3748,21 @@ def sync_sshfs(ssh_cmd, vhost, vguest, os_name, os_release=None):
 {pre}
 mkdir -p "{vguest}"
 if [ "{os}" = "netbsd" ]; then
-  # -t 0 disables psshfs's directory/attribute cache (default 30s): with
-  # refreshival=0 the REFRESHTIMEOUT macro (NetBSD src
-  # usr.sbin/puffs/mount_psshfs/psshfs.h) is always true, so every getattr
-  # refetches from the server. The 30s window serves stale size/content to
-  # build workloads that write files and read them back seconds later
-  # (vmactions/netbsd-vm#21: short .o reads, corrupted build.ninja).
-  if ! /usr/sbin/mount_psshfs -t 0 host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
+  # -t -1 makes psshfs NEVER refetch node attributes / directory contents
+  # from the server (REFRESHTIMEOUT macro in NetBSD src
+  # usr.sbin/puffs/mount_psshfs/psshfs.h; the local attr cache is still
+  # updated by the guest's own writes). The default (30s expiry) and -t 0
+  # (always expired) both let an open()-time getattr pull server attrs
+  # while async writeback is still in flight, which invalidates the dirty
+  # page cache and makes an immediate re-read return zero-filled or stale
+  # content -- exactly the vmactions/netbsd-vm#21 corruption (short .o
+  # reads, corrupted build.ninja). CI coherence stress: -t 0 failed 4/25
+  # sshfs legs (rewrite-then-reread came back zero-filled); -t -1 keeps
+  # guest-side I/O coherent. Trade-off: files created/changed on the HOST
+  # after the mount are no longer noticed by the guest -- acceptable for
+  # the CI pattern (host syncs before, guest builds, host reads results
+  # via its own filesystem).
+  if ! /usr/sbin/mount_psshfs -t -1 host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
     exit 1
   fi
 else
