@@ -117,6 +117,91 @@ jobs:
         ${{ inputs.sleep }}
         ssh -v -p 20022 -o StrictHostKeyChecking=accept-new ${{ inputs.user }}@localhost "ls ${{ inputs.vmpath }}; exit" | grep justcheck.txt;
 
+    # Coherence stress for live-mount sync modes: mimic a parallel build
+    # (compiler writes .o files, linker reads them back seconds later;
+    # meson rewrites build.ninja right before ninja re-reads it). Catches
+    # the psshfs stale-cache corruption from vmactions/netbsd-vm#21.
+    # Gated to netbsd for now; rsync/scp are copy modes with no coherence
+    # question, so only sshfs/nfs are exercised.
+    - name: Sync coherence stress
+      if: ${{ inputs.os == 'netbsd' && (inputs.sync == 'sshfs' || inputs.sync == 'nfs') }}
+      shell: bash
+      run: |
+        set -e
+        mountdir=test
+        cat > ${mountdir}/stress.sh <<'EOF'
+        #!/bin/sh
+        # Runs INSIDE the guest on the shared mount ($1). POSIX sh + base
+        # tools only (dd, cksum, seq are all in the NetBSD base system).
+        mnt="$1"
+        d="$mnt/stress.dir"
+        marker="/tmp/stress.fail"
+        rm -f "$marker"
+        mkdir -p "$d" || exit 1
+        for w in 1 2 3 4 5 6; do
+          (
+            for i in $(seq 1 15); do
+              src="/tmp/stress.$w.$i"
+              f="$d/w$w.f$i"
+              # write-then-immediate-reread (compile -> link pattern)
+              dd if=/dev/urandom of="$src" bs=8k count=8 2>/dev/null
+              want=$(cksum < "$src")
+              cp "$src" "$f"
+              got=$(cksum < "$f")
+              if [ "$want" != "$got" ]; then
+                echo "REREAD MISMATCH $f: want [$want] got [$got]"
+                touch "$marker"
+              fi
+              # rewrite-in-place with a different (smaller) size, reread
+              # (meson rewriting build.ninja pattern)
+              dd if=/dev/urandom of="$src" bs=1k count=3 2>/dev/null
+              want=$(cksum < "$src")
+              cp "$src" "$f"
+              got=$(cksum < "$f")
+              if [ "$want" != "$got" ]; then
+                echo "REWRITE MISMATCH $f: want [$want] got [$got]"
+                touch "$marker"
+              fi
+              echo "$want" > "$f.sum"
+              rm -f "$src"
+            done
+          ) &
+        done
+        wait
+        if [ -e "$marker" ]; then
+          echo "coherence stress FAILED in guest"
+          exit 1
+        fi
+        echo "coherence stress passed in guest"
+        EOF
+        echo "===============coherence stress (guest side)"
+        ssh 10022 "sh ${{ inputs.vmpath }}/stress.sh ${{ inputs.vmpath }}; exit"
+        echo "===============coherence stress (host side verify)"
+        # Guest wrote each file plus a .sum with the cksum of its content.
+        # Verify the host sees the same bytes (catches lost/partial
+        # writeback after guest close). Retry briefly: a live mount may
+        # still be flushing right after the guest script returns.
+        ls ${mountdir}/stress.dir/*.sum >/dev/null
+        for attempt in 1 2 3 4 5; do
+          bad=0
+          for s in ${mountdir}/stress.dir/*.sum; do
+            f="${s%.sum}"
+            if [ "$(cksum < "$f")" != "$(cat "$s")" ]; then
+              bad=$((bad+1))
+            fi
+          done
+          if [ "$bad" -eq 0 ]; then
+            echo "host-side verify passed"
+            break
+          fi
+          echo "host-side verify: $bad mismatched files (attempt $attempt)"
+          if [ "$attempt" -eq 5 ]; then
+            echo "host-side verify FAILED"
+            exit 1
+          fi
+          sleep 3
+        done
+
     - name: Collect debug artifacts
       if: failure()
       shell: bash
