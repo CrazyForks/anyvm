@@ -142,6 +142,17 @@ jobs:
         marker="/tmp/stress.fail"
         rm -f "$marker"
         mkdir -p "$d" || exit 1
+        # getcwd must work with the cwd inside the mount: the *-vm actions
+        # do `cd $GITHUB_WORKSPACE` before running user commands, and most
+        # build tools (pkg_add, make, meson, git) call getcwd() on startup.
+        # NetBSD's refuse-based fuse-sshfs fails exactly here ("getcwd
+        # failed", netbsd-vm run 29084790384) while native psshfs is fine.
+        # /bin/pwd is an external binary, so it must call getcwd(3); the
+        # shell built-in may just resolve $PWD logically and hide the bug.
+        if ! (cd "$d" && { /bin/pwd -P || pwd -P; } >/dev/null); then
+          echo "GETCWD FAILED inside the mount"
+          exit 1
+        fi
         for w in 1 2 3 4 5 6; do
           (
             for i in $(seq 1 15); do
