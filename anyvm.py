@@ -4165,6 +4165,32 @@ def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_
     except Exception as e:
         debuglog(debug, "QEMU proc inspect failed: {}".format(e))
 
+    # Host CPU identity. The deterministic first-boot panic class
+    # (vmactions/netbsd-vm#21: NULL-jump SMEP panic at init exec under KVM
+    # -cpu host) tracks the runner's host CPU model; recording it on every
+    # timeout lets failures be correlated to a CPU generation so the
+    # culprit feature can eventually be masked precisely.
+    if not IS_WINDOWS:
+        try:
+            with open("/proc/cpuinfo") as f:
+                cpuinfo = f.read()
+            picked = []
+            for key in ("vendor_id", "model name", "cpu family", "model",
+                        "stepping", "microcode"):
+                m = re.search(r"^{}\s*:\s*(.+)$".format(re.escape(key)),
+                              cpuinfo, re.MULTILINE)
+                if m:
+                    picked.append("{}: {}".format(key, m.group(1).strip()))
+            m = re.search(r"^flags\s*:\s*(.+)$", cpuinfo, re.MULTILINE)
+            if m:
+                flags = set(m.group(1).split())
+                sample = [fl for fl in ("hypervisor", "avx512f", "avx2",
+                                        "sse4_2") if fl in flags]
+                picked.append("flags(sample): {}".format(" ".join(sample)))
+            debuglog(debug, "host CPU:\n{}".format("\n".join(picked)))
+        except Exception as e:
+            debuglog(debug, "host cpuinfo read failed: {}".format(e))
+
     # QEMU full launch command line -- the exact args we passed
     if cmd_list:
         try:
@@ -6773,13 +6799,37 @@ def main():
                         pass
             
             if not success and config.get('qmon') and hostfwd_specs:
-                # Before tearing QEMU down, brute-force search for a booted VM
-                # that is simply behind a misrouted hostfwd (wrong guest IP).
-                # Cheaper than a full kill + 600s+ reboot if the VM is actually up.
-                log("Boot probe timed out; sweeping guest IPs {0}{1}-{0}254 before restart...".format(SLIRP_NETWORK_PREFIX, 10))
-                swept_ip = probe_guest_by_ip_sweep(
-                    config['qmon'], hostfwd_specs, ssh_base_cmd,
-                    probe_timeout=max(2, probe_timeout_sec), debug=config['debug'])
+                # Ask slirp for the guest's real address first: 'info usernet'
+                # lists every guest-originated flow, so a hit means the guest
+                # is up but behind a misrouted hostfwd -- rewrite the forwards
+                # directly instead of brute-forcing the sweep. Zero flows
+                # after a full boot timeout means the guest never brought
+                # networking up at all (kernel panic / boot hang -- the
+                # netbsd-vm#21 SMEP panic looks exactly like this), NOT an
+                # IP/DHCP mismatch; say so explicitly for the log reader.
+                swept_ip = None
+                lease_ip = get_vm_ip_from_monitor(config['qmon'])
+                if lease_ip:
+                    log("slirp sees guest traffic from {}; rewriting hostfwd to it...".format(lease_ip))
+                    if rewrite_hostfwd_target(config['qmon'], hostfwd_specs, lease_ip, debug=config['debug']):
+                        ret, _swto = call_with_timeout(
+                            ssh_base_cmd + ["exit"],
+                            timeout_seconds=max(2, probe_timeout_sec),
+                            stdout=DEVNULL,
+                            stderr=DEVNULL
+                        )
+                        if ret == 0:
+                            swept_ip = lease_ip
+                else:
+                    log("slirp reports no guest-originated traffic after {}s: the guest likely never brought networking up (kernel panic or boot hang), not a DHCP/IP mismatch.".format(boot_timeout_seconds))
+                if not swept_ip:
+                    # Fall back to the brute-force search for a booted VM that
+                    # is behind a misrouted hostfwd (wrong guest IP). Cheaper
+                    # than a full kill + 600s+ reboot if the VM is actually up.
+                    log("Boot probe timed out; sweeping guest IPs {0}{1}-{0}254 before restart...".format(SLIRP_NETWORK_PREFIX, 10))
+                    swept_ip = probe_guest_by_ip_sweep(
+                        config['qmon'], hostfwd_specs, ssh_base_cmd,
+                        probe_timeout=max(2, probe_timeout_sec), debug=config['debug'])
                 if swept_ip:
                     success = True
                     log("VM reachable at {} after hostfwd rewrite; skipping QEMU restart.".format(swept_ip))
@@ -6794,9 +6844,30 @@ def main():
                 # Wait for old proxy to exit
                 time.sleep(1.5)
                 
-                # Restart QEMU
+                # Restart QEMU. For x86_64 guests under KVM, retry with the
+                # feature-minimal qemu64 CPU model instead of -cpu host: on
+                # a small subset of runner hosts a guest kernel can panic
+                # deterministically under -cpu host (seen on NetBSD as a
+                # NULL-jump caught by SMEP at init exec, guest sits in ddb
+                # -- vmactions/netbsd-vm#21), so retrying with identical
+                # args on the same host just burns another timeout. Such
+                # panics track a host CPU feature that qemu64 does not pass
+                # through. Only the model token is swapped; the extra -cpu
+                # flags (kvm=on etc.) and every other arg stay identical.
+                # Scoped to qemu-system-x86_64 so an HVF/aarch64
+                # "-cpu host" is never rewritten to an x86-only model.
+                cmd_list_retry = list(cmd_list)
+                if cmd_list_retry and "qemu-system-x86_64" in str(cmd_list_retry[0]):
+                    try:
+                        cpu_idx = cmd_list_retry.index("-cpu")
+                        cpu_val = str(cmd_list_retry[cpu_idx + 1])
+                        if cpu_val.startswith("host"):
+                            cmd_list_retry[cpu_idx + 1] = "qemu64" + cpu_val[len("host"):]
+                            log("Retrying with conservative CPU model: -cpu {}".format(cmd_list_retry[cpu_idx + 1]))
+                    except (ValueError, IndexError):
+                        pass
                 try:
-                    proc = subprocess.Popen(cmd_list, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    proc = subprocess.Popen(cmd_list_retry, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     proxy_proc = start_vnc_proxy_for_pid(proc.pid)
                 except OSError as e:
                     fatal("Failed to restart QEMU: {}".format(e))
