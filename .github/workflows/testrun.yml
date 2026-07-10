@@ -129,7 +129,11 @@ jobs:
       run: |
         set -e
         mountdir=test
-        cat > ${mountdir}/stress.sh <<'EOF'
+        # Deliver the guest script over ssh stdin, NOT by writing it into the
+        # shared mount: files created host-side AFTER the guest mounted are
+        # not guaranteed to be visible in the guest (psshfs -t -1 freezes the
+        # dircache; round-2 CI failed exactly on "Can't open stress.sh").
+        cat > stress.sh <<'EOF'
         #!/bin/sh
         # Runs INSIDE the guest on the shared mount ($1). POSIX sh + base
         # tools only (dd, cksum, seq are all in the NetBSD base system).
@@ -175,7 +179,26 @@ jobs:
         echo "coherence stress passed in guest"
         EOF
         echo "===============coherence stress (guest side)"
-        ssh 10022 "sh ${{ inputs.vmpath }}/stress.sh ${{ inputs.vmpath }}; exit"
+        ssh 10022 "sh -s ${{ inputs.vmpath }}" < stress.sh
+        echo "===============host-to-guest visibility (informational)"
+        # Non-fatal probe: tells us which sshfs implementation actually
+        # mounted. fuse-sshfs sees host-side files created after the mount
+        # (within its ~20s dir cache); the psshfs -t -1 fallback never does.
+        echo hostvis > ${mountdir}/hostvis.txt
+        cat > hostvis.sh <<'EOF'
+        i=0
+        while [ $i -lt 10 ]; do
+          if [ -e "$1/hostvis.txt" ]; then
+            echo "HOSTVIS: host-side file IS visible in guest"
+            exit 0
+          fi
+          sleep 3
+          i=$((i+1))
+        done
+        echo "HOSTVIS: host-side file NOT visible in guest after 30s (frozen dircache fallback?)"
+        exit 0
+        EOF
+        ssh 10022 "sh -s ${{ inputs.vmpath }}" < hostvis.sh
         echo "===============coherence stress (host side verify)"
         # Guest wrote each file plus a .sum with the cksum of its content.
         # Verify the host sees the same bytes (catches lost/partial

@@ -3748,22 +3748,34 @@ def sync_sshfs(ssh_cmd, vhost, vguest, os_name, os_release=None):
 {pre}
 mkdir -p "{vguest}"
 if [ "{os}" = "netbsd" ]; then
-  # -t -1 makes psshfs NEVER refetch node attributes / directory contents
-  # from the server (REFRESHTIMEOUT macro in NetBSD src
-  # usr.sbin/puffs/mount_psshfs/psshfs.h; the local attr cache is still
-  # updated by the guest's own writes). The default (30s expiry) and -t 0
-  # (always expired) both let an open()-time getattr pull server attrs
-  # while async writeback is still in flight, which invalidates the dirty
-  # page cache and makes an immediate re-read return zero-filled or stale
-  # content -- exactly the vmactions/netbsd-vm#21 corruption (short .o
-  # reads, corrupted build.ninja). CI coherence stress: -t 0 failed 4/25
-  # sshfs legs (rewrite-then-reread came back zero-filled); -t -1 keeps
-  # guest-side I/O coherent. Trade-off: files created/changed on the HOST
-  # after the mount are no longer noticed by the guest -- acceptable for
-  # the CI pattern (host syncs before, guest builds, host reads results
-  # via its own filesystem).
-  if ! /usr/sbin/mount_psshfs -t -1 host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
-    exit 1
+  # Prefer pkgsrc fuse-sshfs (baked into the images via the builders'
+  # VM_SSHFS_PKG) over the base mount_psshfs. psshfs's attribute cache
+  # serves stale or zero-filled data to write-then-reread build workloads:
+  # an open()-time getattr that refetches server attrs while async
+  # writeback is still in flight invalidates the dirty page cache
+  # (vmactions/netbsd-vm#21: short .o reads, corrupted build.ninja; CI
+  # coherence stress with -t 0 failed 4/25 sshfs legs, rewrites re-read as
+  # all zeros). Its only mitigation, -t -1 (never refetch), freezes the
+  # guest's view of anything the HOST writes after the mount (round-2 CI
+  # failed on exactly that). fuse-sshfs is the same tool the other BSDs
+  # use. No allow_other/default_permissions here: those are FUSE-isms
+  # NetBSD's refuse layer may not accept, and everything runs as root.
+  mounted_netbsd=0
+  for sshfsbin in /usr/pkg/bin/sshfs sshfs; do
+    if command -v "$sshfsbin" >/dev/null 2>&1; then
+      if "$sshfsbin" -o reconnect,ServerAliveCountMax=2 host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
+        mounted_netbsd=1
+        break
+      fi
+    fi
+  done
+  if [ "$mounted_netbsd" != "1" ]; then
+    # Fallback for images without the pkg: base psshfs with the attribute
+    # cache frozen (-t -1) so guest-side write-then-reread stays coherent
+    # at the cost of not seeing host-side changes made after the mount.
+    if ! /usr/sbin/mount_psshfs -t -1 host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
+      exit 1
+    fi
   fi
 else
   if [ "{os}" = "freebsd" ] || [ "{os}" = "ghostbsd" ] || [ "{os}" = "midnightbsd" ]; then
