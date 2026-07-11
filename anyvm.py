@@ -6022,8 +6022,11 @@ def main():
                     # pmu=off was not enough to stop intermittent #GP-in-wrmsr
                     # right after TSC calibration. Lock to a stable named model
                     # so guest CPUID is identical across all runner hardware.
-                    # Note: named CPU models do NOT support `migratable` or
-                    # `l3-cache` properties (those are -cpu host only).
+                    # Note: named CPU models do NOT support the `migratable`
+                    # or `host-cache-info` properties (max_x86_cpu_properties
+                    # in QEMU target/i386/cpu.c -- max/host classes only).
+                    # kvm/l3-cache/pmu ARE generic and would be accepted here;
+                    # they are omitted simply because the defaults are fine.
                     cpu_opts = "Broadwell-v4,+hypervisor,+invtsc"
                     debuglog(config['debug'], "DragonFlyBSD: using Broadwell-v4 named CPU model (avoids -cpu host MSR variance)")
                 else:
@@ -6853,7 +6856,12 @@ def main():
                 # args on the same host just burns another timeout. Such
                 # panics track a host CPU feature that qemu64 does not pass
                 # through. Only the model token is swapped; the extra -cpu
-                # flags (kvm=on etc.) and every other arg stay identical.
+                # flags (kvm=on etc.) and every other arg stay identical --
+                # EXCEPT migratable=..., which is a property that exists
+                # only on "-cpu host": QEMU refuses to start with
+                # "Property 'qemu64-x86_64-cpu.migratable' not found"
+                # (seen live: netbsd-vm run 29134207816 on a Xeon Platinum
+                # 8573C host -- the retry crashed instead of booting).
                 # Scoped to qemu-system-x86_64 so an HVF/aarch64
                 # "-cpu host" is never rewritten to an x86-only model.
                 cmd_list_retry = list(cmd_list)
@@ -6862,7 +6870,18 @@ def main():
                         cpu_idx = cmd_list_retry.index("-cpu")
                         cpu_val = str(cmd_list_retry[cpu_idx + 1])
                         if cpu_val.startswith("host"):
-                            cmd_list_retry[cpu_idx + 1] = "qemu64" + cpu_val[len("host"):]
+                            retry_cpu = "qemu64" + cpu_val[len("host"):]
+                            # migratable and host-cache-info are the ONLY
+                            # two properties registered on the max/host CPU
+                            # classes (max_x86_cpu_properties[], QEMU
+                            # target/i386/cpu.c, checked at v8.2.2); every
+                            # other token anyvm uses (kvm, l3-cache, pmu,
+                            # +feature flags) is generic X86CPU.
+                            retry_cpu = ",".join(
+                                tok for tok in retry_cpu.split(",")
+                                if not tok.startswith("migratable=")
+                                and not tok.startswith("host-cache-info="))
+                            cmd_list_retry[cpu_idx + 1] = retry_cpu
                             log("Retrying with conservative CPU model: -cpu {}".format(cmd_list_retry[cpu_idx + 1]))
                     except (ValueError, IndexError):
                         pass
