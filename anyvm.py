@@ -5476,6 +5476,23 @@ def main():
             and accel == "tcg"):
         config['cpu'] = "1"
 
+    # KVM-accelerated x86_64-on-x86_64 guests reach the ssh probe in well
+    # under a minute; when slirp has seen no guest packet for minutes the
+    # guest has panicked (vmactions/netbsd-vm#21: deterministic NetBSD
+    # early-boot panic on Xeon Platinum 8573C runner hosts) and waiting out
+    # the full 600s only delays the conservative-CPU retry that heals it.
+    # Cut the FIRST boot timeout to 180s for this case; the retry keeps the
+    # full 600s window (boot_timeout_retry_sec) so a genuinely slow first
+    # boot that got cut short still has every chance on attempt two. TCG
+    # and emulated arches keep the default; --boot-timeout-sec always wins.
+    if (not boot_timeout_user_specified and accel == "kvm"
+            and config['arch'] in ("", "x86_64", "amd64")
+            and platform.machine().lower() in ("x86_64", "amd64")
+            and config['boot_timeout_sec'] > 180):
+        config['boot_timeout_retry_sec'] = config['boot_timeout_sec']
+        config['boot_timeout_sec'] = 180
+        debuglog(config['debug'], "KVM x86_64-on-x86_64: first-boot timeout reduced to 180s (retry keeps {}s)".format(config['boot_timeout_retry_sec']))
+
 
     # Disk type selection. A user --disktype wins; otherwise the guest profile
     # (when present) is authoritative -- it carries the exact bus the image was
@@ -6692,6 +6709,11 @@ def main():
             ])
             
             boot_timeout_seconds = config['boot_timeout_sec']
+            # The retry window may be longer than the first-boot one: when the
+            # KVM x86_64-on-x86_64 fast-fail above cut the first timeout to
+            # 180s, boot_timeout_retry_sec preserves the original 600s so
+            # attempt two is never starved. Unset means: same as attempt one.
+            retry_boot_timeout_seconds = config.get('boot_timeout_retry_sec') or boot_timeout_seconds
             # The SSH handshake (KEX + pubkey auth) needs a few seconds of
             # headroom after TCP connect; 3s proved too tight, so use 5s as the
             # floor for every host/arch (Windows and aarch64 already used 5s).
@@ -6916,19 +6938,19 @@ def main():
                 last_probe_result = "(none yet)"
 
                 debuglog(config['debug'], "Boot wait begin (retry): QEMU PID={}, timeout={}s, probe_timeout={}s, qmon={}, ssh_port={}".format(
-                    proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
+                    proc.pid, retry_boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
 
                 while True:
                     if proc.poll() is not None:
                         fail_with_output("QEMU terminated during boot (retry)")
 
                     elapsed = time.time() - boot_start_time
-                    if elapsed >= boot_timeout_seconds:
+                    if elapsed >= retry_boot_timeout_seconds:
                         break
 
                     if elapsed - last_boot_progress_log >= 15:
                         debuglog(config['debug'], "Boot wait (retry): elapsed={:.1f}s/{}s, last probe={}".format(
-                            elapsed, boot_timeout_seconds, last_probe_result))
+                            elapsed, retry_boot_timeout_seconds, last_probe_result))
                         last_boot_progress_log = elapsed
 
                     ret, timed_out = call_with_timeout(
