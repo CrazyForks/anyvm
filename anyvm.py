@@ -3572,8 +3572,60 @@ def find_qemu(binary_name):
         candidate_msys = os.path.join(msys_path, binary_name + ".exe")
         if os.path.exists(candidate_msys):
             return candidate_msys
-            
+
     return None
+
+def qemu_binary_name(arch):
+    """Maps a guest arch (config['arch'], "" = x86_64) to the qemu-system
+    binary that runs it."""
+    if arch == "riscv64":
+        return "qemu-system-riscv64"
+    if arch == "aarch64":
+        return "qemu-system-aarch64"
+    if arch == "sparc64":
+        return "qemu-system-sparc64"
+    if arch in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
+        # QEMU ships powerpc64 (big-endian) and powerpc64le (little-endian)
+        # under the same qemu-system-ppc64 binary; -M pseries + -cpu picks
+        # the guest mode.
+        return "qemu-system-ppc64"
+    if arch == "s390x":
+        return "qemu-system-s390x"
+    return "qemu-system-x86_64"
+
+# Debian/Ubuntu packages that ship each qemu-system binary plus the firmware
+# that guests of that arch boot with (package names verified on ubuntu 24.04
+# noble; same set as the README "Install dependencies" section). Note s390x
+# lives in its own qemu-system-s390x package, NOT in qemu-system-misc, while
+# the riscv64 binary is shipped by qemu-system-misc.
+QEMU_APT_PACKAGES = {
+    "qemu-system-x86_64": "qemu-system-x86 ovmf",
+    "qemu-system-aarch64": "qemu-system-arm qemu-efi-aarch64",
+    "qemu-system-riscv64": "qemu-system-misc qemu-efi-riscv64 u-boot-qemu",
+    "qemu-system-sparc64": "qemu-system-sparc",
+    "qemu-system-ppc64": "qemu-system-ppc",
+    "qemu-system-s390x": "qemu-system-s390x",
+}
+
+def qemu_install_hint(bin_name):
+    """Returns a platform-specific command telling the user how to install
+    the missing qemu-system binary."""
+    if IS_WINDOWS:
+        return ("Install QEMU with one of:\n"
+                "  winget install --id SoftwareFreedomConservancy.QEMU\n"
+                "  choco install qemu\n"
+                "then open a new terminal so PATH is refreshed.")
+    if platform.system() == "Darwin":
+        return ("Install QEMU with:\n"
+                "  brew install qemu")
+    pkgs = QEMU_APT_PACKAGES.get(bin_name, "qemu-system-x86 ovmf")
+    apt_cmd = ("sudo apt-get update && sudo apt-get --no-install-recommends"
+               " -y install {} qemu-utils zstd".format(pkgs))
+    if shutil.which("apt-get"):
+        return ("Install QEMU with:\n"
+                "  " + apt_cmd)
+    return ("Install QEMU with your distribution's package manager\n"
+            "(on Debian/Ubuntu: {}).".format(apt_cmd))
 
 def check_qemu_audio_backend(qemu_bin, backend_name):
     """Checks if the QEMU binary supports the specified audio backend."""
@@ -4671,6 +4723,19 @@ def main():
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
+    # Fail fast when the qemu-system binary for the requested arch is not
+    # installed: this runs BEFORE any image download (images are multi-GB),
+    # so the user gets the install command instead of a wasted download.
+    # Arches that may substitute the pinned QEMU build downloaded by
+    # ensure_pinned_qemu() (riscv64/s390x/ppc64 family) are skipped here;
+    # the late check after that substitution still covers them.
+    if config['arch'] not in ("riscv64", "s390x", "powerpc64", "powerpc64le",
+                              "ppc64", "ppc64le"):
+        early_bin_name = qemu_binary_name(config['arch'])
+        if not find_qemu(early_bin_name):
+            fatal("QEMU binary '{}' not found (searched PATH and common "
+                  "install locations).\n{}".format(
+                      early_bin_name, qemu_install_hint(early_bin_name)))
 
     # BlissOS (Android-x86): the image is built and verified on std VGA
     # (bochs-drm KMS + HWACCEL=0 software GLES renders the Android desktop to
@@ -5288,22 +5353,7 @@ def main():
     debuglog(config['debug'], "Serial console listening on {}:{} (tcp)".format(serial_bind_addr, config['serialport']))
 
     # QEMU Construction
-    bin_name = "qemu-system-x86_64"
-    if config['arch'] == "riscv64":
-        bin_name = "qemu-system-riscv64"
-    elif config['arch'] == "aarch64":
-        bin_name = "qemu-system-aarch64"
-    elif config['arch'] == "sparc64":
-        bin_name = "qemu-system-sparc64"
-    elif config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
-        # QEMU ships powerpc64 (big-endian) and powerpc64le (little-endian)
-        # under the same qemu-system-ppc64 binary; -M pseries + -cpu picks
-        # the guest mode.
-        bin_name = "qemu-system-ppc64"
-    elif config['arch'] == "s390x":
-        # Ubuntu/Debian package this in its own qemu-system-s390x package
-        # (NOT in qemu-system-misc).
-        bin_name = "qemu-system-s390x"
+    bin_name = qemu_binary_name(config['arch'])
     qemu_bin = find_qemu(bin_name)
 
     # Distro QEMU 8.2 (ubuntu noble et al.) cannot run some guests reliably;
@@ -5335,7 +5385,9 @@ def main():
                                       config['debug'], bin_name="qemu-system-ppc64")
 
     if not qemu_bin:
-        fatal("QEMU binary '{}' not found. Please install QEMU or check PATH.".format(bin_name))
+        fatal("QEMU binary '{}' not found (searched PATH and common "
+              "install locations).\n{}".format(
+                  bin_name, qemu_install_hint(bin_name)))
 
     # VNC Console Auto-detection logic:
     vnc_val = config.get('vnc', '')
