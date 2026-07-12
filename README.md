@@ -44,6 +44,20 @@ pip install anyvm.py
 anyvm.py --os freebsd
 ```
 
+On Debian/Ubuntu the system Python refuses `pip install` (PEP 668,
+"externally-managed-environment"). Install with pipx instead:
+
+```bash
+sudo apt-get install -y pipx
+pipx install anyvm.py
+pipx ensurepath   # first time only, then re-open the shell
+
+anyvm.py --os freebsd
+```
+
+Or use a virtual environment: `python3 -m venv ~/.venvs/anyvm &&
+~/.venvs/anyvm/bin/pip install anyvm.py`.
+
 Or download the single file and run it directly:
 
 ```bash
