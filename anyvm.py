@@ -156,12 +156,11 @@ OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 # Pinned user-space NFS server (github.com/anyvm-org/nfsd): one pure-Python
 # stdlib-only file serving NFSv3/v4.0/v4.1 plus a portmapper (-pmap), runs
 # on Linux/macOS/Windows without root and without a kernel nfsd. Downloaded
-# on demand: it is the default backend for `--sync nfs` (alias: mynfs);
-# `--sync sys-nfs` forces the host kernel NFS server instead. The release
-# ships no binary assets, so the raw file at the release tag is the
-# download source.
-MYNFSD_VERSION = "0.0.4"
-MYNFSD_URL = ("https://raw.githubusercontent.com/anyvm-org/nfsd/"
+# on demand from the release asset: it is the default backend for
+# `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
+# server instead.
+MYNFSD_VERSION = "0.0.5"
+MYNFSD_URL = ("https://github.com/anyvm-org/nfsd/releases/download/"
               "v{}/nfsd.py".format(MYNFSD_VERSION))
 
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
@@ -3900,16 +3899,49 @@ fi
 NFSV4LESS_GUESTS = ("openbsd", "netbsd", "dragonflybsd")
 
 def ensure_mynfsd(output_dir, debug=False):
-    """Fetches the bundled user-space NFSv4.0 server (anyvm-org/nfsd, a single
-    pure-Python stdlib-only file) pinned at MYNFSD_VERSION into output_dir.
-    Returns the local path, or None when the download fails."""
+    """Fetches the bundled user-space NFS server (anyvm-org/nfsd, a single
+    pure-Python stdlib-only file) pinned at MYNFSD_VERSION into output_dir,
+    verifying it against the release's nfsd.py.sha256 sidecar. Returns the
+    local path, or None when the download or the verification fails."""
     dest = os.path.join(output_dir, "nfsd-v{}.py".format(MYNFSD_VERSION))
     if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        # verified when it was downloaded
         return dest
     tmp = dest + ".part"
     if not download_file(MYNFSD_URL, tmp, debug):
         log("Warning: failed to download the user-space nfsd from " + MYNFSD_URL)
         return None
+
+    # The release publishes a "<sha256>  nfsd.py" sidecar next to the file.
+    expected = ""
+    for _ in range(3):
+        try:
+            resp = urlopen(Request(MYNFSD_URL + ".sha256"), timeout=30)
+            expected = resp.read(1024).decode(
+                "ascii", "replace").split()[0].strip().lower()
+            break
+        except Exception as e:
+            debuglog(debug, "sha256 sidecar fetch failed: {}".format(e))
+            time.sleep(2)
+    if not re.fullmatch(r"[0-9a-f]{64}", expected or ""):
+        log("Warning: could not fetch the nfsd.py sha256 sidecar from {}; "
+            "refusing the unverified download.".format(MYNFSD_URL + ".sha256"))
+        return None
+
+    h = hashlib.sha256()
+    with open(tmp, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    actual = h.hexdigest()
+    if actual != expected:
+        log("Warning: nfsd.py sha256 mismatch (expected {}, got {}); "
+            "discarding the download.".format(expected, actual))
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return None
+    debuglog(debug, "nfsd.py sha256 verified: {}".format(actual))
     os.replace(tmp, dest)
     return dest
 
@@ -3995,6 +4027,26 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
         log("Warning: the user-space nfsd did not come up on port {}; see {}".format(port, log_path))
         return
 
+    if os_name in NFSV4LESS_GUESTS:
+        # These guests can only find the server through the portmapper --
+        # check its TCP listener is actually up before mounting, so a
+        # failed port-111 bind surfaces here instead of as a guest-side
+        # portmap timeout.
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3)
+        try:
+            s.connect(("127.0.0.1", 111))
+            debuglog(debug, "nfsd portmapper reachable on 127.0.0.1:111")
+        except Exception as e:
+            log("Warning: the nfsd portmapper is not reachable on port 111 "
+                "({}); {} guests cannot discover the NFS ports (see {}).".format(
+                    e, os_name, log_path))
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+
     # NFSv4 needs no portmapper/mountd, so a plain port option (or NFS URL on
     # illumos) reaches the server directly. The exported directory is the
     # server's root, hence the "/" path.
@@ -4023,9 +4075,23 @@ esac
 """.format(vguest=vguest, os=os_name, port=port)
 
     mounted = False
-    for _ in range(5):
+    for attempt in range(5):
         p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
-        p_mount.communicate(input=mount_script.encode('utf-8'))
+        try:
+            # Cap each attempt: when the portmapper is unreachable, BSD
+            # mount_nfs retries the portmap query forever (OpenBSD logged
+            # "Port mapper failure - RPC: Timed out" every 2 minutes for
+            # an hour on a macOS runner) and would hang anyvm here.
+            p_mount.communicate(input=mount_script.encode('utf-8'),
+                                timeout=60)
+        except subprocess.TimeoutExpired:
+            log("mynfs mount attempt {} hung beyond 60s, killing".format(
+                attempt + 1))
+            p_mount.kill()
+            try:
+                p_mount.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         if p_mount.returncode == 0:
             mounted = True
             break
