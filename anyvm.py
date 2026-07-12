@@ -153,13 +153,14 @@ PINNED_QEMU_ASSETS = {
 OPENBIOS_SPARC64_REPO = "anyvm-org/openbsd-builder"
 OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 
-# Pinned user-space NFSv4.0 server (github.com/anyvm-org/nfsd): one pure-Python
-# stdlib-only file, runs on Linux/macOS/Windows without root and without a
-# kernel nfsd. Downloaded on demand: it is the default backend for
-# `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
-# server instead. The release ships no binary assets, so the raw file at the
-# release tag is the download source.
-MYNFSD_VERSION = "0.0.1"
+# Pinned user-space NFS server (github.com/anyvm-org/nfsd): one pure-Python
+# stdlib-only file serving NFSv3/v4.0/v4.1 plus a portmapper (-pmap), runs
+# on Linux/macOS/Windows without root and without a kernel nfsd. Downloaded
+# on demand: it is the default backend for `--sync nfs` (alias: mynfs);
+# `--sync sys-nfs` forces the host kernel NFS server instead. The release
+# ships no binary assets, so the raw file at the release tag is the
+# download source.
+MYNFSD_VERSION = "0.0.4"
 MYNFSD_URL = ("https://raw.githubusercontent.com/anyvm-org/nfsd/"
               "v{}/nfsd.py".format(MYNFSD_VERSION))
 
@@ -2650,12 +2651,17 @@ Options:
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
                          Supported: rsync (default), sshfs, nfs, sys-nfs, scp, no/off (disable sync).
-                         nfs runs the bundled user-space NFSv4.0 server
-                         (anyvm-org/nfsd) on the host: no kernel nfsd, no
-                         root needed, works on Linux/macOS/Windows hosts
-                         (mynfs is an accepted alias). sys-nfs uses the
-                         host kernel NFS server instead (needs root/sudo;
-                         not available on macOS/Windows hosts).
+                         nfs runs the bundled user-space NFS server
+                         (anyvm-org/nfsd, v3/v4 + portmapper) on the host:
+                         no kernel nfsd, no root needed, works on
+                         Linux/macOS/Windows hosts (mynfs is an accepted
+                         alias). The v3-only guests (openbsd, netbsd,
+                         dragonflybsd) mount it via its portmapper on
+                         Windows/macOS hosts; on Linux hosts they use the
+                         host kernel NFS server instead (port 111 belongs
+                         to the system rpcbind there). sys-nfs forces the
+                         host kernel NFS server for every guest (needs
+                         root/sudo; not available on macOS/Windows hosts).
                          Note: sshfs not supported on Windows hosts; rsync
                          requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
@@ -3881,6 +3887,18 @@ fi
     if not mounted:
         log("Warning: Failed to mount shared folder via sshfs.")
 
+# Guests whose base system has no NFSv4 client AND whose mount_nfs has no
+# mountport= option, so they mount the user-space nfsd over NFSv3 via its
+# -pmap portmapper on port 111. CI-verified (anyvm run 29190082415):
+# dragonflybsd mount_nfs rejects `-o nfsv4` outright; openbsd/netbsd
+# mount_nfs speak NFSv3 only, and all three discover the MOUNT/NFS ports
+# exclusively through a portmapper query. On Linux hosts port 111 belongs
+# to the system rpcbind (which knows nothing about the user-space nfsd),
+# so there `--sync nfs` routes these guests to the kernel NFS server
+# (sys-nfs) instead; on Windows/macOS hosts port 111 is free and needs no
+# privileges, so the user-space nfsd serves them directly.
+NFSV4LESS_GUESTS = ("openbsd", "netbsd", "dragonflybsd")
+
 def ensure_mynfsd(output_dir, debug=False):
     """Fetches the bundled user-space NFSv4.0 server (anyvm-org/nfsd, a single
     pure-Python stdlib-only file) pinned at MYNFSD_VERSION into output_dir.
@@ -3900,7 +3918,11 @@ def run_internal_nfsd(nfsd_path, export_dir, port, qemu_pid, log_path, debug=Fal
     QEMU process it serves is gone. Spawned detached so a --detach VM keeps
     its NFS share after anyvm.py exits (same pattern as the VNC web proxy)."""
     cmd = [sys.executable, nfsd_path, "-dir", export_dir,
-           "-port", str(port), "-bind", "127.0.0.1"]
+           "-port", str(port), "-bind", "127.0.0.1", "-pmap"]
+    # -pmap serves portmapper v2 on port 111 for the v3-only BSD guests
+    # (NFSV4LESS_GUESTS). When 111 is taken (system rpcbind on Linux, or a
+    # second -v mount's nfsd instance), nfsd logs a warning and keeps
+    # serving; v4-capable guests are unaffected.
     # Report file owners to the guest as the launching user, mirroring the
     # anonuid/anongid mapping the kernel-nfsd export line uses.
     if hasattr(os, "getuid"):
@@ -3976,21 +3998,25 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
     # NFSv4 needs no portmapper/mountd, so a plain port option (or NFS URL on
     # illumos) reaches the server directly. The exported directory is the
     # server's root, hence the "/" path.
+    # The v3-only BSDs (NFSV4LESS_GUESTS) have no port options at all: their
+    # mount_nfs discovers the MOUNT/NFS ports via the nfsd -pmap portmapper
+    # on port 111 (query goes over UDP; NFS itself then runs over TCP, so
+    # TCP must be selected explicitly where it is not the default).
     # Option sources: Linux -- nfsd.py's own README; FreeBSD family --
     # mount_nfs(8) (nfsv4, minorversion=, port=, tcp); illumos family --
-    # mount_nfs(8) (vers=, port=); netbsd -- mount_nfs(8) (tcp, port=);
-    # openbsd -- mount_nfs(8) (-T flag passed via -o, port=).
+    # mount_nfs(8) (vers=, port=); openbsd/netbsd/dragonflybsd --
+    # mount_nfs(8) (-T tcp flag; dragonfly -3 forces v3).
     mount_script = """
 mkdir -p "{vguest}"
 case "{os}" in
   solaris|omnios|openindiana|tribblix)
     mount -F nfs -o vers=4,port={port} 192.168.122.2:/ "{vguest}" ;;
-  freebsd|ghostbsd|midnightbsd|dragonflybsd)
+  freebsd|ghostbsd|midnightbsd)
     mount -t nfs -o nfsv4,minorversion=0,tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
-  netbsd)
-    mount -t nfs -o tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
-  openbsd)
-    mount -t nfs -o -T,port={port} 192.168.122.2:/ "{vguest}" ;;
+  openbsd|netbsd)
+    /sbin/mount_nfs -T 192.168.122.2:/ "{vguest}" ;;
+  dragonflybsd)
+    /sbin/mount_nfs -3 -T 192.168.122.2:/ "{vguest}" ;;
   *)
     mount -t nfs -o vers=4.0,proto=tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
 esac
@@ -7336,8 +7362,11 @@ Host host
                 log("Warning: only --sync scp works on BlissOS/Android guests; skipping {} sync.".format(config['sync']))
             elif config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
-                # sudo is only needed by the kernel-NFS path (sys-nfs).
-                if config['sync'] == 'sys-nfs':
+                # sudo is only needed by the kernel-NFS path: sys-nfs, and
+                # the nfs route for guests without an NFSv4 client.
+                if (config['sync'] == 'sys-nfs'
+                        or (config['sync'] == 'nfs'
+                            and config['os'] in NFSV4LESS_GUESTS)):
                     # Check if sudo exists in path (unix only)
                     if not IS_WINDOWS:
                         try:
@@ -7374,8 +7403,18 @@ Host host
                         
                         if config['sync'] == 'nfs':
                             # Default NFS backend: the bundled user-space
-                            # NFSv4.0 nfsd.
-                            sync_mynfs(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, proc.pid, config['debug'])
+                            # nfsd. Exception: the v3-only BSD guests on a
+                            # Linux host, where the system rpcbind owns
+                            # port 111 so the nfsd portmapper they depend
+                            # on is unreachable -- the kernel NFS server
+                            # is available there, so route them to it.
+                            if (config['os'] in NFSV4LESS_GUESTS
+                                    and not IS_WINDOWS
+                                    and platform.system() != "Darwin"):
+                                log("Note: {} guests mount NFSv3 via portmapper; on this host port 111 belongs to the system rpcbind, so using the host kernel NFS server (sys-nfs) instead.".format(config['os']))
+                                sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
+                            else:
+                                sync_mynfs(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, proc.pid, config['debug'])
                         elif config['sync'] == 'sys-nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
                         elif config['sync'] == 'rsync':
