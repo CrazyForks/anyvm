@@ -25,7 +25,7 @@ jobs:
         os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu"]
         arch: ["aarch64", "x86_64"]
         runs: ["macos-latest"]
-        sync: ["scp", "rsync"]
+        sync: ["scp", "rsync", "nfs"]
         exclude:
           - os: solaris
             arch: aarch64

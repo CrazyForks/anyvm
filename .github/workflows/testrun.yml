@@ -122,9 +122,10 @@ jobs:
     # meson rewrites build.ninja right before ninja re-reads it). Catches
     # the psshfs stale-cache corruption from vmactions/netbsd-vm#21.
     # Gated to netbsd for now; rsync/scp are copy modes with no coherence
-    # question, so only sshfs/nfs are exercised.
+    # question, so only the live-mount modes (sshfs/nfs/sys-nfs) are
+    # exercised.
     - name: Sync coherence stress
-      if: ${{ inputs.os == 'netbsd' && (inputs.sync == 'sshfs' || inputs.sync == 'nfs') }}
+      if: ${{ inputs.os == 'netbsd' && (inputs.sync == 'sshfs' || inputs.sync == 'nfs' || inputs.sync == 'sys-nfs') }}
       shell: bash
       run: |
         set -e

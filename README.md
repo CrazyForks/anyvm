@@ -332,10 +332,13 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Windows example: `python3 anyvm.py --os freebsd -v D:\\data:/data`
 
 - `--sync <mode>`: Sync mechanism used for `-v`. Strictly validated.
-  - Supported: `rsync` (default), `sshfs`, `nfs`, `scp`. Empty string also defaults to `rsync`. Any other value will cause an error.
+  - Supported: `rsync` (default), `sshfs`, `nfs`, `sys-nfs`, `scp`. Empty string also defaults to `rsync`. Any other value will cause an error.
+  - `nfs` runs the bundled user-space NFSv4.0 server ([anyvm-org/nfsd](https://github.com/anyvm-org/nfsd), a single pure-Python file downloaded on demand): no kernel nfsd, no root needed, works on Linux/macOS/Windows hosts (`mynfs` is an accepted alias). The guest mounts it with its NFS client.
+  - `sys-nfs` forces the host kernel NFS server for every guest. Needs a Linux host with root/sudo and the kernel NFS server installed; not available on macOS/Windows hosts.
   - Examples:
     - `python3 anyvm.py --os freebsd --sync rsync -v $(pwd):/data`
     - `python3 anyvm.py --os solaris --sync scp -v D:\\data:/data`
+    - `python3 anyvm.py --os freebsd --sync nfs -v D:\\data:/data`
 
 ### Console / display / debugging
 

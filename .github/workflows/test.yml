@@ -72,7 +72,43 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: nfs
-   
+
+
+  # Kept: the host kernel NFS server path (--sync sys-nfs), which is what
+  # `sync: nfs` used to exercise before nfs switched to the bundled
+  # user-space nfsd.
+  testsysnfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+        exclude:
+          - os: solaris
+            arch: aarch64
+          - os: dragonflybsd
+            arch: aarch64
+          - os: omnios
+            arch: aarch64
+          - os: openindiana
+            arch: aarch64
+          - os: tribblix
+            arch: aarch64
+          - os: midnightbsd
+            arch: aarch64
+          - os: ghostbsd
+            arch: aarch64
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+      sync: sys-nfs
+
 
 
 

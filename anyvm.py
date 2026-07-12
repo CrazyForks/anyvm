@@ -153,6 +153,16 @@ PINNED_QEMU_ASSETS = {
 OPENBIOS_SPARC64_REPO = "anyvm-org/openbsd-builder"
 OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 
+# Pinned user-space NFSv4.0 server (github.com/anyvm-org/nfsd): one pure-Python
+# stdlib-only file, runs on Linux/macOS/Windows without root and without a
+# kernel nfsd. Downloaded on demand: it is the default backend for
+# `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
+# server instead. The release ships no binary assets, so the raw file at the
+# release tag is the download source.
+MYNFSD_VERSION = "0.0.1"
+MYNFSD_URL = ("https://raw.githubusercontent.com/anyvm-org/nfsd/"
+              "v{}/nfsd.py".format(MYNFSD_VERSION))
+
 VERSION_TOKEN_RE = re.compile(r"[0-9]+|[A-Za-z]+")
 
 
@@ -2639,8 +2649,15 @@ Options:
                          Format: /host/path:/guest/path
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
-                         Supported: rsync (default), sshfs, nfs, scp, no/off (disable sync).
-                         Note: sshfs/nfs not supported on Windows hosts; rsync requires rsync.exe.
+                         Supported: rsync (default), sshfs, nfs, sys-nfs, scp, no/off (disable sync).
+                         nfs runs the bundled user-space NFSv4.0 server
+                         (anyvm-org/nfsd) on the host: no kernel nfsd, no
+                         root needed, works on Linux/macOS/Windows hosts
+                         (mynfs is an accepted alias). sys-nfs uses the
+                         host kernel NFS server instead (needs root/sudo;
+                         not available on macOS/Windows hosts).
+                         Note: sshfs not supported on Windows hosts; rsync
+                         requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
   --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids re-download and re-extract).
   --disktype <type>      Disk interface type (e.g., virtio, ide).
@@ -3593,38 +3610,36 @@ def qemu_binary_name(arch):
         return "qemu-system-s390x"
     return "qemu-system-x86_64"
 
-# Debian/Ubuntu packages that ship each qemu-system binary plus the firmware
-# that guests of that arch boot with (package names verified on ubuntu 24.04
-# noble; same set as the README "Install dependencies" section). Note s390x
-# lives in its own qemu-system-s390x package, NOT in qemu-system-misc, while
-# the riscv64 binary is shipped by qemu-system-misc.
-QEMU_APT_PACKAGES = {
-    "qemu-system-x86_64": "qemu-system-x86 ovmf",
-    "qemu-system-aarch64": "qemu-system-arm qemu-efi-aarch64",
-    "qemu-system-riscv64": "qemu-system-misc qemu-efi-riscv64 u-boot-qemu",
-    "qemu-system-sparc64": "qemu-system-sparc",
-    "qemu-system-ppc64": "qemu-system-ppc",
-    "qemu-system-s390x": "qemu-system-s390x",
-}
+# The complete Debian/Ubuntu host dependency set -- the same package list as
+# the README "Install dependencies" section; keep the two in lockstep.
+APT_ALL_DEPS = ("zstd ovmf xz-utils qemu-utils ca-certificates"
+                " qemu-system-x86 qemu-system-arm qemu-efi-aarch64"
+                " qemu-efi-riscv64 qemu-system-riscv64 qemu-system-misc"
+                " u-boot-qemu qemu-system-ppc qemu-system-s390x"
+                " qemu-system-sparc ssh-client")
 
-def qemu_install_hint(bin_name):
-    """Returns a platform-specific command telling the user how to install
-    the missing qemu-system binary."""
+def deps_install_hint():
+    """Returns the platform-specific command that installs the COMPLETE host
+    dependency set (QEMU for every guest arch, firmware, zstd/xz, ssh),
+    matching the README "Install dependencies" section."""
     if IS_WINDOWS:
-        return ("Install QEMU with one of:\n"
+        return ("Install the dependencies with:\n"
                 "  winget install --id SoftwareFreedomConservancy.QEMU\n"
-                "  choco install qemu\n"
-                "then open a new terminal so PATH is refreshed.")
+                "  winget install facebook.zstd\n"
+                "(or: choco install qemu), then open a new terminal so PATH"
+                " is refreshed.\n"
+                "ssh ships with Windows: Settings > System > Optional"
+                " features > OpenSSH Client.")
     if platform.system() == "Darwin":
-        return ("Install QEMU with:\n"
+        return ("Install the dependencies with:\n"
                 "  brew install qemu")
-    pkgs = QEMU_APT_PACKAGES.get(bin_name, "qemu-system-x86 ovmf")
-    apt_cmd = ("sudo apt-get update && sudo apt-get --no-install-recommends"
-               " -y install {} qemu-utils zstd".format(pkgs))
+    apt_cmd = ("sudo apt-get update && sudo apt-get"
+               " --no-install-recommends -y install " + APT_ALL_DEPS)
     if shutil.which("apt-get"):
-        return ("Install QEMU with:\n"
+        return ("Install the dependencies with:\n"
                 "  " + apt_cmd)
-    return ("Install QEMU with your distribution's package manager\n"
+    return ("Install QEMU, zstd, xz and an ssh client with your"
+            " distribution's package manager\n"
             "(on Debian/Ubuntu: {}).".format(apt_cmd))
 
 def check_qemu_audio_backend(qemu_bin, backend_name):
@@ -3866,17 +3881,149 @@ fi
     if not mounted:
         log("Warning: Failed to mount shared folder via sshfs.")
 
-def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
-    """Configures host NFS exports and mounts in guest."""
+def ensure_mynfsd(output_dir, debug=False):
+    """Fetches the bundled user-space NFSv4.0 server (anyvm-org/nfsd, a single
+    pure-Python stdlib-only file) pinned at MYNFSD_VERSION into output_dir.
+    Returns the local path, or None when the download fails."""
+    dest = os.path.join(output_dir, "nfsd-v{}.py".format(MYNFSD_VERSION))
+    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        return dest
+    tmp = dest + ".part"
+    if not download_file(MYNFSD_URL, tmp, debug):
+        log("Warning: failed to download the user-space nfsd from " + MYNFSD_URL)
+        return None
+    os.replace(tmp, dest)
+    return dest
+
+def run_internal_nfsd(nfsd_path, export_dir, port, qemu_pid, log_path, debug=False):
+    """--internal-nfsd watchdog: runs nfsd.py as a child and stops it once the
+    QEMU process it serves is gone. Spawned detached so a --detach VM keeps
+    its NFS share after anyvm.py exits (same pattern as the VNC web proxy)."""
+    cmd = [sys.executable, nfsd_path, "-dir", export_dir,
+           "-port", str(port), "-bind", "127.0.0.1"]
+    # Report file owners to the guest as the launching user, mirroring the
+    # anonuid/anongid mapping the kernel-nfsd export line uses.
+    if hasattr(os, "getuid"):
+        cmd.extend(["-anonuid", str(os.getuid()), "-anongid", str(os.getgid())])
+    if debug:
+        cmd.append("-vv")
+    with open(log_path, "a") as logf:
+        child = subprocess.Popen(cmd, stdin=DEVNULL, stdout=logf, stderr=logf)
+        try:
+            while child.poll() is None:
+                if not is_pid_alive_main(qemu_pid):
+                    child.terminate()
+                    try:
+                        child.wait(timeout=10)
+                    except Exception:
+                        child.kill()
+                    break
+                time.sleep(5)
+        finally:
+            if child.poll() is None:
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+
+def start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug=False):
+    """Starts the user-space nfsd for one exported directory, detached behind
+    the --internal-nfsd watchdog. Returns True once the port accepts TCP."""
+    args = [sys.executable, os.path.abspath(__file__), "--internal-nfsd",
+            nfsd_path, vhost, str(port), str(qemu_pid), log_path,
+            "1" if debug else "0"]
+    popen_kwargs = {}
     if IS_WINDOWS:
-        log("Warning: NFS sync not supported on Windows host.")
+        # CREATE_NO_WINDOW = 0x08000000, DETACHED_PROCESS = 0x00000008
+        popen_kwargs['creationflags'] = 0x08000000 | 0x00000008
+    else:
+        popen_kwargs['start_new_session'] = True
+    subprocess.Popen(args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL,
+                     **popen_kwargs)
+    for _ in range(30):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except Exception:
+            time.sleep(1)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return False
+
+def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, debug=False):
+    """Shares vhost into the guest with the bundled user-space NFSv4.0 server
+    (github.com/anyvm-org/nfsd): no kernel nfsd, no root, works on Linux,
+    macOS and Windows hosts. The guest mounts it with its NFSv4 client."""
+    nfsd_path = ensure_mynfsd(output_dir, debug)
+    if not nfsd_path:
+        log("Warning: cannot set up mynfs sync without nfsd.py; skipping {}".format(vhost))
+        return
+    port = get_free_port(start=2049, end=2149)
+    if port is None:
+        log("Warning: no free TCP port for the user-space nfsd; skipping mynfs sync.")
+        return
+    log_path = os.path.join(output_dir, "{}.nfsd.{}.log".format(vm_name, port))
+    log("Starting user-space nfsd on port {} exporting {}".format(port, vhost))
+    if not start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug):
+        log("Warning: the user-space nfsd did not come up on port {}; see {}".format(port, log_path))
+        return
+
+    # NFSv4 needs no portmapper/mountd, so a plain port option (or NFS URL on
+    # illumos) reaches the server directly. The exported directory is the
+    # server's root, hence the "/" path.
+    # Option sources: Linux -- nfsd.py's own README; FreeBSD family --
+    # mount_nfs(8) (nfsv4, minorversion=, port=, tcp); illumos family --
+    # mount_nfs(8) (vers=, port=); netbsd -- mount_nfs(8) (tcp, port=);
+    # openbsd -- mount_nfs(8) (-T flag passed via -o, port=).
+    mount_script = """
+mkdir -p "{vguest}"
+case "{os}" in
+  solaris|omnios|openindiana|tribblix)
+    mount -F nfs -o vers=4,port={port} 192.168.122.2:/ "{vguest}" ;;
+  freebsd|ghostbsd|midnightbsd|dragonflybsd)
+    mount -t nfs -o nfsv4,minorversion=0,tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
+  netbsd)
+    mount -t nfs -o tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
+  openbsd)
+    mount -t nfs -o -T,port={port} 192.168.122.2:/ "{vguest}" ;;
+  *)
+    mount -t nfs -o vers=4.0,proto=tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
+esac
+""".format(vguest=vguest, os=os_name, port=port)
+
+    mounted = False
+    for _ in range(5):
+        p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
+        p_mount.communicate(input=mount_script.encode('utf-8'))
+        if p_mount.returncode == 0:
+            mounted = True
+            break
+        log("mynfs mount failed, retrying...")
+        time.sleep(2)
+
+    if not mounted:
+        log("Warning: failed to mount the shared folder via the user-space "
+            "nfsd (see {}).".format(log_path))
+
+def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
+    """Configures host kernel NFS exports and mounts in guest (--sync
+    sys-nfs). Needs a Linux host with root/sudo and the kernel NFS server
+    installed; for everything else use the user-space nfsd (sync_mynfs)."""
+    if IS_WINDOWS or platform.system() == "Darwin":
+        log("Warning: no kernel NFS server support on this host; "
+            "use --sync nfs (the bundled user-space nfsd) instead.")
         return
 
     # Host side configuration
     uid = os.getuid()
     gid = os.getgid()
     entry_line = "{} *(rw,insecure,async,no_subtree_check,anonuid={},anongid={})".format(vhost, uid, gid)
-    
+
     need_add = True
     try:
         if os.path.exists("/etc/exports"):
@@ -3889,24 +4036,41 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
     except:
         pass
 
+    def _call_quiet(cmd):
+        try:
+            return subprocess.call(cmd)
+        except Exception:
+            return 127
+
     if need_add:
         log("Configuring NFS export on host (requires sudo)...")
         debuglog(True, "Adding export: " + entry_line)
         if sudo_cmd or os.geteuid() == 0:
-            subprocess.call(sudo_cmd + ["mkdir", "-p", "/run/sendsigs.omit.d/"])
+            _call_quiet(sudo_cmd + ["mkdir", "-p", "/run/sendsigs.omit.d/"])
             cmd_write = sudo_cmd + ["tee", "-a", "/etc/exports"]
             p_write = subprocess.Popen(cmd_write, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             p_write.communicate(input=(entry_line + "\n").encode('utf-8'))
-            
+
+            kernel_ok = False
             if p_write.returncode == 0:
-                subprocess.call(sudo_cmd + ["exportfs", "-a"])
-                if subprocess.call(sudo_cmd + ["service", "nfs-kernel-server", "restart"]) != 0:
-                    if subprocess.call(sudo_cmd + ["service", "nfs-server", "restart"]) != 0:
-                        subprocess.call(sudo_cmd + ["systemctl", "restart", "nfs-server"])
+                if _call_quiet(sudo_cmd + ["exportfs", "-a"]) == 0:
+                    kernel_ok = True
+                if _call_quiet(sudo_cmd + ["service", "nfs-kernel-server", "restart"]) != 0:
+                    if _call_quiet(sudo_cmd + ["service", "nfs-server", "restart"]) != 0:
+                        if _call_quiet(sudo_cmd + ["systemctl", "restart", "nfs-server"]) == 0:
+                            kernel_ok = True
+                    else:
+                        kernel_ok = True
+                else:
+                    kernel_ok = True
             else:
                 log("Failed to write to /etc/exports")
+            if not kernel_ok:
+                log("Warning: could not configure the host kernel NFS server "
+                    "(is it installed?); the guest mount will likely fail.")
         else:
-            log("Warning: Cannot configure NFS without sudo/root.")
+            log("Warning: Cannot configure the kernel NFS server without "
+                "sudo/root.")
 
     # Guest side mounting
     mount_script = """
@@ -4424,6 +4588,21 @@ def main():
             pass
         return
 
+    # Handle internal user-space nfsd watchdog mode (--sync nfs backend)
+    if len(sys.argv) > 1 and sys.argv[1] == '--internal-nfsd':
+        try:
+            run_internal_nfsd(sys.argv[2], sys.argv[3], int(sys.argv[4]),
+                              int(sys.argv[5]), sys.argv[6],
+                              len(sys.argv) > 7 and sys.argv[7] == '1')
+        except Exception as e:
+            try:
+                if len(sys.argv) > 6:
+                    with open(sys.argv[6], 'a') as f:
+                        f.write("[nfsd-watchdog] Fatal error: {}\n".format(e))
+            except:
+                pass
+        return
+
     # Default configuration
     default_cpu = str(max(1, os.cpu_count() or 1))
     config = {
@@ -4592,8 +4771,11 @@ def main():
             if val in ["no", "off"]:
                 val = "no"
             sync_user_specified = True
-            if val not in ["sshfs", "nfs", "rsync", "scp", "no"]:
-                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, scp, no/off.".format(val))
+            if val == "mynfs":
+                # Alias: nfs already means the bundled user-space nfsd.
+                val = "nfs"
+            if val not in ["sshfs", "nfs", "sys-nfs", "rsync", "scp", "no"]:
+                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, sys-nfs, scp, no/off.".format(val))
             config['sync'] = val
             i += 1
         elif arg == "--disktype":
@@ -4723,19 +4905,25 @@ def main():
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
 
-    # Fail fast when the qemu-system binary for the requested arch is not
-    # installed: this runs BEFORE any image download (images are multi-GB),
-    # so the user gets the install command instead of a wasted download.
-    # Arches that may substitute the pinned QEMU build downloaded by
-    # ensure_pinned_qemu() (riscv64/s390x/ppc64 family) are skipped here;
-    # the late check after that substitution still covers them.
+    # Fail fast when host dependencies are missing: this runs BEFORE any
+    # image download (images are multi-GB), so the user gets the install
+    # command instead of a wasted download. The qemu-system check is skipped
+    # for arches that may substitute the pinned QEMU build downloaded by
+    # ensure_pinned_qemu() (riscv64/s390x/ppc64 family); the late check
+    # after that substitution still covers them.
+    missing_deps = []
     if config['arch'] not in ("riscv64", "s390x", "powerpc64", "powerpc64le",
                               "ppc64", "ppc64le"):
         early_bin_name = qemu_binary_name(config['arch'])
         if not find_qemu(early_bin_name):
-            fatal("QEMU binary '{}' not found (searched PATH and common "
-                  "install locations).\n{}".format(
-                      early_bin_name, qemu_install_hint(early_bin_name)))
+            missing_deps.append(early_bin_name)
+    for dep_tool in ("ssh", "zstd"):
+        if not shutil.which(dep_tool):
+            missing_deps.append(dep_tool)
+    if missing_deps:
+        fatal("Required tool(s) not found (searched PATH and common"
+              " install locations): {}\n{}".format(
+                  ", ".join(missing_deps), deps_install_hint()))
 
     # BlissOS (Android-x86): the image is built and verified on std VGA
     # (bochs-drm KMS + HWACCEL=0 software GLES renders the Android desktop to
@@ -5387,7 +5575,7 @@ def main():
     if not qemu_bin:
         fatal("QEMU binary '{}' not found (searched PATH and common "
               "install locations).\n{}".format(
-                  bin_name, qemu_install_hint(bin_name)))
+                  bin_name, deps_install_hint()))
 
     # VNC Console Auto-detection logic:
     vnc_val = config.get('vnc', '')
@@ -7148,7 +7336,8 @@ Host host
                 log("Warning: only --sync scp works on BlissOS/Android guests; skipping {} sync.".format(config['sync']))
             elif config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
-                if config['sync'] == 'nfs':
+                # sudo is only needed by the kernel-NFS path (sys-nfs).
+                if config['sync'] == 'sys-nfs':
                     # Check if sudo exists in path (unix only)
                     if not IS_WINDOWS:
                         try:
@@ -7184,6 +7373,10 @@ Host host
                             debuglog(config['debug'], "Excluding paths from sync: {}".format(", ".join(excludes)))
                         
                         if config['sync'] == 'nfs':
+                            # Default NFS backend: the bundled user-space
+                            # NFSv4.0 nfsd.
+                            sync_mynfs(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, proc.pid, config['debug'])
+                        elif config['sync'] == 'sys-nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
                         elif config['sync'] == 'rsync':
                             sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, excludes=excludes)
