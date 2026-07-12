@@ -36,6 +36,16 @@ anyvm is a single-file tool for bootstrapping BSD, Illumos, and Linux guests wit
 
 ## 2. Quick start (local)
 
+Install from PyPI (installs the `anyvm.py` and `anyvm` commands):
+
+```bash
+pip install anyvm.py
+
+anyvm.py --os freebsd
+```
+
+Or download the single file and run it directly:
+
 ```bash
 
 

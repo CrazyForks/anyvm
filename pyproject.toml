@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anyvm.py"
+dynamic = ["version"]
+description = "Run any VM anywhere: bootstrap BSD, Illumos, and Linux guests with QEMU on Linux, macOS, and Windows"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.8"
+authors = [{ name = "anyvm.org" }]
+keywords = [
+    "qemu",
+    "vm",
+    "virtual-machine",
+    "freebsd",
+    "openbsd",
+    "netbsd",
+    "dragonflybsd",
+    "solaris",
+    "illumos",
+    "haiku",
+    "ubuntu",
+    "ci",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Emulators",
+]
+
+[project.urls]
+Homepage = "https://github.com/anyvm-org/anyvm"
+Repository = "https://github.com/anyvm-org/anyvm"
+Issues = "https://github.com/anyvm-org/anyvm/issues"
+
+[project.scripts]
+"anyvm.py" = "anyvm_py:main"
+anyvm = "anyvm_py:main"
+
+[tool.hatch.version]
+source = "vcs"
+
+# The single source file anyvm.py stays at the repo root (it is downloaded
+# directly by CI consumers). The wheel ships it under the module name
+# anyvm_py so the installed console script anyvm.py cannot shadow the
+# module it imports (a bin/anyvm.py shim importing a module also named
+# anyvm would import itself on Unix).
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"anyvm.py" = "anyvm_py.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["/anyvm.py", "/README.md", "/LICENSE", "/pyproject.toml"]
+
+
