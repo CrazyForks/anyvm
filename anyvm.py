@@ -3907,7 +3907,10 @@ def ensure_mynfsd(output_dir, debug=False):
     if os.path.isfile(dest) and os.path.getsize(dest) > 0:
         # verified when it was downloaded
         return dest
-    tmp = dest + ".part"
+    # pid-suffixed so two concurrent anyvm processes doing the first
+    # download cannot clobber each other's partial file; both end with an
+    # atomic os.replace of the same verified content.
+    tmp = "{}.part.{}".format(dest, os.getpid())
     if not download_file(MYNFSD_URL, tmp, debug):
         log("Warning: failed to download the user-space nfsd from " + MYNFSD_URL)
         return None
