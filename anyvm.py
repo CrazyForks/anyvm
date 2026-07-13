@@ -159,7 +159,7 @@ OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 # on demand from the release asset: it is the default backend for
 # `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
 # server instead.
-MYNFSD_VERSION = "0.0.5"
+MYNFSD_VERSION = "0.0.6"
 MYNFSD_URL = ("https://github.com/anyvm-org/nfsd/releases/download/"
               "v{}/nfsd.py".format(MYNFSD_VERSION))
 
@@ -2655,12 +2655,12 @@ Options:
                          no kernel nfsd, no root needed, works on
                          Linux/macOS/Windows hosts (mynfs is an accepted
                          alias). The v3-only guests (openbsd, netbsd,
-                         dragonflybsd) mount it via its portmapper on
-                         Windows/macOS hosts; on Linux hosts they use the
-                         host kernel NFS server instead (port 111 belongs
-                         to the system rpcbind there). sys-nfs forces the
-                         host kernel NFS server for every guest (needs
-                         root/sudo; not available on macOS/Windows hosts).
+                         dragonflybsd) mount it via its portmapper on port
+                         111 -- free on Windows/macOS hosts, but usually
+                         owned by the system rpcbind (or root-only) on
+                         Linux hosts: use sys-nfs for them there. sys-nfs
+                         uses the host kernel NFS server (needs root/sudo;
+                         not available on macOS/Windows hosts).
                          Note: sshfs not supported on Windows hosts; rsync
                          requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
@@ -3891,11 +3891,11 @@ fi
 # -pmap portmapper on port 111. CI-verified (anyvm run 29190082415):
 # dragonflybsd mount_nfs rejects `-o nfsv4` outright; openbsd/netbsd
 # mount_nfs speak NFSv3 only, and all three discover the MOUNT/NFS ports
-# exclusively through a portmapper query. On Linux hosts port 111 belongs
-# to the system rpcbind (which knows nothing about the user-space nfsd),
-# so there `--sync nfs` routes these guests to the kernel NFS server
-# (sys-nfs) instead; on Windows/macOS hosts port 111 is free and needs no
-# privileges, so the user-space nfsd serves them directly.
+# exclusively through a portmapper query. Port 111 is free and unprivileged
+# on Windows and macOS hosts; on Linux hosts it usually belongs to the
+# system rpcbind (or needs root), in which case sync_mynfs warns and the
+# user should pass --sync sys-nfs explicitly -- there is deliberately no
+# automatic kernel-NFS fallback.
 NFSV4LESS_GUESTS = ("openbsd", "netbsd", "dragonflybsd")
 
 def ensure_mynfsd(output_dir, debug=False):
@@ -3945,16 +3945,23 @@ def ensure_mynfsd(output_dir, debug=False):
     os.replace(tmp, dest)
     return dest
 
-def run_internal_nfsd(nfsd_path, export_dir, port, qemu_pid, log_path, debug=False):
+def run_internal_nfsd(nfsd_path, export_dir, port, qemu_pid, log_path,
+                      debug=False, vers="", pmap=False):
     """--internal-nfsd watchdog: runs nfsd.py as a child and stops it once the
     QEMU process it serves is gone. Spawned detached so a --detach VM keeps
-    its NFS share after anyvm.py exits (same pattern as the VNC web proxy)."""
+    its NFS share after anyvm.py exits (same pattern as the VNC web proxy).
+
+    vers ("3"/"4"/"" for both) selects the NFS major version the nfsd
+    serves; pmap additionally serves the portmapper v2 on port 111, which
+    only the v3-only BSD guests (NFSV4LESS_GUESTS) need. When 111 is taken
+    (system rpcbind on Linux, or a second -v mount's nfsd instance), nfsd
+    logs a warning and keeps serving."""
     cmd = [sys.executable, nfsd_path, "-dir", export_dir,
-           "-port", str(port), "-bind", "127.0.0.1", "-pmap"]
-    # -pmap serves portmapper v2 on port 111 for the v3-only BSD guests
-    # (NFSV4LESS_GUESTS). When 111 is taken (system rpcbind on Linux, or a
-    # second -v mount's nfsd instance), nfsd logs a warning and keeps
-    # serving; v4-capable guests are unaffected.
+           "-port", str(port), "-bind", "127.0.0.1"]
+    if vers:
+        cmd.extend(["-vers", vers])
+    if pmap:
+        cmd.append("-pmap")
     # Report file owners to the guest as the launching user, mirroring the
     # anonuid/anongid mapping the kernel-nfsd export line uses.
     if hasattr(os, "getuid"):
@@ -3980,12 +3987,58 @@ def run_internal_nfsd(nfsd_path, export_dir, port, qemu_pid, log_path, debug=Fal
                 except Exception:
                     pass
 
-def start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug=False):
+def sudo_noninteractive():
+    """True when passwordless sudo works right now (`sudo -n true`)."""
+    if IS_WINDOWS:
+        return False
+    try:
+        with open(os.devnull, 'w') as devnull:
+            return subprocess.call(["sudo", "-n", "true"],
+                                   stdout=devnull, stderr=devnull) == 0
+    except Exception:
+        return False
+
+def probe_privileged_bind(port):
+    """Can THIS process bind the given (privileged) TCP port right now?
+
+    Returns "ok", "denied" (EACCES/EPERM: no privilege -- sudo would
+    help), or "busy" (EADDRINUSE: another service owns it -- sudo would
+    NOT help). "ok" covers every mechanism that grants the bind: running
+    as root, a setcap cap_net_bind_service interpreter, a lowered
+    net.ipv4.ip_unprivileged_port_start, or macOS wildcard binds -- so
+    the caller never has to enumerate them. Note the kernel checks the
+    privilege BEFORE the address conflict, so an unprivileged process
+    sees "denied" even when the port is also busy."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("", port))
+        return "ok"
+    except PermissionError:
+        return "denied"
+    except OSError:
+        return "busy"
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+def start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug=False,
+                 use_sudo=False, vers="", pmap=False):
     """Starts the user-space nfsd for one exported directory, detached behind
-    the --internal-nfsd watchdog. Returns True once the port accepts TCP."""
+    the --internal-nfsd watchdog. Returns True once the port accepts TCP.
+
+    vers/pmap are forwarded to the nfsd (see run_internal_nfsd). use_sudo
+    runs the whole watchdog (and therefore the nfsd) as root via
+    passwordless sudo, so the -pmap portmapper can bind privileged port 111.
+    The sudo must wrap the WATCHDOG, not just the inner nfsd: an
+    unprivileged watchdog cannot signal a root child to stop it."""
     args = [sys.executable, os.path.abspath(__file__), "--internal-nfsd",
             nfsd_path, vhost, str(port), str(qemu_pid), log_path,
-            "1" if debug else "0"]
+            "1" if debug else "0", vers, "1" if pmap else "0"]
+    if use_sudo:
+        args = ["sudo", "-n"] + args
     popen_kwargs = {}
     if IS_WINDOWS:
         # CREATE_NO_WINDOW = 0x08000000, DETACHED_PROCESS = 0x00000008
@@ -4022,8 +4075,38 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
         log("Warning: no free TCP port for the user-space nfsd; skipping mynfs sync.")
         return
     log_path = os.path.join(output_dir, "{}.nfsd.{}.log".format(vm_name, port))
-    log("Starting user-space nfsd on port {} exporting {}".format(port, vhost))
-    if not start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug):
+    # v4-capable guests need no portmapper: start the nfsd directly with
+    # -vers 4, no probing. Only the v3-only BSD guests need -vers 3 plus
+    # the -pmap portmapper on privileged port 111 (RFC 1833 PMAP_PORT),
+    # and only then is the probe worth doing.
+    need_v3 = os_name in NFSV4LESS_GUESTS
+    use_sudo = False
+    if need_v3 and not IS_WINDOWS:
+        # Probe instead of guessing the mechanism: "ok" covers root, a
+        # setcap cap_net_bind_service python, a lowered
+        # ip_unprivileged_port_start, and macOS wildcard binds -- run
+        # directly. "denied" means sudo would help; "busy" means some
+        # other service (usually the system rpcbind) owns 111 and not
+        # even root can bind it.
+        verdict = probe_privileged_bind(111)
+        if verdict == "ok":
+            debuglog(debug, "port 111 bindable by this process; "
+                            "starting the nfsd without sudo")
+        elif verdict == "denied":
+            use_sudo = sudo_noninteractive()
+            if use_sudo:
+                log("Starting the user-space nfsd with sudo ({} guests need "
+                    "the portmapper on port 111).".format(os_name))
+        else:
+            log("Warning: port 111 is already taken by another service "
+                "(the system rpcbind?), so the nfsd portmapper cannot "
+                "start and {} guests cannot mount; use --sync sys-nfs "
+                "on this host.".format(os_name))
+    log("Starting user-space nfsd (NFSv{}) on port {} exporting {}".format(
+        "3" if need_v3 else "4", port, vhost))
+    if not start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug,
+                        use_sudo=use_sudo,
+                        vers="3" if need_v3 else "4", pmap=need_v3):
         log("Warning: the user-space nfsd did not come up on port {}; see {}".format(port, log_path))
         return
 
@@ -4039,7 +4122,8 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
             debuglog(debug, "nfsd portmapper reachable on 127.0.0.1:111")
         except Exception as e:
             log("Warning: the nfsd portmapper is not reachable on port 111 "
-                "({}); {} guests cannot discover the NFS ports (see {}).".format(
+                "({}); {} guests cannot discover the NFS ports (see {}). "
+                "On a Linux host use --sync sys-nfs instead.".format(
                     e, os_name, log_path))
         finally:
             try:
@@ -4685,7 +4769,9 @@ def main():
         try:
             run_internal_nfsd(sys.argv[2], sys.argv[3], int(sys.argv[4]),
                               int(sys.argv[5]), sys.argv[6],
-                              len(sys.argv) > 7 and sys.argv[7] == '1')
+                              len(sys.argv) > 7 and sys.argv[7] == '1',
+                              sys.argv[8] if len(sys.argv) > 8 else "",
+                              len(sys.argv) > 9 and sys.argv[9] == '1')
         except Exception as e:
             try:
                 if len(sys.argv) > 6:
@@ -7428,11 +7514,8 @@ Host host
                 log("Warning: only --sync scp works on BlissOS/Android guests; skipping {} sync.".format(config['sync']))
             elif config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
-                # sudo is only needed by the kernel-NFS path: sys-nfs, and
-                # the nfs route for guests without an NFSv4 client.
-                if (config['sync'] == 'sys-nfs'
-                        or (config['sync'] == 'nfs'
-                            and config['os'] in NFSV4LESS_GUESTS)):
+                # sudo is only needed by the kernel-NFS path (sys-nfs).
+                if config['sync'] == 'sys-nfs':
                     # Check if sudo exists in path (unix only)
                     if not IS_WINDOWS:
                         try:
@@ -7468,19 +7551,15 @@ Host host
                             debuglog(config['debug'], "Excluding paths from sync: {}".format(", ".join(excludes)))
                         
                         if config['sync'] == 'nfs':
-                            # Default NFS backend: the bundled user-space
-                            # nfsd. Exception: the v3-only BSD guests on a
-                            # Linux host, where the system rpcbind owns
-                            # port 111 so the nfsd portmapper they depend
-                            # on is unreachable -- the kernel NFS server
-                            # is available there, so route them to it.
-                            if (config['os'] in NFSV4LESS_GUESTS
-                                    and not IS_WINDOWS
-                                    and platform.system() != "Darwin"):
-                                log("Note: {} guests mount NFSv3 via portmapper; on this host port 111 belongs to the system rpcbind, so using the host kernel NFS server (sys-nfs) instead.".format(config['os']))
-                                sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
-                            else:
-                                sync_mynfs(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, proc.pid, config['debug'])
+                            # Always the bundled user-space nfsd; the host
+                            # kernel NFS server is used only on an explicit
+                            # --sync sys-nfs. (For the v3-only BSD guests
+                            # this needs the nfsd portmapper on port 111 --
+                            # on Linux hosts that port usually belongs to
+                            # the system rpcbind or needs root, so pass
+                            # --sync sys-nfs there instead; sync_mynfs
+                            # probes the port and warns.)
+                            sync_mynfs(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, proc.pid, config['debug'])
                         elif config['sync'] == 'sys-nfs':
                             sync_nfs(ssh_base_cmd, vhost, vguest, config['os'], sudo_cmd)
                         elif config['sync'] == 'rsync':

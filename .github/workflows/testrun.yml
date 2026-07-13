@@ -70,7 +70,14 @@ jobs:
         qemu-system-ppc \
         qemu-system-s390x \
         qemu-system-sparc \
-        nfs-kernel-server rsync
+        rsync
+        # nfs-kernel-server pulls in rpcbind, which then owns port 111 and
+        # blocks the user-space nfsd's portmapper (needed by the v3-only
+        # BSD guests under --sync nfs). Install it only for the sys-nfs
+        # legs that actually use the kernel server.
+        if [ "${{ inputs.sync }}" = "sys-nfs" ]; then
+          sudo apt-get --no-install-recommends -y install nfs-kernel-server
+        fi
         sudo chmod 666 /dev/kvm || true
 
     - name: Install dependencies (macOS)

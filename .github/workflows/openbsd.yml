@@ -21,7 +21,9 @@ concurrency:
 # Releases anyvm can fetch and run: 7.7 / 7.8 / 7.9 from the current
 # anyvm-org/openbsd-builder (x86_64, aarch64, riscv64; sparc64 for 7.9), plus
 # 7.3 / 7.4 / 7.5 / 7.6 still served by the vmactions fallback repo.
-# Sync: x86_64 / aarch64 / riscv64 run all four backends. sparc64 is scp+rsync
+# Sync: x86_64 / aarch64 / riscv64 run every backend -- nfs is the
+# user-space nfsd (v3 via its port-111 portmapper, bound with sudo on the
+# runner), sys-nfs the host kernel server. sparc64 is scp+rsync
 # only -- the QEMU sun4u CMD646 PCI-IDE loses interrupts under sustained
 # net+disk DMA (a live sshfs/nfs mount wedges the guest); one-shot scp/rsync
 # stay clean. 7.3 has no aarch64 image.
@@ -34,7 +36,7 @@ jobs:
         release: ["7.7", "7.8", "7.9"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04", "ubuntu-24.04-arm"]
-        sync: ["sshfs", "nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
         exclude:
           - runs: ubuntu-24.04-arm
             arch: ""
@@ -58,7 +60,7 @@ jobs:
         release: ["7.3", "7.4", "7.5", "7.6"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
         exclude:
           # No aarch64 image for 7.3.
           - release: "7.3"
@@ -82,7 +84,7 @@ jobs:
         release: ["7.7", "7.8", "7.9"]
         arch: ["riscv64"]
         runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
