@@ -5916,6 +5916,16 @@ def main():
             if IS_WINDOWS:
                 if config['whpx']:
                     accel = "whpx"
+                elif config['os'] == 'ghostbsd':
+                    # GhostBSD is known-broken under WHPX: its boot path runs
+                    # an SSE instruction against an MMIO region, which QEMU's
+                    # WHPX instruction emulator cannot decode ("failed to
+                    # decode instruction f 10" -- movups), and QEMU aborts
+                    # with exit code 3 about 2 min into boot. Seen on CI run
+                    # 29258342415: every ghostbsd sync variant failed this
+                    # way while all other OSes passed under WHPX. Keep TCG;
+                    # --whpx above still forces it for experiments.
+                    debuglog(config['debug'], "GhostBSD: keeping TCG (QEMU WHPX aborts on its SSE MMIO access; pass --whpx to force)")
                 elif not config['tcg'] and whpx_available():
                     # WHPX is on by default when the Windows Hypervisor
                     # Platform is actually running (real runtime probe via
@@ -7280,8 +7290,21 @@ def main():
             debuglog(config['debug'], "Boot wait begin: QEMU PID={}, timeout={}s, probe_timeout={}s, qmon={}, ssh_port={}".format(
                 proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
 
+            whpx_died_early = False
             while True:
                 if proc.poll() is not None:
+                    if accel == "whpx" and not config['whpx']:
+                        # Auto-enabled WHPX can abort mid-boot when the guest
+                        # executes something QEMU's WHPX instruction emulator
+                        # cannot handle (GhostBSD's SSE store to an MMIO
+                        # region: "failed to decode instruction f 10"). Every
+                        # such guest worked under TCG -- that was the default
+                        # before WHPX auto-enable -- so fall back to TCG via
+                        # the retry path instead of failing. An explicit
+                        # --whpx skips this and fails hard as before.
+                        log("QEMU exited during boot (code {}) under auto-enabled WHPX; falling back to TCG...".format(proc.poll()))
+                        whpx_died_early = True
+                        break
                     fail_with_output("QEMU terminated during boot")
 
                 elapsed = time.time() - boot_start_time
@@ -7362,7 +7385,7 @@ def main():
                     except:
                         pass
             
-            if not success and config.get('qmon') and hostfwd_specs:
+            if not success and not whpx_died_early and config.get('qmon') and hostfwd_specs:
                 # Ask slirp for the guest's real address first: 'info usernet'
                 # lists every guest-originated flow, so a hit means the guest
                 # is up but behind a misrouted hostfwd -- rewrite the forwards
@@ -7400,8 +7423,9 @@ def main():
 
             if not success:
                 # First timeout - dump diagnostics, then kill QEMU and retry once
-                log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
-                _dump_boot_debug_snapshot(config, "first-timeout", serial_log_file, config.get('qmon'), output_dir, vm_name, proc, cmd_list=cmd_list)
+                if not whpx_died_early:
+                    log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
+                    _dump_boot_debug_snapshot(config, "first-timeout", serial_log_file, config.get('qmon'), output_dir, vm_name, proc, cmd_list=cmd_list)
                 terminate_process(proc, "QEMU")
                 if proxy_proc:
                     terminate_process(proxy_proc, "VNC Proxy")
@@ -7426,7 +7450,29 @@ def main():
                 # Scoped to qemu-system-x86_64 so an HVF/aarch64
                 # "-cpu host" is never rewritten to an x86-only model.
                 cmd_list_retry = list(cmd_list)
-                if cmd_list_retry and "qemu-system-x86_64" in str(cmd_list_retry[0]):
+                if whpx_died_early:
+                    # WHPX aborted mid-boot: retry the whole launch under TCG.
+                    # Swap only the accel token and the CPU model; "max" is
+                    # the established TCG default and a strict superset of
+                    # every named model, and the trailing tokens (+rdrand,
+                    # pmu=off, ...) are generic X86CPU properties that TCG
+                    # accepts. TCG is 10-50x slower, so give the retry at
+                    # least a 1800s window (an explicit larger
+                    # --boot-timeout-sec still wins).
+                    try:
+                        mach_idx = cmd_list_retry.index("-machine")
+                        cmd_list_retry[mach_idx + 1] = str(
+                            cmd_list_retry[mach_idx + 1]).replace("accel=whpx", "accel=tcg")
+                        cpu_idx = cmd_list_retry.index("-cpu")
+                        cpu_val = str(cmd_list_retry[cpu_idx + 1])
+                        cmd_list_retry[cpu_idx + 1] = ",".join(
+                            ["max"] + cpu_val.split(",")[1:])
+                        retry_boot_timeout_seconds = max(retry_boot_timeout_seconds, 1800)
+                        log("Retrying under TCG: -cpu {} (boot timeout {}s)".format(
+                            cmd_list_retry[cpu_idx + 1], retry_boot_timeout_seconds))
+                    except (ValueError, IndexError):
+                        pass
+                elif cmd_list_retry and "qemu-system-x86_64" in str(cmd_list_retry[0]):
                     try:
                         cpu_idx = cmd_list_retry.index("-cpu")
                         cpu_val = str(cmd_list_retry[cpu_idx + 1])
