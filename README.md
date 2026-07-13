@@ -280,7 +280,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 - `--mem <MB>`: Memory size in MB (default: 2048).
   - Example: `python3 anyvm.py --os freebsd --mem 4096`
 
-- `--cpu <num>`: vCPU count (default: all host cores).
+- `--cpu <num>`: vCPU count (default: host core count, capped at 8 when hardware acceleration is available and at 2 under TCG; pass `--cpu` explicitly for more).
   - Example: `python3 anyvm.py --os freebsd --cpu 4`
 
 - `--cpu-type <type>`: QEMU CPU model (e.g. `host`, `cortex-a72`).
@@ -392,6 +392,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 
 - `--tcg`: Force pure software emulation (no KVM / HVF / WHPX). Slow; useful when hardware acceleration is unavailable or misbehaving. Generic -- works for any guest.
   - Example: `python3 anyvm.py --os tribblix --tcg`
+  - Note (Windows): WHPX acceleration is enabled automatically when the Windows Hypervisor Platform is running (checked at startup via `WHvGetCapability`), so `--whpx` is no longer needed; pass `--tcg` to opt out. Under WHPX anyvm also picks a vendor-matched named CPU model (newest EPYC / Xeon model your QEMU ships) instead of `-cpu host`, because QEMU's WHPX `-cpu host` / `-cpu max` path can hang on recent host CPUs. The guest still sees the real host CPU features -- under WHPX the guest CPUID comes from Hyper-V, not from the model -- so nothing is lost. Override with `--cpu-type`.
   - Historical note: older `tribblix` releases froze a CPU-vendor-specific `libc_hwcap` variant into `/lib/libc.so.1` at build time, which crash-looped (`init` killed by `SIGKILL`) when run under KVM on the other vendor's CPU; anyvm used to auto-fall-back to TCG on Intel hosts to dodge it. Since `v2.0.3` (tribblix-builder's `finalizeImage` hook) the release ships the generic, capability-neutral libc that boots under KVM on both Intel and AMD and re-optimizes per-CPU at first boot, so no fallback is needed. Use `--tcg` only if you must run a pre-`v2.0.3` image on a mismatched CPU.
 
 

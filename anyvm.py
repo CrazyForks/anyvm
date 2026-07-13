@@ -2633,7 +2633,8 @@ Options:
   --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64, powerpc64, s390x
                          or powerpc64. Default: Host architecture.
   --mem <MB>             Memory size in MB (Default: 2048).
-  --cpu <num>            Number of CPU cores (Default: all host cores).
+  --cpu <num>            Number of CPU cores (Default: host cores, capped at
+                         8 with hardware acceleration, 2 under TCG).
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
   --nc <type>            Network card model (e.g., virtio-net-pci, e1000).
   --ssh-port <port>      Host port forwarding for SSH (Default: auto-detected free port).
@@ -2697,7 +2698,9 @@ Options:
   --public-vnc           Listen on 0.0.0.0 for the VNC web interface instead of 127.0.0.1 + LAN IPs.
   --public-ssh           Listen on 0.0.0.0 for the SSH port instead of 127.0.0.1 + LAN IPs.
   --accept-vm-ssh        Authorize the VM's public key on the host (enables reverse SSH).
-  --whpx                 (Windows) Attempt to use WHPX acceleration instead of TCG.
+  --whpx                 (Windows) Force WHPX acceleration. Normally not needed:
+                         WHPX is auto-enabled when the Windows Hypervisor
+                         Platform is available (use --tcg to opt out).
   --tcg                  Force pure software emulation (no KVM/HVF/WHPX). Slow;
                          useful when hardware acceleration is unavailable or
                          misbehaving. Generic -- applies to any guest.
@@ -3806,6 +3809,83 @@ def host_nested_amd_with_avx512():
     return ("AuthenticAMD" in info
             and "hypervisor" in info
             and "avx512f" in info)
+
+# Named CPU models used instead of -cpu host for WHPX, newest first, per
+# host vendor. QEMU's WHPX host-CPUID enumeration path (-cpu host and
+# -cpu max) can wedge the whole QEMU process (validated on a Zen 5 Ryzen
+# AI MAX+ 395: 0-byte serial log, unresponsive monitor, ~2s CPU time
+# after 12 min); named models skip that path entirely. The model's own
+# feature set is safe on ANY host because under WHPX the guest CPUID
+# comes from Hyper-V's host-derived values, not from the model
+# (validated: -cpu EPYC-Milan-v3, a Zen 3 model without AVX512, still
+# showed the guest the host brand string and the full Zen 5 AVX512
+# feature set). The lists are probed against 'qemu -cpu help' so older
+# QEMU builds fall back to older names. See the whpx branch in the
+# x86_64 -cpu selection and the boot-timeout retry, which falls back
+# from these to qemu64.
+WHPX_AMD_CPU_MODELS = ("EPYC-Turin-v1", "EPYC-Genoa-v2", "EPYC-Milan-v3",
+                       "EPYC-Rome-v5", "EPYC-v4")
+WHPX_INTEL_CPU_MODELS = ("GraniteRapids-v2", "SapphireRapids-v3",
+                         "Icelake-Server-v7", "Cascadelake-Server-v5",
+                         "Skylake-Client-v4")
+
+def windows_host_cpu_vendor():
+    """Returns 'amd', 'intel', or '' for the Windows host CPU vendor.
+
+    PROCESSOR_IDENTIFIER looks like
+    'AMD64 Family 26 Model 112 Stepping 0, AuthenticAMD'; falls back to
+    platform.processor() which carries the same vendor suffix.
+    """
+    if platform.system() != "Windows":
+        return ""
+    ident = os.environ.get("PROCESSOR_IDENTIFIER", "") + " " + platform.processor()
+    if "AuthenticAMD" in ident:
+        return "amd"
+    if "GenuineIntel" in ident:
+        return "intel"
+    return ""
+
+def whpx_available():
+    """True if the Windows Hypervisor Platform can run guests right now.
+
+    Calls WHvGetCapability(WHvCapabilityCodeHypervisorPresent) from
+    WinHvPlatform.dll. The DLL only loads when the optional 'Windows
+    Hypervisor Platform' feature is installed, and the capability reports
+    TRUE only when the Microsoft hypervisor is actually running, so this
+    is a real runtime check, not a presence heuristic.
+    WHvCapabilityCodeHypervisorPresent = 0x00000000 and the output buffer
+    is a 32-bit BOOL -- Microsoft Learn WHvGetCapability page,
+    cross-checked against mingw-w64 winhvplatformdefs.h.
+    """
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+        dll = ctypes.WinDLL("WinHvPlatform.dll")
+        present = ctypes.c_uint32(0)
+        written = ctypes.c_uint32(0)
+        hr = dll.WHvGetCapability(0, ctypes.byref(present), 4,
+                                  ctypes.byref(written))
+        return hr == 0 and present.value != 0
+    except Exception:
+        return False
+
+def qemu_cpu_models(qemu_bin):
+    """Returns the set of CPU model names listed by 'qemu -cpu help',
+    or an empty set on any failure."""
+    if not qemu_bin:
+        return set()
+    try:
+        out = subprocess.check_output([qemu_bin, "-cpu", "help"], stderr=DEVNULL)
+    except Exception:
+        return set()
+    models = set()
+    for line in out.decode('utf-8', errors='ignore').splitlines():
+        # Model lines look like '  EPYC-Genoa-v2   AMD EPYC-Genoa-v2 Processor'.
+        parts = line.split()
+        if parts:
+            models.add(parts[0])
+    return models
 
 def sync_sshfs(ssh_cmd, vhost, vguest, os_name, os_release=None):
     """Mounts a host directory into the guest using SSHFS."""
@@ -5836,6 +5916,14 @@ def main():
             if IS_WINDOWS:
                 if config['whpx']:
                     accel = "whpx"
+                elif not config['tcg'] and whpx_available():
+                    # WHPX is on by default when the Windows Hypervisor
+                    # Platform is actually running (real runtime probe via
+                    # WHvGetCapability, not a DLL-presence heuristic).
+                    # --tcg forces software emulation; --whpx is now only
+                    # needed to skip this probe.
+                    accel = "whpx"
+                    debuglog(config['debug'], "WHPX available: enabling hardware acceleration by default (pass --tcg to force software emulation)")
             elif os.path.exists("/dev/kvm"):
                 if os.access("/dev/kvm", os.R_OK | os.W_OK):
                     accel = "kvm"
@@ -5867,6 +5955,18 @@ def main():
             if int(config['cpu']) > 2:
                 debuglog(config['debug'], "TCG mode detected and no CPU count specified, limiting to 2 cores for performance optimization.")
                 config['cpu'] = "2"
+        except (ValueError, TypeError):
+            pass
+    elif not cpu_specified:
+        # Hardware acceleration (KVM/HVF/WHPX): cap the default vCPU count
+        # at 8. The old default handed the guest every host core, and on
+        # big hosts (e.g. 32 threads) guest SMP bring-up gets slower, not
+        # faster. Hosts with 8 or fewer cores keep their full count; an
+        # explicit --cpu still grants any count.
+        try:
+            if int(config['cpu']) > 8:
+                debuglog(config['debug'], "No CPU count specified, capping default at 8 vCPUs (pass --cpu for more).")
+                config['cpu'] = "8"
         except (ValueError, TypeError):
             pass
 
@@ -6483,6 +6583,24 @@ def main():
                             "(works around guest SIGSEGV; pass --cpu-type to override)")
             else:
                 cpu_opts = "host,+rdrand,+rdseed"
+                if accel == "whpx":
+                    # Use a vendor-matched named CPU model instead of
+                    # -cpu host: the WHPX host-CPUID enumeration path can
+                    # wedge QEMU, and the model's feature set does not
+                    # matter because the guest CPUID comes from Hyper-V
+                    # anyway (see WHPX_*_CPU_MODELS above). Pick the newest
+                    # model this QEMU ships; --cpu-type still overrides.
+                    vendor = windows_host_cpu_vendor()
+                    named_models = {"amd": WHPX_AMD_CPU_MODELS,
+                                    "intel": WHPX_INTEL_CPU_MODELS}.get(vendor, ())
+                    avail = qemu_cpu_models(qemu_bin)
+                    for named_model in named_models:
+                        if named_model in avail:
+                            cpu_opts = named_model + ",+rdrand,+rdseed"
+                            log("WHPX on {} host: using named CPU model {} "
+                                "(avoids -cpu host WHPX hang; pass --cpu-type "
+                                "to override)".format(vendor.upper(), named_model))
+                            break
         else:
             # TCG (pure software emulation): default to -cpu max, which exposes
             # every feature QEMU can emulate. The previous minimal qemu64 model
@@ -7325,6 +7443,15 @@ def main():
                                 if not tok.startswith("migratable=")
                                 and not tok.startswith("host-cache-info="))
                             cmd_list_retry[cpu_idx + 1] = retry_cpu
+                            log("Retrying with conservative CPU model: -cpu {}".format(cmd_list_retry[cpu_idx + 1]))
+                        elif cpu_val.split(",")[0] in (WHPX_AMD_CPU_MODELS
+                                                       + WHPX_INTEL_CPU_MODELS):
+                            # The WHPX named model timed out too; fall back
+                            # to qemu64 the same way (named models have no
+                            # migratable/host-cache-info to strip, every
+                            # other token is generic X86CPU).
+                            cmd_list_retry[cpu_idx + 1] = ",".join(
+                                ["qemu64"] + cpu_val.split(",")[1:])
                             log("Retrying with conservative CPU model: -cpu {}".format(cmd_list_retry[cpu_idx + 1]))
                     except (ValueError, IndexError):
                         pass
