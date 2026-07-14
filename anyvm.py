@@ -118,7 +118,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "solaris": "2.0.6",
     "omnios": "2.1.2",
     "haiku": "2.0.2",
-    "midnightbsd": "2.0.3",
+    "midnightbsd": "2.0.4",
     "tribblix": "2.0.6",
     "openindiana": "2.1.0",
     "ubuntu": "2.0.7",
