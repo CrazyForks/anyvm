@@ -2823,6 +2823,18 @@ def get_free_port(start=10022, end=20000):
         for addr in probe_addrs:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(0.5)
+            # TIME_WAIT leftovers must not count as busy: when a VM is shut
+            # down and rebooted in the same session (e.g. the vmactions
+            # cache-after-prepare flow), the old ssh port's TIME_WAIT sockets
+            # made this plain bind fail, so the reboot drifted to a new port
+            # (10022 -> 10023) and stranded the stale ssh aliases. With
+            # SO_REUSEADDR the probe binds through TIME_WAIT -- matching
+            # QEMU/slirp's own SO_REUSEADDR hostfwd listener -- while a real
+            # active listener still fails the bind. Not on Windows: there
+            # SO_REUSEADDR also allows binding over an ACTIVE listener, which
+            # would report genuinely busy ports as free.
+            if not IS_WINDOWS:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind((addr, port))
             except Exception:
