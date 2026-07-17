@@ -277,7 +277,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
     and wedges the guest, and the 11.0 base image ships no `rsync`. A one-shot
     `scp` avoids both. (sparc64 is headless / console-only on either OS.)
 
-- `--mem <MB>`: Memory size in MB (default: 2048).
+- `--mem <MB>`: Memory size in MB (default: 4096 when the host has more than 4 GB of RAM, else 2048).
   - Example: `python3 anyvm.py --os freebsd --mem 4096`
 
 - `--cpu <num>`: vCPU count (default: host core count, capped at 8 when hardware acceleration is available and at 2 under TCG; pass `--cpu` explicitly for more).

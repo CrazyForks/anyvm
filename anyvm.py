@@ -2632,7 +2632,8 @@ Options:
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64, powerpc64, s390x
                          or powerpc64. Default: Host architecture.
-  --mem <MB>             Memory size in MB (Default: 2048).
+  --mem <MB>             Memory size in MB (Default: 4096 when the host
+                         has more than 4 GB of RAM, else 2048).
   --cpu <num>            Number of CPU cores (Default: host cores, capped at
                          8 with hardware acceleration, 2 under TCG).
   --cpu-type <type>      Specific CPU model (e.g., cortex-a72, host).
@@ -2971,28 +2972,64 @@ def download_file_multithread(url, dest, total_size, show_progress, debug=False)
             sys.stdout.flush()
 
     def worker(start, end):
-        if stop_event.is_set():
-            return
-        req = Request(url)
-        req.add_header('User-Agent', 'python-qemu-script')
-        req.add_header('Range', 'bytes={}-{}'.format(start, end))
+        # A server (or middlebox) can close the connection early, in which
+        # case resp.read() returns b"" without raising. Treating that EOF as
+        # completion silently truncates the chunk, so track how many bytes
+        # actually arrived and resume the remaining range until complete.
+        expected = end - start + 1
+        got = 0
+        attempts = 0
+        max_attempts = 5
         try:
-            resp = urlopen(req)
             with open(tmp_dest, 'r+b') as f:
                 f.seek(start)
-                while not stop_event.is_set():
-                    chunk = resp.read(128 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    if show_progress:
-                        with progress_lock:
-                            downloaded[0] += len(chunk)
-                            update_progress()
-            try:
-                resp.close()
-            except Exception:
-                pass
+                while got < expected and not stop_event.is_set():
+                    attempts += 1
+                    if attempts > max_attempts:
+                        raise IOError("range {}-{} incomplete after {} attempts: got {} of {} bytes".format(
+                            start, end, max_attempts, got, expected))
+                    req = Request(url)
+                    req.add_header('User-Agent', 'python-qemu-script')
+                    req.add_header('Range', 'bytes={}-{}'.format(start + got, end))
+                    try:
+                        resp = urlopen(req)
+                    except Exception as exc:
+                        debuglog(debug, "worker range {}-{} attempt {} open failed: {}".format(
+                            start, end, attempts, exc))
+                        time.sleep(2)
+                        continue
+                    code = resp.getcode()
+                    if code != 206 and not (code == 200 and start + got == 0):
+                        # 200 on a resumed offset means the server ignored the
+                        # Range header and is sending the whole file.
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                        raise IOError("server ignored range request (HTTP {})".format(code))
+                    try:
+                        while got < expected and not stop_event.is_set():
+                            chunk = resp.read(min(128 * 1024, expected - got))
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            got += len(chunk)
+                            if show_progress:
+                                with progress_lock:
+                                    downloaded[0] += len(chunk)
+                                    update_progress()
+                    except Exception as exc:
+                        debuglog(debug, "worker range {}-{} attempt {} read failed at {}: {}".format(
+                            start, end, attempts, got, exc))
+                        time.sleep(2)
+                    finally:
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                    if got < expected:
+                        debuglog(debug, "worker range {}-{} attempt {} short: got {} of {} bytes; resuming".format(
+                            start, end, attempts, got, expected))
         except Exception as e:
             stop_event.set()
             with progress_lock:
@@ -3123,34 +3160,57 @@ def download_optional_parts(base_url, base_path, max_parts=9, debug=False):
 
 
 def append_url_to_file(url, dest_path, debug=False):
-    req = Request(url)
-    req.add_header('User-Agent', 'python-qemu-script')
-    try:
-        resp = urlopen(req)
-    except Exception as exc:
-        debuglog(debug, "failed to open {}: {}".format(url, exc))
-        return False
-
-    try:
-        with open(dest_path, 'ab') as f_main:
-            start_pos = f_main.tell()
+    # Same hazard as the multithread workers: an early connection close makes
+    # resp.read() return b"" without raising, silently truncating the part.
+    # Verify the received length against the server-reported size and resume
+    # with a Range request when the transfer stops short.
+    total_size, can_range = get_remote_file_info(url, debug)
+    with open(dest_path, 'ab') as f_main:
+        start_pos = f_main.tell()
+        got = 0
+        max_attempts = 5
+        for attempt in range(1, max_attempts + 1):
+            req = Request(url)
+            req.add_header('User-Agent', 'python-qemu-script')
+            if got:
+                if can_range:
+                    req.add_header('Range', 'bytes={}-'.format(got))
+                else:
+                    # Cannot resume; restart the part from scratch. Append
+                    # mode ignores seek positions, so truncate back instead.
+                    f_main.truncate(start_pos)
+                    got = 0
+            try:
+                resp = urlopen(req)
+            except Exception as exc:
+                debuglog(debug, "failed to open {} (attempt {}): {}".format(url, attempt, exc))
+                time.sleep(2)
+                continue
             try:
                 while True:
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
                         break
                     f_main.write(chunk)
+                    got += len(chunk)
             except Exception as exc:
-                debuglog(debug, "failed while appending {}: {}".format(url, exc))
-                f_main.truncate(start_pos)
-                return False
-    finally:
-        try:
-            resp.close()
-        except Exception:
-            pass
-    debuglog(debug, "appended {}".format(url))
-    return True
+                debuglog(debug, "failed while appending {} at {} (attempt {}): {}".format(
+                    url, got, attempt, exc))
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            if total_size > 0 and got < total_size:
+                debuglog(debug, "append {} attempt {} short: got {} of {} bytes; resuming".format(
+                    url, attempt, got, total_size))
+                time.sleep(2)
+                continue
+            debuglog(debug, "appended {}".format(url))
+            return True
+        f_main.truncate(start_pos)
+    debuglog(debug, "failed to append {} after {} attempts".format(url, max_attempts))
+    return False
 
 def terminate_process(proc, name="process", grace_seconds=10):
     """Attempts to gracefully stop a subprocess before forcing termination."""
@@ -3611,6 +3671,47 @@ def find_qemu(binary_name):
             return candidate_msys
 
     return None
+
+def host_total_mem_mb():
+    """Returns total physical host memory in MB, or 0 if unknown."""
+    try:
+        if IS_WINDOWS:
+            import ctypes
+
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_uint32),
+                    ("dwMemoryLoad", ctypes.c_uint32),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            stat = MemoryStatusEx()
+            stat.dwLength = ctypes.sizeof(MemoryStatusEx)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return 0
+            return int(stat.ullTotalPhys // (1024 * 1024))
+        if sys.platform == "darwin":
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"])
+            return int(out.strip()) // (1024 * 1024)
+        try:
+            with open("/proc/meminfo") as meminfo:
+                for line in meminfo:
+                    if line.startswith("MemTotal:"):
+                        # value is in kB
+                        return int(line.split()[1]) // 1024
+        except IOError:
+            pass
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        page_count = os.sysconf("SC_PHYS_PAGES")
+        return page_size * page_count // (1024 * 1024)
+    except Exception:
+        return 0
 
 def qemu_binary_name(arch):
     """Maps a guest arch (config['arch'], "" = x86_64) to the qemu-system
@@ -5198,6 +5299,15 @@ def main():
               " install locations): {}\n{}".format(
                   ", ".join(missing_deps), deps_install_hint()))
 
+    # 2048 MB is tight for modern guests (Solaris 11.4 exhausts swap during
+    # boot and sshd cannot even fork), so when the host has more than 4 GB of
+    # RAM, default to 4096 MB unless the user pinned --mem.
+    if not mem_user_specified:
+        host_mem_mb = host_total_mem_mb()
+        if host_mem_mb > 4096:
+            config['mem'] = "4096"
+            debuglog(config['debug'], "Host has {} MB RAM: defaulting VM memory to 4096 MB (override with --mem)".format(host_mem_mb))
+
     # BlissOS (Android-x86): the image is built and verified on std VGA
     # (bochs-drm KMS + HWACCEL=0 software GLES renders the Android desktop to
     # VNC at 1280x800; virtio-vga is unverified there), and Android under
@@ -5613,7 +5723,15 @@ def main():
                             msg += "Please install it via your package manager (e.g. apt install zstd, brew install zstd)\n"
                         fatal(msg)
                     if subprocess.call(['zstd', '-d', ova_file, '-o', qcow_name]) != 0:
-                        fatal("zstd extraction failed")
+                        # Remove the corrupt archive (and any partial output)
+                        # so the next run re-downloads instead of failing on
+                        # the same bad file forever.
+                        for stale in (ova_file, qcow_name):
+                            try:
+                                os.remove(stale)
+                            except OSError:
+                                pass
+                        fatal("zstd extraction failed (removed corrupt download; re-run to download again)")
                 elif ova_file.endswith('.xz'):
                     if not cmd_exists('xz'):
                         msg = "Error: 'xz' command not found. This is required to extract the image.\n"
@@ -5622,9 +5740,17 @@ def main():
                         else:
                             msg += "Please install it via your package manager (e.g. apt install xz-utils, brew install xz)\n"
                         fatal(msg)
+                    xz_failed = False
                     with open(qcow_name, 'wb') as f:
                         if subprocess.call(['xz', '-d', '-c', ova_file], stdout=f) != 0:
-                            fatal("xz extraction failed")
+                            xz_failed = True
+                    if xz_failed:
+                        for stale in (ova_file, qcow_name):
+                            try:
+                                os.remove(stale)
+                            except OSError:
+                                pass
+                        fatal("xz extraction failed (removed corrupt download; re-run to download again)")
                 extract_duration = time.time() - extract_start_time
                 debuglog(config['debug'], "Extraction took {:.2f} seconds".format(extract_duration))
                 
