@@ -159,7 +159,7 @@ OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 # on demand from the release asset: it is the default backend for
 # `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
 # server instead.
-MYNFSD_VERSION = "0.0.6"
+MYNFSD_VERSION = "0.0.7"
 MYNFSD_URL = ("https://github.com/anyvm-org/nfsd/releases/download/"
               "v{}/nfsd.py".format(MYNFSD_VERSION))
 
