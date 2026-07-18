@@ -111,7 +111,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 
 
 DEFAULT_BUILDER_VERSIONS = {
-    "freebsd": "2.2.4",
+    "freebsd": "2.2.5",
     "openbsd": "2.0.8",
     "netbsd": "2.1.4",
     "dragonflybsd": "2.0.6",
@@ -5687,7 +5687,18 @@ def main():
                 debuglog(config['debug'], "Found cached qcow2: {}".format(cached_qcow2))
                 log("Copying cached image: {} -> {}".format(cached_qcow2, qcow_name))
                 start_time = time.time()
-                shutil.copy2(cached_qcow2, qcow_name)
+                try:
+                    shutil.copy2(cached_qcow2, qcow_name)
+                except OSError as e:
+                    # Drop the partial data-dir copy: a later run would take
+                    # the truncated qcow2 for a fully restored image (the
+                    # checks here are bare os.path.exists) and boot corrupt.
+                    try:
+                        os.remove(qcow_name)
+                    except OSError:
+                        pass
+                    fatal("Copying cached image failed: {} -> {}: {} (is the "
+                          "--data-dir volume large enough?)".format(cached_qcow2, qcow_name, e))
                 duration = time.time() - start_time
                 debuglog(config['debug'], "Copying from cache took {:.2f} seconds".format(duration))
             else:
@@ -5764,17 +5775,48 @@ def main():
                     pass
                 
                 if cached_qcow2:
-                    # Copy qcow2 to cache
-                    debuglog(config['debug'], "Copying qcow2 to cache: {} -> {}".format(qcow_name, cached_qcow2))
+                    # Populate the cache. --cache-dir is always an explicit
+                    # user/caller choice (there is no implicit default), so a
+                    # failure here must be FATAL, not a silent fall-back to
+                    # data-dir: the caller asked for a cache and would keep
+                    # paying the full download+extract on every run without
+                    # noticing. Clean up the partial file first, though -- a
+                    # half-written qcow2 left behind would be picked up as a
+                    # valid cached image by the next run (the cache-hit check
+                    # is a bare os.path.exists) and boot corrupt.
                     log("Caching extracted image: {}".format(cached_qcow2))
-                    shutil.copy2(qcow_name, cached_qcow2)
                     if config['snapshot']:
-                        debuglog(config['debug'], "Snapshot mode: Removing extracted qcow2 from data-dir and using cache")
+                        # Snapshot mode never writes the backing file, so the
+                        # cached copy IS the boot image: MOVE instead of
+                        # copy+delete. On a same-volume cache dir the rename
+                        # is instant and needs no extra space; cross-volume,
+                        # shutil.move degrades to copy+delete as before.
+                        debuglog(config['debug'], "Moving qcow2 to cache: {} -> {}".format(qcow_name, cached_qcow2))
                         try:
-                            os.remove(qcow_name)
-                        except OSError:
-                            pass
-                        qcow_name = cached_qcow2
+                            shutil.move(qcow_name, cached_qcow2)
+                            qcow_name = cached_qcow2
+                        except OSError as e:
+                            try:
+                                os.remove(cached_qcow2)
+                            except OSError:
+                                pass
+                            fatal("Caching image failed: {} -> {}: {} (is the "
+                                  "--cache-dir volume large enough / not "
+                                  "quota-limited?)".format(qcow_name, cached_qcow2, e))
+                    else:
+                        # Writable mode boots (and mutates) the data-dir
+                        # image, so the cache needs its own pristine COPY.
+                        debuglog(config['debug'], "Copying qcow2 to cache: {} -> {}".format(qcow_name, cached_qcow2))
+                        try:
+                            shutil.copy2(qcow_name, cached_qcow2)
+                        except OSError as e:
+                            try:
+                                os.remove(cached_qcow2)
+                            except OSError:
+                                pass
+                            fatal("Caching image failed: {} -> {}: {} (is the "
+                                  "--cache-dir volume large enough / not "
+                                  "quota-limited?)".format(qcow_name, cached_qcow2, e))
 
         # Key files
         vm_name = "{}-{}".format(config['os'], config['release'])
