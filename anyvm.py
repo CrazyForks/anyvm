@@ -125,8 +125,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "ubuntu": "2.0.7",
     "ghostbsd": "2.0.5",
     "blissos": "2.0.2",
-    "hurd": "1.0.0",
-    "plan9": "1.0.0"
+    "hurd": "2.0.0",
+    "plan9": "2.0.0"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
