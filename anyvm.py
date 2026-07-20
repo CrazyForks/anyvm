@@ -12,6 +12,7 @@ import json
 import getpass
 import shutil
 import shlex
+import tempfile
 import re
 import threading
 import random
@@ -123,7 +124,9 @@ DEFAULT_BUILDER_VERSIONS = {
     "openindiana": "2.1.0",
     "ubuntu": "2.0.7",
     "ghostbsd": "2.0.5",
-    "blissos": "2.0.2"
+    "blissos": "2.0.2",
+    "hurd": "1.0.0",
+    "plan9": "1.0.0"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
@@ -159,7 +162,7 @@ OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 # on demand from the release asset: it is the default backend for
 # `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
 # server instead.
-MYNFSD_VERSION = "0.0.7"
+MYNFSD_VERSION = "0.0.9"
 MYNFSD_URL = ("https://github.com/anyvm-org/nfsd/releases/download/"
               "v{}/nfsd.py".format(MYNFSD_VERSION))
 
@@ -3729,6 +3732,10 @@ def qemu_binary_name(arch):
         return "qemu-system-ppc64"
     if arch == "s390x":
         return "qemu-system-s390x"
+    if arch == "i386":
+        # 32-bit x86 guests (Debian GNU/Hurd hurd-i386). Ships in the same
+        # qemu-system-x86 package as qemu-system-x86_64 on Debian/Ubuntu.
+        return "qemu-system-i386"
     return "qemu-system-x86_64"
 
 # The complete Debian/Ubuntu host dependency set -- the same package list as
@@ -4276,6 +4283,11 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
     # the -pmap portmapper on privileged port 111 (RFC 1833 PMAP_PORT),
     # and only then is the probe worth doing.
     need_v3 = os_name in NFSV4LESS_GUESTS
+    # The Hurd's /hurd/nfs translator is v3-only as well, but it accepts
+    # explicit --nfs-port/--mount-port arguments, so it needs `-vers 3`
+    # WITHOUT the port-111 portmapper (no sudo dance either). See the hurd
+    # case in mount_script below for the whole story.
+    hurd_v3 = os_name == "hurd"
     use_sudo = False
     if need_v3 and not IS_WINDOWS:
         # Probe instead of guessing the mechanism: "ok" covers root, a
@@ -4299,10 +4311,11 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
                 "start and {} guests cannot mount; use --sync sys-nfs "
                 "on this host.".format(os_name))
     log("Starting user-space nfsd (NFSv{}) on port {} exporting {}".format(
-        "3" if need_v3 else "4", port, vhost))
+        "3" if (need_v3 or hurd_v3) else "4", port, vhost))
     if not start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug,
                         use_sudo=use_sudo,
-                        vers="3" if need_v3 else "4", pmap=need_v3):
+                        vers="3" if (need_v3 or hurd_v3) else "4",
+                        pmap=need_v3):
         log("Warning: the user-space nfsd did not come up on port {}; see {}".format(port, log_path))
         return
 
@@ -4338,6 +4351,14 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
     # mount_nfs(8) (nfsv4, minorversion=, port=, tcp); illumos family --
     # mount_nfs(8) (vers=, port=); openbsd/netbsd/dragonflybsd --
     # mount_nfs(8) (-T tcp flag; dragonfly -3 forces v3).
+    # hurd -- the /hurd/nfs translator (UDP-only, hence nfsd >= 0.0.9 with
+    # the UDP transport + MOUNT v1 compat): it always sends MOUNT v1 (its
+    # --mount-program flag aborts on an upstream argp bug), so the server
+    # must serve MOUNT v1; --nfs-program=100003.3 selects NFSv3 for the
+    # file protocol; explicit --nfs-port/--mount-port skip the portmapper;
+    # --read-size/--write-size 1024 keep every RPC datagram under the MTU
+    # (default 8192 fragments UDP packets, which wedges the whole guest
+    # NIC under slirp -- verified 2026-07-20, killed even the ssh session).
     mount_script = """
 mkdir -p "{vguest}"
 case "{os}" in
@@ -4349,6 +4370,19 @@ case "{os}" in
     /sbin/mount_nfs -T 192.168.122.2:/ "{vguest}" ;;
   dragonflybsd)
     /sbin/mount_nfs -3 -T 192.168.122.2:/ "{vguest}" ;;
+  hurd)
+    settrans -ga "{vguest}" 2>/dev/null
+    # </dev/null >/dev/null 2>&1 is LOAD-BEARING: the translator process
+    # settrans spawns runs forever (it IS the mounted filesystem) and
+    # inherits these fds -- without the redirect it keeps the ssh
+    # session's stdout/stderr open, the ssh never exits, and the mount
+    # loop kills it at 60s even though the mount itself succeeded in
+    # under a second.
+    settrans -a "{vguest}" /hurd/nfs --soft=3 \
+      --nfs-port={port} --mount-port={port} \
+      --nfs-program=100003.3 \
+      --read-size=1024 --write-size=1024 \
+      "192.168.122.2:/" </dev/null >/dev/null 2>&1 ;;
   *)
     mount -t nfs -o vers=4.0,proto=tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
 esac
@@ -4619,6 +4653,179 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
     
     if not synced:
         log("Warning: Failed to sync shared folder via rsync.")
+
+# ---------------------------------------------------------------------------
+# plan9/9front transport: telnet exec + 9P folder sync (VM_TRANSPORT=telnet).
+# 9front ships no sshd. The runtime drives the guest over its no-auth telnetd
+# (baked to listen on 23, reachable only via the slirp hostfwd on 127.0.0.1)
+# and mounts the guest's exportfs 9P share (Linux kernel v9fs) for -v folders.
+# ---------------------------------------------------------------------------
+
+def _telnet_eat_iac(sock, data, out):
+    """Refuse all telnet IAC option negotiation in `data`; append plain bytes
+    to `out`."""
+    IAC, SE, SB = 255, 240, 250
+    WILL, WONT, DO, DONT = 251, 252, 253, 254
+    i, n = 0, len(data)
+    while i < n:
+        b = data[i]
+        if b != IAC:
+            out.append(b)
+            i += 1
+            continue
+        if i + 1 >= n:
+            break
+        cmd = data[i + 1]
+        if cmd in (DO, DONT, WILL, WONT) and i + 2 < n:
+            opt = data[i + 2]
+            try:
+                if cmd == DO:
+                    sock.sendall(bytes([IAC, WONT, opt]))
+                elif cmd == WILL:
+                    sock.sendall(bytes([IAC, DONT, opt]))
+            except OSError:
+                pass
+            i += 3
+        elif cmd == SB:
+            j = i + 2
+            while j + 1 < n and not (data[j] == IAC and data[j + 1] == SE):
+                j += 1
+            i = j + 2
+        elif cmd == IAC:
+            out.append(IAC)
+            i += 2
+        else:
+            i += 2
+
+
+def telnet_exec(host_port, cmds, settle=2.0, connect_timeout=10):
+    """Run command lines in a plan9 guest over telnet on 127.0.0.1:host_port.
+    Returns (connected, transcript). No exit-status channel: callers that
+    need one have the guest echo an rc marker (`... && echo done`)."""
+    out = bytearray()
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(host_port)), connect_timeout)
+    except OSError:
+        return False, ""
+
+    def _read_for(seconds):
+        end = time.time() + seconds
+        sock.settimeout(0.5)
+        while time.time() < end:
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                return False
+            if not data:
+                return False
+            _telnet_eat_iac(sock, data, out)
+        return True
+
+    alive = _read_for(min(settle, 2.0))
+    for c in cmds:
+        if not alive:
+            break
+        try:
+            sock.sendall(c.encode("utf-8", "replace") + b"\r\n")
+        except OSError:
+            alive = False
+            break
+        alive = _read_for(settle)
+    try:
+        sock.close()
+    except OSError:
+        pass
+    return alive, out.decode("utf-8", "replace")
+
+
+def telnet_ready(host_port):
+    """One telnet marker probe: connect, echo a split marker (so the guest's
+    own echo of the command can't match), look for the reassembled marker."""
+    ok, text = telnet_exec(host_port, ["echo anyvm''-ready"], settle=2.0,
+                           connect_timeout=5)
+    return ok and ("anyvm-ready" in text)
+
+
+def sync_9p(host_port, vhost, vguest, debug=False):
+    """Mount the guest's exportfs 9P share and copy `vhost` into `vguest`.
+
+    Linux-host only: uses the kernel v9fs client (mount -t 9p) via sudo. The
+    guest exports "/" over 9P (plan9-builder bakes the listener + the
+    exportfs errstr patch that makes Twalk-before-create map correctly under
+    Linux v9fs). uname=glenda + dfltuid/dfltgid map the unauthenticated
+    attach to the invoking user so writes carry natural ownership."""
+    if IS_WINDOWS or sys.platform == "darwin":
+        log("Warning: --sync 9p needs the Linux kernel v9fs client; not "
+            "available on this host. Skipping folder sync (use a Linux host, "
+            "or copy files manually over the 9P console).")
+        return
+    if not os.path.exists(vhost):
+        log("Warning: Host path {} does not exist; skipping.".format(vhost))
+        return
+    # mount -t 9p needs root. Use sudo only when we are not already root and
+    # passwordless sudo is available.
+    if os.geteuid() == 0:
+        sudo = []
+    elif sudo_noninteractive():
+        sudo = ["sudo", "-n"]
+    else:
+        log("Warning: --sync 9p needs root (mount -t 9p) and passwordless "
+            "sudo is unavailable; skipping folder sync.")
+        return
+    mnt = tempfile.mkdtemp(prefix="anyvm-9p-")
+    try:
+        uid = os.getuid()
+        gid = os.getgid()
+        opts = ("trans=tcp,port={},version=9p2000,uname=glenda,aname=/,"
+                "dfltuid={},dfltgid={}".format(host_port, uid, gid))
+        mount_cmd = sudo + ["mount", "-t", "9p", "-o", opts, "127.0.0.1", mnt]
+        log("Syncing via 9p: {} -> {} (guest exportfs on :564)".format(vhost, vguest))
+        mounted = False
+        for attempt in range(1, 6):
+            ret = subprocess.call(mount_cmd, stdout=DEVNULL,
+                                  stderr=(None if debug else DEVNULL))
+            if ret == 0:
+                mounted = True
+                break
+            debuglog(debug, "9p mount attempt {} failed rc={}".format(attempt, ret))
+            time.sleep(2)
+        if not mounted:
+            log("Warning: 9p mount failed after retries; skipping folder sync.")
+            return
+        # vguest is an absolute guest path (e.g. /usr/glenda/work); the 9P
+        # root is the guest's "/", so strip the leading slash to join.
+        dest = os.path.join(mnt, vguest.lstrip("/"))
+        try:
+            os.makedirs(dest, exist_ok=True)
+        except OSError as e:
+            log("Warning: cannot create {} in guest over 9p: {}".format(vguest, e))
+            return
+        if os.path.isdir(vhost):
+            for entry in os.listdir(vhost):
+                src = os.path.join(vhost, entry)
+                dst = os.path.join(dest, entry)
+                try:
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(src, dst)
+                except OSError as e:
+                    log("Warning: 9p copy {} failed: {}".format(src, e))
+        else:
+            try:
+                shutil.copy2(vhost, dest)
+            except OSError as e:
+                log("Warning: 9p copy {} failed: {}".format(vhost, e))
+        log("9p sync complete.")
+    finally:
+        subprocess.call(sudo + ["umount", mnt], stdout=DEVNULL, stderr=DEVNULL)
+        try:
+            os.rmdir(mnt)
+        except OSError:
+            pass
+
 
 def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user, excludes=None):
     """Syncs via scp (Push mode from host to guest)."""
@@ -4994,6 +5201,12 @@ def main():
         'ports': [],
         'vnc': "",
         'sync': "rsync",
+        # Remote-exec channel into the guest. "ssh" everywhere except
+        # plan9/9front (no sshd): "telnet" drives the guest over its
+        # no-auth telnetd and moves files over exportfs 9P. Set from the
+        # guest profile's "transport" key (or the plan9 os default) after
+        # the profile is resolved.
+        'transport': "ssh",
         'qmon': "",
         'disktype': "",
         'public': False,
@@ -5148,8 +5361,8 @@ def main():
             if val == "mynfs":
                 # Alias: nfs already means the bundled user-space nfsd.
                 val = "nfs"
-            if val not in ["sshfs", "nfs", "sys-nfs", "rsync", "scp", "no"]:
-                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, sys-nfs, scp, no/off.".format(val))
+            if val not in ["sshfs", "nfs", "sys-nfs", "rsync", "scp", "9p", "no"]:
+                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, sys-nfs, scp, 9p, no/off.".format(val))
             config['sync'] = val
             i += 1
         elif arg == "--disktype":
@@ -5336,6 +5549,13 @@ def main():
             and not sync_user_specified):
         config['sync'] = "scp"
         debuglog(config['debug'], "netbsd/sparc64: defaulting sync mode to scp (override with --sync)")
+
+    # plan9 (9front): no ssh, so rsync/sshfs/nfs/scp (all ssh-based) can't
+    # work. Folder sync is the host mounting the guest's exportfs 9P share
+    # (Linux kernel v9fs). Default to it so `-v dir:/path` just works.
+    if config['os'] == "plan9" and not sync_user_specified:
+        config['sync'] = "9p"
+        debuglog(config['debug'], "plan9: defaulting sync mode to 9p (override with --sync)")
 
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
@@ -5885,6 +6105,13 @@ def main():
             else:
                 debuglog(config['debug'], "No guest profile at {} (release predates it); using built-in launch logic".format(profile_url))
 
+    # Remote-exec transport: profile "transport" key wins; otherwise plan9
+    # always means telnet (no sshd exists in 9front). Everything else = ssh.
+    if guest_profile and guest_profile.get('transport'):
+        config['transport'] = guest_profile['transport']
+    elif config['os'] == "plan9":
+        config['transport'] = "telnet"
+
     # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
     # (see OPENBIOS_SPARC64_REPO above); fetch the patched blob published
     # next to the VM images. Preferred from the same builder tag as the
@@ -6178,6 +6405,23 @@ def main():
         except (ValueError, TypeError, IndexError):
             config['mem'] = str(mem_cap)
 
+    # GNU Hurd: stock gnumach is uniprocessor (SMP is an experimental add-on
+    # package), so force 1 vCPU on both arches. The 32-bit i386 kernel
+    # additionally cannot use big RAM; cap it at 2048 MB (hurd-builder builds
+    # and verifies the image at that size too).
+    if config['os'] == "hurd":
+        config['cpu'] = "1"
+        if config['arch'] == "i386":
+            hurd_mem_cap = 2048
+            try:
+                mem_mb = int(str(config['mem']).rstrip("MmGg"))
+                if str(config['mem']).rstrip()[-1:].lower() == "g":
+                    mem_mb *= 1024
+                if mem_mb > hurd_mem_cap:
+                    config['mem'] = str(hurd_mem_cap)
+            except (ValueError, TypeError, IndexError):
+                config['mem'] = str(hurd_mem_cap)
+
     # powerpc64/le (QEMU pseries) under TCG: SMP bring-up on a cold boot from
     # the installed disk reproducibly wedges at the kernel's "Launching APs"
     # line (the same hang the builder pins VM_CPU=1 to avoid). TCG is
@@ -6251,15 +6495,30 @@ def main():
     # Each entry: (proto, host_addr, host_port_str, guest_port_str)
     hostfwd_specs = []
 
-    netdev_args += ",hostfwd=tcp:{}:{}-:22".format(ssh_addr, config['sshport'])
-    hostfwd_specs.append(("tcp", ssh_addr, str(config['sshport']), "22"))
+    # plan9/9front has no sshd: the control channel is telnetd on guest port
+    # 23, and folder sync mounts exportfs 9P on guest port 564. Forward
+    # config['sshport'] to 23 (so `ssh <port>`-style aliases and the boot
+    # wait all reach the same place) and, when 9p sync is active, pin a
+    # second forward to 564.
+    ctl_guest_port = "23" if config.get('transport') == "telnet" else "22"
+    netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(ssh_addr, config['sshport'], ctl_guest_port)
+    hostfwd_specs.append(("tcp", ssh_addr, str(config['sshport']), ctl_guest_port))
     for extra_addr in ssh_extra_addrs:
         if is_port_available(extra_addr, int(config['sshport'])):
-            netdev_args += ",hostfwd=tcp:{}:{}-:22".format(extra_addr, config['sshport'])
-            hostfwd_specs.append(("tcp", extra_addr, str(config['sshport']), "22"))
-            debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 OK".format(extra_addr, config['sshport']))
+            netdev_args += ",hostfwd=tcp:{}:{}-:{}".format(extra_addr, config['sshport'], ctl_guest_port)
+            hostfwd_specs.append(("tcp", extra_addr, str(config['sshport']), ctl_guest_port))
+            debuglog(config['debug'], "hostfwd: CTL {}:{} -> :{} OK".format(extra_addr, config['sshport'], ctl_guest_port))
         else:
-            debuglog(config['debug'], "hostfwd: SSH {}:{} -> :22 SKIPPED (port in use)".format(extra_addr, config['sshport']))
+            debuglog(config['debug'], "hostfwd: CTL {}:{} -> :{} SKIPPED (port in use)".format(extra_addr, config['sshport'], ctl_guest_port))
+    if config.get('transport') == "telnet" and config.get('sync') == "9p":
+        p9_host_port = get_free_port(20564, 20999)
+        if p9_host_port:
+            netdev_args += ",hostfwd=tcp:{}:{}-:564".format(ssh_addr, p9_host_port)
+            hostfwd_specs.append(("tcp", ssh_addr, str(p9_host_port), "564"))
+            config['p9_host_port'] = p9_host_port
+            debuglog(config['debug'], "hostfwd: 9P {}:{} -> :564 OK".format(ssh_addr, p9_host_port))
+        else:
+            log("Warning: no free host port for 9P forward; --sync 9p will be skipped.")
 
     # Add custom port mappings
     for p in config['ports']:
@@ -6416,6 +6675,12 @@ def main():
         elif config['os'] == "netbsd" and config['arch'] == "aarch64":
             net_card = "virtio-net-pci"
         elif config['os'] == "freebsd":
+            net_card = "virtio-net-pci"
+        elif config['os'] == "plan9":
+            # plan9-builder builds and verifies the image on virtio-net
+            # (conf VM_NIC=virtio; 9front's ethervirtio brings the link up as
+            # ether0). The published profile already carries this; the
+            # built-in default matters only for the profile-less --qcow2 path.
             net_card = "virtio-net-pci"
         elif config['os'] == "ubuntu":
             # The ubuntu-builder image is built and validated on a virtio NIC
@@ -6738,6 +7003,16 @@ def main():
     else:
         # x86_64
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
+        if config['os'] == "hurd":
+            # gnumach requires the HPET (hpet_init asserts hpet_addr != 0 and
+            # panics under hpet=off). The amd64 build additionally needs the
+            # q35 machine: on i440fx 'pc', rumpdisk's piix IDE DMA cannot
+            # address 64-bit physical pages, so >= 3584 MB RAM fails root
+            # mounting with "ext2fs: ... Input/output error" (bug-hurd
+            # 2025-11 msg00017; -M q35 is the upstream-confirmed fix). i386
+            # keeps pc (in-kernel gnumach IDE).
+            hurd_mtype = "pc" if config['arch'] == "i386" else "q35"
+            machine_opts = "{},accel={},smm=off,graphics=on,vmport=off,usb=on".format(hurd_mtype, accel)
         
         if config['cputype']:
             # Explicit --cpu-type wins (the x86_64 branch previously ignored it).
@@ -7496,16 +7771,26 @@ def main():
                         elapsed, boot_timeout_seconds, last_probe_result))
                     last_boot_progress_log = elapsed
 
-                ret, timed_out = call_with_timeout(
-                    ssh_base_cmd + ["exit"],
-                    timeout_seconds=probe_timeout_sec,
-                    stdout=DEVNULL,
-                    stderr=DEVNULL
-                )
-                last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
-                if ret == 0:
-                    success = True
-                    break
+                if config.get('transport') == "telnet":
+                    # plan9/9front: no sshd -- readiness is the guest's telnetd
+                    # answering the marker probe through the hostfwd.
+                    timed_out = False
+                    if telnet_ready(config['sshport']):
+                        last_probe_result = "telnet ready"
+                        success = True
+                        break
+                    last_probe_result = "telnet not ready"
+                else:
+                    ret, timed_out = call_with_timeout(
+                        ssh_base_cmd + ["exit"],
+                        timeout_seconds=probe_timeout_sec,
+                        stdout=DEVNULL,
+                        stderr=DEVNULL
+                    )
+                    last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
+                    if ret == 0:
+                        success = True
+                        break
 
                 # While waiting for SSH to come up, periodically poll the QEMU monitor
                 # to detect if the VM got an unexpected IP and fix hostfwd accordingly.
@@ -7808,8 +8093,14 @@ def main():
                 else:
                     should_sync = False
             
+            if should_sync and config.get('transport') == "telnet":
+                # plan9/9front: sync_vm_time drives the guest over ssh, which
+                # doesn't exist here. Time sync on 9front would need a native
+                # aux/timesync path; skip rather than fail.
+                debuglog(config['debug'], "plan9: skipping --sync-time (no ssh transport).")
+                should_sync = False
             if should_sync:
-                # On slow emulated systems (like Apple Silicon running x86), 
+                # On slow emulated systems (like Apple Silicon running x86),
                 # Solaris/OpenIndiana services might need a moment to settle after SSH becomes responsive
                 # to avoid 'logout without login' audit errors.
                 is_apple_silicon = (platform.system() == 'Darwin' and platform.machine() == 'arm64')
@@ -7922,6 +8213,13 @@ Host host
                             sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, excludes=excludes)
                         elif config['sync'] == 'scp':
                             sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user, excludes=excludes)
+                        elif config['sync'] == '9p':
+                            p9_port = config.get('p9_host_port')
+                            if p9_port:
+                                sync_9p(p9_port, vhost, vguest, config['debug'])
+                            else:
+                                log("Warning: --sync 9p but no 9P host port was "
+                                    "forwarded; skipping folder sync.")
                         else:
                             sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'], config.get('release'))
 
@@ -7958,7 +8256,22 @@ Host host
 
             debuglog(config['debug'], "[trace] reached final-SSH gate, detach={} console={}".format(
                 config['detach'], config['console']))
-            if not config['detach']:
+            if not config['detach'] and config.get('transport') == "telnet":
+                # plan9/9front: no ssh. Run a passthrough `-- cmd ...` over
+                # telnet and print the transcript; with no command there is
+                # no interactive telnet shell to attach (the guest console is
+                # the VNC web UI), so just leave the VM running.
+                if ssh_passthrough:
+                    p9_cmd = " ".join(ssh_passthrough)
+                    ok, text = telnet_exec(config['sshport'], [p9_cmd], settle=4.0)
+                    sys.stdout.write(text)
+                    if not text.endswith("\n"):
+                        sys.stdout.write("\n")
+                    if not ok:
+                        log("Warning: telnet session to the guest closed early.")
+                else:
+                    debuglog(config['debug'], "plan9: no passthrough command; leaving VM running (use the VNC console).")
+            elif not config['detach']:
                 ssh_cmd = ssh_base_cmd + ssh_passthrough
                 debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
                 # Skip the final interactive SSH when there's nothing to run AND

@@ -1,0 +1,103 @@
+name: Plan 9
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/plan9.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Plan 9 (9front) has no sshd, so it cannot reuse the ssh-based testrun.yml.
+# It is driven over telnetd (control channel) and its exportfs 9P share
+# (folder sync). This standalone job boots the published image with anyvm,
+# then verifies BOTH channels with a small python telnet client:
+#   1. exec: run `echo` in the guest and read the marker back
+#   2. 9p sync: a host file placed via `--sync 9p -v` shows up in the guest
+jobs:
+  test:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=plan9]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["11554"]
+        runs: ["ubuntu-24.04"]
+    runs-on: ${{ matrix.runs }}
+    name: Test ${{ matrix.release }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get --no-install-recommends -y install \
+          zstd qemu-utils qemu-system-x86 ca-certificates
+    - name: Boot 9front and verify telnet exec + 9P sync
+      shell: bash
+      run: |
+        set -e
+        mountdir=test
+        mkdir -p ${mountdir}
+        echo "anyvm" > ${mountdir}/justcheck.txt
+        mkdir -p ../test_output
+        # Boot detached: anyvm returns leaving QEMU running, after wiring the
+        # telnet control forward (host 10023 -> guest 23) and syncing the
+        # shared folder over 9P into /usr/glenda/work.
+        python anyvm.py --debug --data-dir ../test_output --os plan9 \
+          --release "${{ matrix.release }}" --ssh-port 10023 -d \
+          --sync 9p -v "${mountdir}:/usr/glenda/work"
+        echo "===============verify telnet exec + 9P-synced marker"
+        python3 - <<'PY'
+        import socket, sys, time
+        def telnet_exec(port, cmds, settle=4.0):
+            IAC=255; SE=240; SB=250; WILL,WONT,DO,DONT=251,252,253,254
+            out=bytearray()
+            s=socket.create_connection(("127.0.0.1",port),15)
+            def eat(data):
+                i=0;n=len(data)
+                while i<n:
+                    b=data[i]
+                    if b!=IAC: out.append(b); i+=1; continue
+                    if i+1>=n: break
+                    c=data[i+1]
+                    if c in (DO,DONT,WILL,WONT) and i+2<n:
+                        o=data[i+2]
+                        if c==DO: s.sendall(bytes([IAC,WONT,o]))
+                        elif c==WILL: s.sendall(bytes([IAC,DONT,o]))
+                        i+=3
+                    elif c==SB:
+                        j=i+2
+                        while j+1<n and not (data[j]==IAC and data[j+1]==SE): j+=1
+                        i=j+2
+                    else: i+=2
+            def rd(sec):
+                end=time.time()+sec; s.settimeout(0.5)
+                while time.time()<end:
+                    try: d=s.recv(4096)
+                    except socket.timeout: continue
+                    if not d: return
+                    eat(d)
+            rd(min(settle,2))
+            for c in cmds:
+                s.sendall(c.encode()+b"\r\n"); rd(settle)
+            s.close(); return out.decode("utf-8","replace")
+        # retry until telnetd answers (boot already waited, but be safe)
+        txt=""
+        for _ in range(20):
+            try:
+                txt=telnet_exec(10023, ["echo EXEC''-OK", "ls /usr/glenda/work"])
+                if "EXEC-OK" in txt: break
+            except OSError: time.sleep(3)
+        print(txt)
+        assert "EXEC-OK" in txt, "telnet exec failed"
+        assert "justcheck.txt" in txt, "9P-synced file not visible in guest"
+        print("plan9 verify OK: telnet exec + 9P sync")
+        PY

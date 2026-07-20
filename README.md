@@ -76,6 +76,11 @@ python3 anyvm.py --os ubuntu --release 24.04
 python3 anyvm.py --os ghostbsd
 python3 anyvm.py --os blissos
 
+python3 anyvm.py --os hurd                           # Debian GNU/Hurd (amd64)
+python3 anyvm.py --os hurd --release 2025 --arch i386
+
+python3 anyvm.py --os plan9                           # Plan 9 (9front, amd64)
+
 python3 anyvm.py --os freebsd --release 14.4 --arch riscv64
 python3 anyvm.py --os freebsd --release 15.1 --arch riscv64
 python3 anyvm.py --os freebsd --release 15.1 --arch powerpc64
@@ -148,6 +153,8 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Tribblix<br>[![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | — | — | — | [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder) |
 | Haiku<br>[![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | — | — | — | [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder) |
 | BlissOS (Android)<br>[![Test BlissOS](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml) | ✅ | — | — | — | — | — | [![Build BlissOS](https://github.com/anyvm-org/blissos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/blissos-builder) |
+| GNU Hurd (Debian)<br>[![Test Hurd](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml) | ✅ (also i386) | — | — | — | — | — | [![Build Hurd](https://github.com/anyvm-org/hurd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/hurd-builder) |
+| Plan 9 (9front)<br>[![Test Plan 9](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml) | ✅ | — | — | — | — | — | [![Build Plan 9](https://github.com/anyvm-org/plan9-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/plan9-builder) |
 
 ## 5. Host support
 
@@ -230,7 +237,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `blissos`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `blissos` / `hurd`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
