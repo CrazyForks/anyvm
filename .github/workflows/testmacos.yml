@@ -63,11 +63,14 @@ jobs:
 
 
   # Plan 9 (9front) has no sshd, so it cannot reuse the ssh-based
-  # testrun.yml. Same standalone telnet-exec + 9P-sync verification as
-  # plan9.yml; the x86_64 guest runs under TCG on the arm64 macOS runner.
+  # testrun.yml. Verify boot + telnet exec; the x86_64 guest runs under TCG
+  # on the arm64 macOS runner. NOTE: 9P folder sync is NOT tested here -- it
+  # needs the Linux kernel v9fs client (mount -t 9p), which macOS does not
+  # have, so a plan9 -v sync is a Linux-host-only feature. The full boot +
+  # telnet + 9P-sync path is covered on Linux by plan9.yml.
   plan9:
     runs-on: macos-latest
-    name: Test plan9 9p
+    name: Test plan9 telnet
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
@@ -76,18 +79,14 @@ jobs:
       run: |
         brew untap aws/tap 2>/dev/null || true
         brew install qemu
-    - name: Boot 9front and verify telnet exec + 9P sync
+    - name: Boot 9front and verify telnet exec
       shell: bash
       run: |
         set -e
-        mountdir=test
-        mkdir -p ${mountdir}
-        echo "anyvm" > ${mountdir}/justcheck.txt
         mkdir -p ../test_output
         python3 anyvm.py --debug --data-dir ../test_output --os plan9 \
-          --ssh-port 10023 -d \
-          --sync 9p -v "${mountdir}:/usr/glenda/work"
-        echo "===============verify telnet exec + 9P-synced marker"
+          --ssh-port 10023 -d
+        echo "===============verify telnet exec"
         python3 - <<'PY'
         import socket, sys, time
         def telnet_exec(port, cmds, settle=4.0):
@@ -126,13 +125,12 @@ jobs:
         # TCG boot on the arm64 runner is slow; retry longer than on Linux.
         for _ in range(60):
             try:
-                txt=telnet_exec(10023, ["echo EXEC''-OK", "ls /usr/glenda/work"])
+                txt=telnet_exec(10023, ["echo EXEC''-OK", "cat /dev/user"])
                 if "EXEC-OK" in txt: break
             except OSError: time.sleep(5)
         print(txt)
         assert "EXEC-OK" in txt, "telnet exec failed"
-        assert "justcheck.txt" in txt, "9P-synced file not visible in guest"
-        print("plan9 verify OK: telnet exec + 9P sync")
+        print("plan9 verify OK: telnet exec (9P sync is Linux-only, see plan9.yml)")
         PY
       
       

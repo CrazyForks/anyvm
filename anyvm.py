@@ -4428,7 +4428,15 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
     # Host side configuration
     uid = os.getuid()
     gid = os.getgid()
-    entry_line = "{} *(rw,insecure,async,no_subtree_check,anonuid={},anongid={})".format(vhost, uid, gid)
+    opts = "rw,insecure,async,no_subtree_check,anonuid={},anongid={}".format(uid, gid)
+    if os_name == "hurd":
+        # The /hurd/nfs translator chowns every freshly CREATEd file to
+        # uid 0; under the default root_squash that SETATTR gets EPERM and
+        # the translator fails the whole open, so every guest write dies.
+        # (The user-space nfsd swallows the failed chown instead; the
+        # kernel nfsd needs no_root_squash to get the same effect.)
+        opts += ",no_root_squash"
+    entry_line = "{} *({})".format(vhost, opts)
 
     need_add = True
     try:
@@ -4478,11 +4486,42 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
             log("Warning: Cannot configure the kernel NFS server without "
                 "sudo/root.")
 
+    if os_name == "hurd":
+        # /hurd/nfs is UDP-only, but modern nfs-utils starts the kernel
+        # nfsd with the UDP transport disabled. Re-open it explicitly with
+        # rpc.nfsd. This must run AFTER the service restart above: the
+        # restart re-runs rpc.nfsd from the distro config and resets the
+        # transports to TCP-only. Runs on every sync (not just need_add)
+        # so a second -v mount cannot lose the UDP socket. 8 mirrors the
+        # stock nfsd thread count; --tcp keeps TCP open for other guests.
+        if sudo_cmd or os.geteuid() == 0:
+            if _call_quiet(sudo_cmd + ["rpc.nfsd", "--udp", "--tcp", "8"]) == 0:
+                debuglog(True, "kernel nfsd UDP transport enabled for hurd")
+            else:
+                log("Warning: could not enable the kernel nfsd UDP "
+                    "transport (rpc.nfsd --udp failed); the hurd guest "
+                    "cannot mount sys-nfs without it -- use --sync nfs "
+                    "(the user-space nfsd) instead.")
+        else:
+            log("Warning: hurd sys-nfs needs the kernel nfsd UDP transport "
+                "(rpc.nfsd --udp), which requires root/sudo; use --sync "
+                "nfs (the user-space nfsd) instead.")
+
     # Guest side mounting
     mount_script = """
 mkdir -p "{vguest}"
 if [ "{os}" = "openbsd" ]; then
   mount -t nfs -o -T 192.168.122.2:"{vhost}" "{vguest}"
+elif [ "{os}" = "hurd" ]; then
+  settrans -ga "{vguest}" 2>/dev/null
+  # No explicit ports: the translator discovers the kernel mountd/nfsd
+  # via the system rpcbind on 192.168.122.2:111 (UDP). The stdio
+  # redirect is LOAD-BEARING (see the hurd case in sync_mynfs): the
+  # spawned translator would otherwise hold the ssh session open forever.
+  settrans -a "{vguest}" /hurd/nfs --soft=3 \\
+    --nfs-program=100003.3 \\
+    --read-size=1024 --write-size=1024 \\
+    "192.168.122.2:{vhost}" </dev/null >/dev/null 2>&1
 elif [ -e "/sbin/mount" ]; then
   /sbin/mount 192.168.122.2:"{vhost}" "{vguest}"
 else
@@ -4746,6 +4785,117 @@ def telnet_ready(host_port):
     ok, text = telnet_exec(host_port, ["echo anyvm''-ready"], settle=2.0,
                            connect_timeout=5)
     return ok and ("anyvm-ready" in text)
+
+
+def interactive_telnet(host_port, connect_timeout=10):
+    """Attach an interactive telnet session to the plan9 guest on
+    127.0.0.1:host_port -- the ssh-shell analogue for `anyvm --os plan9` when
+    stdin is a TTY and no `-- cmd` was given. Full-duplex bridge: a reader
+    thread pumps guest output (IAC-stripped) to stdout while the main loop
+    forwards keystrokes. The guest telnetd's pty echoes typed characters, so
+    no local echo is added. Returns when the guest closes the connection or
+    the user presses the escape key (Ctrl-])."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(host_port)), connect_timeout)
+    except OSError as e:
+        log("Could not open telnet session to the guest: {}".format(e))
+        return
+    log("Connected to the 9front guest over telnet. Press Ctrl-] to disconnect "
+        "(the VM keeps running).")
+    stop = threading.Event()
+    # Both the reader thread (guest output) and the input loop (local echo)
+    # write to stdout; serialize them so bytes don't interleave.
+    out_lock = threading.Lock()
+
+    def _emit(data):
+        try:
+            with out_lock:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def reader():
+        try:
+            sock.settimeout(0.3)
+            while not stop.is_set():
+                try:
+                    data = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if not data:
+                    break
+                out = bytearray()
+                _telnet_eat_iac(sock, data, out)
+                if out and not _emit(bytes(out)):
+                    break
+        finally:
+            stop.set()
+
+    rthread = threading.Thread(target=reader, daemon=True)
+    rthread.start()
+
+    if IS_WINDOWS:
+        # No raw-tty handling on Windows: forward a line at a time. Good enough
+        # to drive the rc shell (Enter -> CRLF, which the guest pty cooks).
+        try:
+            while not stop.is_set():
+                line = sys.stdin.readline()
+                if not line:
+                    break
+                try:
+                    sock.sendall(line.rstrip("\r\n").encode("utf-8", "replace") + b"\r\n")
+                except OSError:
+                    break
+        except (KeyboardInterrupt, OSError):
+            pass
+    else:
+        import termios
+        import tty
+        import select
+        fd = sys.stdin.fileno()
+        old_attr = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while not stop.is_set():
+                r, _, _ = select.select([fd], [], [], 0.3)
+                if fd not in r:
+                    continue
+                ch = os.read(fd, 1)
+                if not ch:
+                    break
+                if ch == b'\x1d':  # Ctrl-] : the telnet escape -> disconnect
+                    break
+                # We refused the telnet ECHO option (see _telnet_eat_iac), so
+                # the server does NOT echo and raw mode disabled the terminal's
+                # own echo -- the client must echo locally or typing is
+                # invisible. Echo, then forward.
+                if ch == b'\r' or ch == b'\n':
+                    _emit(b'\r\n')
+                    to_send = b'\r\n'
+                elif ch in (b'\x7f', b'\x08'):   # DEL / Backspace: erase one col
+                    _emit(b'\b \b')
+                    to_send = b'\x08'
+                elif ch == b'\x03':              # Ctrl-C: forward, don't echo
+                    to_send = ch
+                else:
+                    _emit(ch)
+                    to_send = ch
+                try:
+                    sock.sendall(to_send)
+                except OSError:
+                    break
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attr)
+    stop.set()
+    try:
+        sock.close()
+    except OSError:
+        pass
+    sys.stdout.write("\n")
 
 
 def sync_9p(host_port, vhost, vguest, debug=False):
@@ -5261,7 +5411,7 @@ def main():
 
     # Manual argument parsing
     args = sys.argv[1:]
-    
+
     if len(args) == 0 or "--help" in args or "-h" in args:
         print_usage()
         sys.exit(0)
@@ -8229,10 +8379,16 @@ Host host
             if config['console']:
                  log("======================================")
                  log("")
-                 log("You can login the vm with: ssh " + vm_name)
-                 log("Or just:  ssh " + str(config['sshport']))
-                 if config.get('sshname'):
-                     log("Or just:  ssh " + str(config['sshname']))
+                 if config.get('transport') == "telnet":
+                     _tcmd = "telnet 127.0.0.1 " + str(config['sshport'])
+                     if supports_ansi_color():
+                         _tcmd = "\x1b[32m{}\x1b[0m".format(_tcmd)
+                     log("Reconnect to the guest shell with:  " + _tcmd)
+                 else:
+                     log("You can login the vm with: ssh " + vm_name)
+                     log("Or just:  ssh " + str(config['sshport']))
+                     if config.get('sshname'):
+                         log("Or just:  ssh " + str(config['sshname']))
                  if web_port:
                      local_url = "http://localhost:{}".format(web_port)
                      display_local_url = local_url
@@ -8257,10 +8413,12 @@ Host host
             debuglog(config['debug'], "[trace] reached final-SSH gate, detach={} console={}".format(
                 config['detach'], config['console']))
             if not config['detach'] and config.get('transport') == "telnet":
-                # plan9/9front: no ssh. Run a passthrough `-- cmd ...` over
-                # telnet and print the transcript; with no command there is
-                # no interactive telnet shell to attach (the guest console is
-                # the VNC web UI), so just leave the VM running.
+                # plan9/9front: no ssh. A passthrough `-- cmd ...` runs over
+                # telnet and prints the transcript. With no command, drop into
+                # an interactive telnet shell when stdin is a TTY (the ssh-shell
+                # analogue); in a non-TTY context (CI, piped) there is no shell
+                # to attach, so just leave the VM running.
+                stdin_is_tty = bool(hasattr(sys.stdin, 'isatty') and sys.stdin.isatty())
                 if ssh_passthrough:
                     p9_cmd = " ".join(ssh_passthrough)
                     ok, text = telnet_exec(config['sshport'], [p9_cmd], settle=4.0)
@@ -8269,8 +8427,10 @@ Host host
                         sys.stdout.write("\n")
                     if not ok:
                         log("Warning: telnet session to the guest closed early.")
+                elif stdin_is_tty:
+                    interactive_telnet(config['sshport'])
                 else:
-                    debuglog(config['debug'], "plan9: no passthrough command; leaving VM running (use the VNC console).")
+                    debuglog(config['debug'], "plan9: no passthrough command and no TTY; leaving VM running (use the VNC console).")
             elif not config['detach']:
                 ssh_cmd = ssh_base_cmd + ssh_passthrough
                 debuglog(config['debug'], "SSH command: {}".format(format_command_for_display(ssh_cmd)))
@@ -8301,10 +8461,16 @@ Host host
                 if is_pid_alive_main(proc.pid):
                     log("======================================")
                     log("The VM is still running in background.")
-                    log("You can login the VM with:  ssh " + vm_name)
-                    log("Or just:  ssh " + str(config['sshport']))
-                    if config.get('sshname'):
-                        log("Or just:  ssh " + str(config['sshname']))
+                    if config.get('transport') == "telnet":
+                        _tcmd = "telnet 127.0.0.1 " + str(config['sshport'])
+                        if supports_ansi_color():
+                            _tcmd = "\x1b[32m{}\x1b[0m".format(_tcmd)
+                        log("Reconnect to the guest shell with:  " + _tcmd)
+                    else:
+                        log("You can login the VM with:  ssh " + vm_name)
+                        log("Or just:  ssh " + str(config['sshport']))
+                        if config.get('sshname'):
+                            log("Or just:  ssh " + str(config['sshname']))
                     if web_port:
                         local_url = "http://localhost:{}".format(web_port)
                         display_local_url = local_url

@@ -84,14 +84,15 @@ jobs:
 
   # Kept: the host kernel NFS server path (--sync sys-nfs), which is what
   # `sync: nfs` used to exercise before nfs switched to the bundled
-  # user-space nfsd. No hurd here: /hurd/nfs is UDP-only and the Ubuntu
-  # kernel nfsd ships with UDP disabled, so only the user-space nfsd
-  # (testnfs above) can serve hurd guests.
+  # user-space nfsd. hurd: /hurd/nfs is UDP-only; anyvm force-enables the
+  # kernel nfsd UDP transport (rpc.nfsd --udp, needs sudo) and exports
+  # with no_root_squash for hurd. Remaining unknown exercised by this
+  # leg: whether the runner's rpc.mountd still answers MOUNT v1.
   testsysnfs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -108,6 +109,8 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
+            arch: aarch64
+          - os: hurd
             arch: aarch64
 
 
