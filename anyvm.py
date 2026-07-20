@@ -4486,26 +4486,65 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
             log("Warning: Cannot configure the kernel NFS server without "
                 "sudo/root.")
 
+    hurd_mnt_port = 0
     if os_name == "hurd":
         # /hurd/nfs is UDP-only, but modern nfs-utils starts the kernel
-        # nfsd with the UDP transport disabled. Re-open it explicitly with
-        # rpc.nfsd. This must run AFTER the service restart above: the
-        # restart re-runs rpc.nfsd from the distro config and resets the
-        # transports to TCP-only. Runs on every sync (not just need_add)
-        # so a second -v mount cannot lose the UDP socket. 8 mirrors the
-        # stock nfsd thread count; --tcp keeps TCP open for other guests.
+        # nfsd with the UDP transport disabled -- and `rpc.nfsd --udp` is
+        # a NO-OP while knfsd is already running (nfs-utils 2.6.x prints
+        # "knfsd is currently up" and exits 0 without touching the
+        # transports). Add the UDP listener through the kernel's own
+        # /proc/fs/nfsd/portlist interface instead; verified: the write
+        # takes effect immediately and NFSv3-over-UDP serves fine. Must
+        # run AFTER the service restart above (a restart resets the
+        # transports to the distro default), and runs on every sync so a
+        # second -v mount cannot lose the UDP socket.
+        udp_ok = False
         if sudo_cmd or os.geteuid() == 0:
-            if _call_quiet(sudo_cmd + ["rpc.nfsd", "--udp", "--tcp", "8"]) == 0:
-                debuglog(True, "kernel nfsd UDP transport enabled for hurd")
+            try:
+                cur = subprocess.check_output(
+                    sudo_cmd + ["cat", "/proc/fs/nfsd/portlist"],
+                    stderr=DEVNULL).decode("ascii", "replace")
+            except Exception:
+                cur = ""
+            if "udp" in cur:
+                udp_ok = True
             else:
-                log("Warning: could not enable the kernel nfsd UDP "
-                    "transport (rpc.nfsd --udp failed); the hurd guest "
-                    "cannot mount sys-nfs without it -- use --sync nfs "
-                    "(the user-space nfsd) instead.")
+                p_pl = subprocess.Popen(
+                    sudo_cmd + ["tee", "/proc/fs/nfsd/portlist"],
+                    stdin=subprocess.PIPE, stdout=DEVNULL, stderr=DEVNULL)
+                p_pl.communicate(input=b"udp 2049\n")
+                udp_ok = p_pl.returncode == 0
+            if udp_ok:
+                debuglog(True, "kernel nfsd UDP transport enabled for hurd")
+        if not udp_ok:
+            log("Warning: could not enable the kernel nfsd UDP transport "
+                "(needs root/sudo and a UDP-capable knfsd); the hurd guest "
+                "cannot mount sys-nfs without it -- use --sync nfs (the "
+                "user-space nfsd) instead.")
+        # The guest-side settrans uses EXPLICIT ports (the kernel does not
+        # (re)register the UDP transport with rpcbind, so the translator's
+        # portmapper discovery would come back empty). NFS is fixed at
+        # 2049; mountd sits on a random port -- resolve its MOUNT v1/udp
+        # registration host-side. rpc.mountd still serves MOUNT v1 on
+        # udp+tcp (verified on nfs-utils 2.6.4), which matters because
+        # /hurd/nfs always speaks MOUNT v1.
+        try:
+            pmap = subprocess.check_output(
+                ["rpcinfo", "-p"], stderr=DEVNULL).decode("ascii", "replace")
+            for pline in pmap.splitlines():
+                f = pline.split()
+                if len(f) >= 4 and f[0] == "100005" and f[1] == "1" \
+                        and f[2] == "udp":
+                    hurd_mnt_port = int(f[3])
+                    break
+        except Exception:
+            pass
+        if hurd_mnt_port:
+            debuglog(True, "mountd MOUNT v1/udp port: {}".format(hurd_mnt_port))
         else:
-            log("Warning: hurd sys-nfs needs the kernel nfsd UDP transport "
-                "(rpc.nfsd --udp), which requires root/sudo; use --sync "
-                "nfs (the user-space nfsd) instead.")
+            log("Warning: no MOUNT v1/udp registration found in rpcinfo; "
+                "the hurd sys-nfs mount will fail -- use --sync nfs (the "
+                "user-space nfsd) instead.")
 
     # Guest side mounting
     mount_script = """
@@ -4514,11 +4553,14 @@ if [ "{os}" = "openbsd" ]; then
   mount -t nfs -o -T 192.168.122.2:"{vhost}" "{vguest}"
 elif [ "{os}" = "hurd" ]; then
   settrans -ga "{vguest}" 2>/dev/null
-  # No explicit ports: the translator discovers the kernel mountd/nfsd
-  # via the system rpcbind on 192.168.122.2:111 (UDP). The stdio
-  # redirect is LOAD-BEARING (see the hurd case in sync_mynfs): the
-  # spawned translator would otherwise hold the ssh session open forever.
+  # Explicit ports: the kernel nfsd's UDP transport (added via portlist
+  # above) is not registered with rpcbind, so the translator's own
+  # portmapper discovery would come back empty; the mountd port was
+  # resolved host-side from rpcinfo. The stdio redirect is LOAD-BEARING
+  # (see the hurd case in sync_mynfs): the spawned translator would
+  # otherwise hold the ssh session open forever.
   settrans -a "{vguest}" /hurd/nfs --soft=3 \\
+    --nfs-port=2049 --mount-port={hurd_mnt_port} \\
     --nfs-program=100003.3 \\
     --read-size=1024 --write-size=1024 \\
     "192.168.122.2:{vhost}" </dev/null >/dev/null 2>&1
@@ -4527,7 +4569,7 @@ elif [ -e "/sbin/mount" ]; then
 else
   mount 192.168.122.2:"{vhost}" "{vguest}"
 fi
-""".format(vguest=vguest, vhost=vhost, os=os_name)
+""".format(vguest=vguest, vhost=vhost, os=os_name, hurd_mnt_port=hurd_mnt_port)
 
     mounted = False
     for _ in range(10):
