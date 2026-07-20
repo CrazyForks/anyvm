@@ -237,7 +237,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `blissos` / `hurd`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `blissos` / `hurd` / `plan9`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
@@ -339,13 +339,15 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Windows example: `python3 anyvm.py --os freebsd -v D:\\data:/data`
 
 - `--sync <mode>`: Sync mechanism used for `-v`. Strictly validated.
-  - Supported: `rsync` (default), `sshfs`, `nfs`, `sys-nfs`, `scp`. Empty string also defaults to `rsync`. Any other value will cause an error.
+  - Supported: `rsync` (default), `sshfs`, `nfs`, `sys-nfs`, `scp`, `9p`. Empty string also defaults to `rsync`. Any other value will cause an error.
+  - `9p` is the Plan 9 (9front) folder-sync backend and its default: the host mounts the guest's exportfs 9P share over the Linux kernel v9fs client (`mount -t 9p`, needs root/sudo), so it works on a **Linux host only**. On Windows/macOS hosts a plan9 guest still boots and runs commands, but `-v` folder sync is skipped.
   - `nfs` runs the bundled user-space NFS server ([anyvm-org/nfsd](https://github.com/anyvm-org/nfsd), a single pure-Python file downloaded on demand, serving NFSv3/v4 plus a portmapper): no kernel nfsd, no root needed, works on Linux/macOS/Windows hosts (`mynfs` is an accepted alias). Most guests mount it with their NFSv4 client (FreeBSD family, illumos family, Linux). OpenBSD/NetBSD/DragonFlyBSD guests are NFSv3-only and mount it through its portmapper on port 111 -- free and unprivileged on Windows/macOS hosts, but usually owned by the system rpcbind (or root-only) on Linux hosts: use `sys-nfs` for these three guests on a Linux host. There is no automatic fallback between the two backends.
   - `sys-nfs` forces the host kernel NFS server for every guest. Needs a Linux host with root/sudo and the kernel NFS server installed; not available on macOS/Windows hosts.
   - Examples:
     - `python3 anyvm.py --os freebsd --sync rsync -v $(pwd):/data`
     - `python3 anyvm.py --os solaris --sync scp -v D:\\data:/data`
     - `python3 anyvm.py --os freebsd --sync nfs -v D:\\data:/data`
+    - `python3 anyvm.py --os plan9 --sync 9p -v $(pwd):/usr/glenda/work` (Linux host)
 
 ### Console / display / debugging
 
