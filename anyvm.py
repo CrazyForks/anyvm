@@ -132,7 +132,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "tribblix": "2.0.6",
     "openindiana": "2.1.0",
     "ubuntu": "2.0.7",
-    "openeuler": "2.0.0",
+    "openeuler": "2.0.1",
     "ghostbsd": "2.0.5",
     "blissos": "2.0.2",
     "hurd": "2.0.0",
@@ -4110,7 +4110,8 @@ def qemu_version(qemu_bin):
         pass
     return None
 
-def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bin_name=None):
+def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bin_name=None,
+                       builder_tag=None):
     """Returns a qemu-system binary that is at least min_version for arch.
 
     If the system binary is new enough it is returned unchanged. Otherwise,
@@ -4121,6 +4122,14 @@ def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bi
     On any failure (no pinned build for this host, download or extraction
     error, binary that does not run) the system binary is returned with a
     warning so the caller can still try it.
+
+    builder_tag: the resolved builder version the IMAGE came from (e.g.
+    "2.0.0"). When set, that release's asset is tried FIRST and
+    releases/latest is only the fallback. releases/latest alone races
+    freshly-cut releases: the moment a new tag is published it becomes
+    "latest", but its assets only appear when the release workflow's
+    upload jobs finish, so every download in that window 404s (bit the
+    openeuler v2.0.1 cut on 2026-07-22).
     """
     asset = PINNED_QEMU_ASSETS.get(arch)
     if not asset:
@@ -4165,12 +4174,22 @@ def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bi
         if not os.path.isdir(extract_dir):
             os.makedirs(extract_dir)
         tar_path = os.path.join(tools_dir, asset)
-        url = "https://github.com/{}/releases/latest/download/{}".format(
-            PINNED_QEMU_REPOS.get(arch, PINNED_QEMU_REPO), asset)
+        repo = PINNED_QEMU_REPOS.get(arch, PINNED_QEMU_REPO)
+        urls = []
+        if builder_tag:
+            urls.append("https://github.com/{}/releases/download/v{}/{}".format(
+                repo, str(builder_tag).lstrip("v"), asset))
+        urls.append("https://github.com/{}/releases/latest/download/{}".format(repo, asset))
         if not os.path.exists(tar_path):
             log("System QEMU for {} is {} (need >= {}); downloading pinned build...".format(arch, have, want))
-            if not download_file(url, tar_path, debug):
-                log("Warning: failed to download {}; continuing with system QEMU ({}).".format(url, have))
+            downloaded = False
+            for url in urls:
+                if download_file(url, tar_path, debug):
+                    downloaded = True
+                    break
+                log("Warning: failed to download {}".format(url))
+            if not downloaded:
+                log("Warning: no pinned QEMU could be downloaded; continuing with system QEMU ({}).".format(have))
                 return qemu_bin
         # tarfile in the Python versions we target has no zstd support;
         # GNU tar on any current Linux does.
@@ -6759,15 +6778,18 @@ def main():
     # could not run there anyway.
     if (config['arch'] == "riscv64" and config['os'] == "ubuntu"
             and (config['release'] or "").startswith("26.")):
-        qemu_bin = ensure_pinned_qemu("riscv64", qemu_bin, (9, 1), working_dir, config['debug'])
+        qemu_bin = ensure_pinned_qemu("riscv64", qemu_bin, (9, 1), working_dir, config['debug'],
+                                      builder_tag=config.get('builder'))
     elif config['arch'] == "s390x" and host_arch != "s390x":
-        qemu_bin = ensure_pinned_qemu("s390x", qemu_bin, (10, 0), working_dir, config['debug'])
+        qemu_bin = ensure_pinned_qemu("s390x", qemu_bin, (10, 0), working_dir, config['debug'],
+                                      builder_tag=config.get('builder'))
     elif (config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le")
             and config['os'] == "ubuntu"
             and (config['release'] or "").startswith("22.")
             and host_arch not in ("ppc64", "ppc64le", "powerpc64", "powerpc64le")):
         qemu_bin = ensure_pinned_qemu("ppc64le", qemu_bin, (10, 0), working_dir,
-                                      config['debug'], bin_name="qemu-system-ppc64")
+                                      config['debug'], bin_name="qemu-system-ppc64",
+                                      builder_tag=config.get('builder'))
     elif config['arch'] == "loongarch64" and host_arch != "loongarch64":
         # The loongarch virt machine needs the bundled EDK2 LoongArch
         # firmware (edk2-loongarch64-code.fd), which QEMU only ships since
@@ -6775,7 +6797,8 @@ def main():
         # a UEFI disk image cannot boot on it. The pinned tarball comes
         # from openeuler-builder's release assets (PINNED_QEMU_REPOS).
         qemu_bin = ensure_pinned_qemu("loongarch64", qemu_bin, (9, 2),
-                                      working_dir, config['debug'])
+                                      working_dir, config['debug'],
+                                      builder_tag=config.get('builder'))
 
     if not qemu_bin:
         fatal("QEMU binary '{}' not found (searched PATH and common "

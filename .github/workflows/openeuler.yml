@@ -1,5 +1,5 @@
 
-name: openEuler
+name: OpenEuler
 
 on:
   workflow_dispatch:
