@@ -28,13 +28,22 @@ import ipaddress
 try:
     # Python 3
     from urllib.request import urlopen, Request, urlretrieve
+    from urllib.request import ProxyHandler, build_opener, install_opener
+    from urllib.request import HTTPHandler, HTTPSHandler, proxy_bypass
     from urllib.error import HTTPError, URLError
-    from urllib.parse import urljoin
+    from urllib.parse import urljoin, urlsplit, unquote
+    import http.client as http_client
     input_func = input
 except ImportError:
     # Python 2
     from urllib2 import urlopen, Request, HTTPError, URLError
-    from urlparse import urljoin
+    from urllib2 import ProxyHandler, build_opener, install_opener
+    from urllib2 import HTTPHandler, HTTPSHandler
+    from urllib import proxy_bypass, unquote
+    from urlparse import urljoin, urlsplit
+    # The native SOCKS5 client below needs the Python 3 http.client /
+    # ssl.SSLContext plumbing; disable it on Python 2.
+    http_client = None
     
     def urlretrieve(url, filename, reporthook=None):
         try:
@@ -123,6 +132,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "tribblix": "2.0.6",
     "openindiana": "2.1.0",
     "ubuntu": "2.0.7",
+    "openeuler": "2.0.0",
     "ghostbsd": "2.0.5",
     "blissos": "2.0.2",
     "hurd": "2.0.0",
@@ -143,6 +153,14 @@ PINNED_QEMU_ASSETS = {
     "riscv64": "qemu-10.2.3-riscv64-noble.tar.zst",
     "s390x": "qemu-10.2.3-s390x-noble.tar.zst",
     "ppc64le": "qemu-10.2.3-ppc64le-noble.tar.zst",
+    "loongarch64": "qemu-10.2.3-loongarch64-noble.tar.zst",
+}
+# Per-arch repo override: the loongarch64 tarball is published by
+# openeuler-builder's release-files job (the OS that needs it), same
+# pattern as the sparc64 OpenBIOS below; everything else comes from
+# ubuntu-builder (PINNED_QEMU_REPO).
+PINNED_QEMU_REPOS = {
+    "loongarch64": "anyvm-org/openeuler-builder",
 }
 
 # Patched OpenBIOS published as a release asset by openbsd-builder (see that
@@ -162,7 +180,7 @@ OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 # on demand from the release asset: it is the default backend for
 # `--sync nfs` (alias: mynfs); `--sync sys-nfs` forces the host kernel NFS
 # server instead.
-MYNFSD_VERSION = "0.0.9"
+MYNFSD_VERSION = "0.1.0"
 MYNFSD_URL = ("https://github.com/anyvm-org/nfsd/releases/download/"
               "v{}/nfsd.py".format(MYNFSD_VERSION))
 
@@ -2853,6 +2871,301 @@ def get_free_port(start=10022, end=20000):
     return None
 
 
+# SOCKS5 wire constants -- copied from RFC 1928 (SOCKS Protocol Version 5)
+# and RFC 1929 (Username/Password Authentication for SOCKS V5).
+SOCKS5_VERSION = 0x05             # RFC 1928 sec 3: "The VER field is set to X'05'"
+SOCKS5_AUTH_NONE = 0x00           # RFC 1928 sec 3: NO AUTHENTICATION REQUIRED
+SOCKS5_AUTH_USERPASS = 0x02       # RFC 1928 sec 3: USERNAME/PASSWORD
+SOCKS5_CMD_CONNECT = 0x01         # RFC 1928 sec 4: CONNECT X'01'
+SOCKS5_ATYP_IPV4 = 0x01           # RFC 1928 sec 4: IP V4 address X'01'
+SOCKS5_ATYP_DOMAIN = 0x03         # RFC 1928 sec 4: DOMAINNAME X'03'
+SOCKS5_ATYP_IPV6 = 0x04           # RFC 1928 sec 4: IP V6 address X'04'
+SOCKS5_REP_SUCCEEDED = 0x00       # RFC 1928 sec 6: X'00' succeeded
+SOCKS5_USERPASS_VERSION = 0x01    # RFC 1929 sec 2: "version ... X'01'"
+SOCKS5_USERPASS_SUCCESS = 0x00    # RFC 1929 sec 2: "STATUS field of X'00'"
+SOCKS5_DEFAULT_PORT = 1080        # RFC 1928 sec 3: "conventionally located on TCP port 1080"
+
+SOCKS5_REP_ERRORS = {             # RFC 1928 sec 6 reply codes
+    0x01: "general SOCKS server failure",
+    0x02: "connection not allowed by ruleset",
+    0x03: "network unreachable",
+    0x04: "host unreachable",
+    0x05: "connection refused",
+    0x06: "TTL expired",
+    0x07: "command not supported",
+    0x08: "address type not supported",
+}
+
+
+def parse_socks_proxy_url(proxy_url):
+    """Parse socks5://[user:pass@]host[:port] (also socks5h:// and the
+    loose socks:// alias) into a spec dict for socks5_open_socket().
+    Returns None for anything else (socks4 is not supported)."""
+    try:
+        parts = urlsplit(proxy_url)
+    except Exception:
+        return None
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("socks5", "socks5h", "socks"):
+        return None
+    try:
+        host = parts.hostname
+        port = parts.port or SOCKS5_DEFAULT_PORT
+    except Exception:
+        return None
+    if not host:
+        return None
+    return {
+        "host": host,
+        "port": port,
+        "user": unquote(parts.username) if parts.username else "",
+        "password": unquote(parts.password) if parts.password else "",
+        # socks5h:// resolves destination hostnames on the proxy (curl
+        # semantics); plain socks5:// resolves locally, falling back to
+        # proxy-side resolution when local DNS fails.
+        "remote_dns": scheme != "socks5",
+    }
+
+
+def _socks5_recv_exact(sock, count, what):
+    buf = b""
+    while len(buf) < count:
+        chunk = sock.recv(count - len(buf))
+        if not chunk:
+            raise IOError("SOCKS5 proxy closed the connection during " + what)
+        buf += chunk
+    return bytearray(buf)
+
+
+def socks5_open_socket(spec, dest_host, dest_port, timeout):
+    """Open a TCP connection to dest_host:dest_port through the SOCKS5
+    proxy described by spec (see parse_socks_proxy_url) and return the
+    connected socket. Implements the RFC 1928 CONNECT command with the
+    RFC 1929 username/password subnegotiation when the proxy URL carries
+    credentials."""
+    sock = socket.create_connection((spec["host"], spec["port"]), timeout)
+    try:
+        # Method selection (RFC 1928 sec 3).
+        if spec["user"] or spec["password"]:
+            methods = bytearray([SOCKS5_AUTH_NONE, SOCKS5_AUTH_USERPASS])
+        else:
+            methods = bytearray([SOCKS5_AUTH_NONE])
+        sock.sendall(bytes(bytearray([SOCKS5_VERSION, len(methods)]) + methods))
+        reply = _socks5_recv_exact(sock, 2, "method selection")
+        if reply[0] != SOCKS5_VERSION:
+            raise IOError("SOCKS5 proxy replied with version 0x{:02x}".format(reply[0]))
+        method = reply[1]
+        if method == SOCKS5_AUTH_USERPASS:
+            # Username/password subnegotiation (RFC 1929 sec 2).
+            user = spec["user"].encode("utf-8")
+            password = spec["password"].encode("utf-8")
+            if len(user) > 255 or len(password) > 255:
+                raise IOError("SOCKS5 username/password longer than 255 bytes")
+            sock.sendall(bytes(bytearray([SOCKS5_USERPASS_VERSION, len(user)]) + user
+                               + bytearray([len(password)]) + password))
+            auth_reply = _socks5_recv_exact(sock, 2, "authentication")
+            if auth_reply[1] != SOCKS5_USERPASS_SUCCESS:
+                raise IOError("SOCKS5 proxy rejected the username/password")
+        elif method != SOCKS5_AUTH_NONE:
+            # Covers X'FF' NO ACCEPTABLE METHODS and anything unexpected.
+            raise IOError("SOCKS5 proxy accepted no offered auth method "
+                          "(server chose 0x{:02x})".format(method))
+        # CONNECT request (RFC 1928 sec 4). Send address literals as
+        # their native ATYP; for hostnames, resolve locally for socks5://
+        # (fall back to proxy-side) and on the proxy for socks5h://.
+        addr_blob = None
+        try:
+            addr_blob = bytearray([SOCKS5_ATYP_IPV4]) + socket.inet_aton(dest_host)
+        except (socket.error, OSError, ValueError):
+            pass
+        if addr_blob is None:
+            try:
+                addr_blob = (bytearray([SOCKS5_ATYP_IPV6])
+                             + socket.inet_pton(socket.AF_INET6, dest_host))
+            except (socket.error, OSError, ValueError):
+                pass
+        if addr_blob is None and not spec["remote_dns"]:
+            try:
+                addr_blob = (bytearray([SOCKS5_ATYP_IPV4])
+                             + socket.inet_aton(socket.gethostbyname(dest_host)))
+            except (socket.error, OSError, ValueError):
+                pass
+        if addr_blob is None:
+            try:
+                name = dest_host.encode("ascii")
+            except UnicodeError:
+                name = dest_host.encode("idna")
+            if len(name) > 255:
+                raise IOError("hostname too long for SOCKS5: " + dest_host)
+            addr_blob = bytearray([SOCKS5_ATYP_DOMAIN, len(name)]) + name
+        sock.sendall(bytes(bytearray([SOCKS5_VERSION, SOCKS5_CMD_CONNECT, 0x00])
+                           + addr_blob + bytearray(struct.pack("!H", dest_port))))
+        # Reply (RFC 1928 sec 6): VER REP RSV ATYP BND.ADDR BND.PORT.
+        reply = _socks5_recv_exact(sock, 4, "connect reply")
+        if reply[1] != SOCKS5_REP_SUCCEEDED:
+            raise IOError("SOCKS5 CONNECT to {}:{} failed: {}".format(
+                dest_host, dest_port,
+                SOCKS5_REP_ERRORS.get(reply[1], "reply 0x{:02x}".format(reply[1]))))
+        atyp = reply[3]
+        if atyp == SOCKS5_ATYP_IPV4:
+            _socks5_recv_exact(sock, 4 + 2, "bound address")
+        elif atyp == SOCKS5_ATYP_IPV6:
+            _socks5_recv_exact(sock, 16 + 2, "bound address")
+        elif atyp == SOCKS5_ATYP_DOMAIN:
+            name_len = _socks5_recv_exact(sock, 1, "bound address")[0]
+            _socks5_recv_exact(sock, name_len + 2, "bound address")
+        else:
+            raise IOError("SOCKS5 proxy sent unknown ATYP 0x{:02x}".format(atyp))
+        return sock
+    except Exception:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        raise
+
+
+if http_client is not None:
+    class Socks5HTTPConnection(http_client.HTTPConnection):
+        def __init__(self, host, port=None, socks_proxy=None, **kwargs):
+            http_client.HTTPConnection.__init__(self, host, port, **kwargs)
+            self.socks_proxy = socks_proxy
+
+        def connect(self):
+            self.sock = socks5_open_socket(
+                self.socks_proxy, self.host, self.port, self.timeout)
+            if self._tunnel_host:
+                self._tunnel()
+
+    class Socks5HTTPSConnection(http_client.HTTPSConnection):
+        def __init__(self, host, port=None, socks_proxy=None, **kwargs):
+            http_client.HTTPSConnection.__init__(self, host, port, **kwargs)
+            self.socks_proxy = socks_proxy
+
+        def connect(self):
+            # Mirrors HTTPSConnection.connect() with the TCP dial replaced
+            # by the SOCKS5 tunnel. self._context is set by
+            # HTTPSConnection.__init__ (stable attribute since 3.4).
+            self.sock = socks5_open_socket(
+                self.socks_proxy, self.host, self.port, self.timeout)
+            server_hostname = self.host
+            if self._tunnel_host:
+                self._tunnel()
+                server_hostname = self._tunnel_host
+            self.sock = self._context.wrap_socket(
+                self.sock, server_hostname=server_hostname)
+
+    class Socks5ProxyHandler(HTTPHandler, HTTPSHandler):
+        """Routes http/https requests through per-scheme SOCKS5 proxies.
+        Subclassing both default handlers makes build_opener() use this
+        instance instead of them; schemes without a SOCKS proxy and hosts
+        matched by no_proxy fall through to a direct connection."""
+
+        def __init__(self, socks_proxies):
+            HTTPHandler.__init__(self)
+            HTTPSHandler.__init__(self)
+            self.socks_proxies = socks_proxies
+
+        def _spec_for(self, req, scheme):
+            spec = self.socks_proxies.get(scheme)
+            if spec is not None and req.host:
+                try:
+                    if proxy_bypass(req.host):
+                        return None
+                except Exception:
+                    pass
+            return spec
+
+        def http_open(self, req):
+            spec = self._spec_for(req, "http")
+            if spec is None:
+                return HTTPHandler.http_open(self, req)
+
+            def factory(host, **kwargs):
+                return Socks5HTTPConnection(host, socks_proxy=spec, **kwargs)
+            return self.do_open(factory, req)
+
+        def https_open(self, req):
+            spec = self._spec_for(req, "https")
+            if spec is None:
+                return HTTPSHandler.https_open(self, req)
+
+            def factory(host, **kwargs):
+                return Socks5HTTPSConnection(host, socks_proxy=spec, **kwargs)
+            return self.do_open(factory, req, context=self._context)
+
+
+def _proxy_url_for_log(proxy_url):
+    """Return the proxy URL with any user:password userinfo masked, so
+    credentials never leak into logs."""
+    try:
+        at = proxy_url.rfind('@')
+        if at == -1:
+            return proxy_url
+        scheme_end = proxy_url.find('://')
+        start = scheme_end + 3 if scheme_end != -1 else 0
+        return proxy_url[:start] + "***@" + proxy_url[at + 1:]
+    except Exception:
+        return proxy_url
+
+
+def setup_download_proxy():
+    """Detect proxy settings in the environment and install them as the
+    default urllib opener so every download goes through the proxy.
+
+    urllib honors http_proxy/https_proxy on its own, but it silently
+    ignores all_proxy/ALL_PROXY, cannot speak SOCKS at all, and never
+    tells the user a proxy is in effect. Detect the usual variables
+    explicitly, map all_proxy onto the schemes that have no dedicated
+    setting, route socks5://[h] URLs through the built-in RFC 1928
+    client, and log what will be used. no_proxy is still honored for
+    both proxy kinds."""
+    proxies = {}
+    for scheme in ("http", "https"):
+        for var in (scheme + "_proxy", scheme.upper() + "_PROXY"):
+            val = os.environ.get(var)
+            if val:
+                proxies[scheme] = val
+                break
+    all_proxy = os.environ.get("all_proxy") or os.environ.get("ALL_PROXY")
+    if all_proxy:
+        for scheme in ("http", "https"):
+            proxies.setdefault(scheme, all_proxy)
+    if not proxies:
+        return
+    plain = {}
+    socks = {}
+    for scheme in sorted(proxies):
+        proxy_url = proxies[scheme]
+        if proxy_url.lower().startswith("socks"):
+            spec = parse_socks_proxy_url(proxy_url)
+            if spec is None or http_client is None:
+                log("Warning: ignoring {} proxy {} (only socks5:// and "
+                    "socks5h:// SOCKS proxies are supported)".format(
+                        scheme, _proxy_url_for_log(proxy_url)))
+                continue
+            socks[scheme] = (spec, proxy_url)
+        else:
+            plain[scheme] = proxy_url
+    if not plain and not socks:
+        return
+    # Always supply our own ProxyHandler (even when plain is empty):
+    # build_opener() otherwise adds a default ProxyHandler that re-reads
+    # the same environment and chokes on socks5:// URLs with
+    # "unknown url type: socks5".
+    handlers = [ProxyHandler(plain)]
+    if socks:
+        handlers.append(Socks5ProxyHandler(
+            dict((scheme, entry[0]) for scheme, entry in socks.items())))
+    install_opener(build_opener(*handlers))
+    for scheme in sorted(plain):
+        log("Using {} proxy from environment: {}".format(
+            scheme, _proxy_url_for_log(plain[scheme])))
+    for scheme in sorted(socks):
+        log("Using {} SOCKS5 proxy from environment: {}".format(
+            scheme, _proxy_url_for_log(socks[scheme][1])))
+
+
 def fetch_url_content(url, debug=False, headers=None):
     attempts = 20
     max_redirects = 5
@@ -3721,6 +4034,9 @@ def qemu_binary_name(arch):
     binary that runs it."""
     if arch == "riscv64":
         return "qemu-system-riscv64"
+    if arch == "loongarch64":
+        # Ships in qemu-system-misc on Debian/Ubuntu.
+        return "qemu-system-loongarch64"
     if arch == "aarch64":
         return "qemu-system-aarch64"
     if arch == "sparc64":
@@ -3849,7 +4165,8 @@ def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bi
         if not os.path.isdir(extract_dir):
             os.makedirs(extract_dir)
         tar_path = os.path.join(tools_dir, asset)
-        url = "https://github.com/{}/releases/latest/download/{}".format(PINNED_QEMU_REPO, asset)
+        url = "https://github.com/{}/releases/latest/download/{}".format(
+            PINNED_QEMU_REPOS.get(arch, PINNED_QEMU_REPO), asset)
         if not os.path.exists(tar_path):
             log("System QEMU for {} is {} (need >= {}); downloading pinned build...".format(arch, have, want))
             if not download_file(url, tar_path, debug):
@@ -5327,6 +5644,11 @@ def detect_host_ssh_port(sshd_config_path="/etc/ssh/sshd_config"):
 
 
 def main():
+    # Route downloads through any proxy configured in the environment.
+    # Done before the internal-mode dispatch because the VNC proxy child
+    # process downloads cloudflared through the same helpers.
+    setup_download_proxy()
+
     # Handle internal VNC proxy mode
     if len(sys.argv) > 1 and sys.argv[1] == '--internal-vnc-proxy':
         try:
@@ -5692,7 +6014,7 @@ def main():
     # after that substitution still covers them.
     missing_deps = []
     if config['arch'] not in ("riscv64", "s390x", "powerpc64", "powerpc64le",
-                              "ppc64", "ppc64le"):
+                              "ppc64", "ppc64le", "loongarch64"):
         early_bin_name = qemu_binary_name(config['arch'])
         if not find_qemu(early_bin_name):
             missing_deps.append(early_bin_name)
@@ -5989,6 +6311,21 @@ def main():
                             parts = filename.split('-')
                             if len(parts) > 1:
                                 ver = parts[1]
+                                if config['os'] == "openeuler":
+                                    # openEuler release names carry hyphens
+                                    # (22.03-LTS-SP4, 24.03-LTS-SP4): taking
+                                    # only the second token would truncate to
+                                    # "24.03" and resolve to a nonexistent
+                                    # image. Use the full remainder after the
+                                    # os prefix, minus a trailing arch token.
+                                    # Other OSes keep the second-token rule:
+                                    # it is what excludes desktop variants
+                                    # (freebsd-15.1-xfce) from auto-select.
+                                    rest = filename.split('-', 1)[1]
+                                    for _a in ("aarch64", "loongarch64",
+                                               "riscv64", "s390x", "ppc64le"):
+                                        rest = removesuffix(rest, "-" + _a)
+                                    ver = rest
                                 debuglog(config['debug'], "Candidate release found: {} from asset {}".format(ver, filename))
                                 if p_at and p_at > r.get('published_at', ''):
                                     continue
@@ -6431,6 +6768,14 @@ def main():
             and host_arch not in ("ppc64", "ppc64le", "powerpc64", "powerpc64le")):
         qemu_bin = ensure_pinned_qemu("ppc64le", qemu_bin, (10, 0), working_dir,
                                       config['debug'], bin_name="qemu-system-ppc64")
+    elif config['arch'] == "loongarch64" and host_arch != "loongarch64":
+        # The loongarch virt machine needs the bundled EDK2 LoongArch
+        # firmware (edk2-loongarch64-code.fd), which QEMU only ships since
+        # 9.2 -- noble's stock 8.2 has the binary but not the firmware, so
+        # a UEFI disk image cannot boot on it. The pinned tarball comes
+        # from openeuler-builder's release assets (PINNED_QEMU_REPOS).
+        qemu_bin = ensure_pinned_qemu("loongarch64", qemu_bin, (9, 2),
+                                      working_dir, config['debug'])
 
     if not qemu_bin:
         fatal("QEMU binary '{}' not found (searched PATH and common "
@@ -6971,18 +7316,19 @@ def main():
             elif config['os'] == "openbsd":
                 # OpenBSD fails with "FP exception in kernel" on cpu=max
                 cpu = "neoverse-n1"
-            elif config['os'] == "ubuntu":
+            elif config['os'] in ("ubuntu", "openeuler"):
                 # Two empirically verified problems with -cpu max on TCG:
-                #  * Ubuntu 26.04's kernel 7.0 uses VHE when the CPU offers
-                #    it, and QEMU 8.2 (ubuntu noble's package) aborts with
-                #    "ERROR:target/arm/internals.h:767:regime_is_user: code
-                #    should not be reached" (SIGABRT mid-boot) -- the E20
-                #    regimes were only handled in QEMU >= 9.0.
-                #  * 26.04's shim/grub also hangs at BdsDxe under -cpu max
-                #    during image builds (SVE/SME mishandling).
+                #  * Kernels that use VHE when the CPU offers it (Ubuntu
+                #    26.04's 7.0, openEuler's 6.6) abort QEMU 8.2 (ubuntu
+                #    noble's package) with "ERROR:target/arm/internals.h:
+                #    767:regime_is_user: code should not be reached"
+                #    (SIGABRT mid-boot) -- the E20 regimes were only
+                #    handled in QEMU >= 9.0.
+                #  * Ubuntu 26.04's shim/grub also hangs at BdsDxe under
+                #    -cpu max during image builds (SVE/SME mishandling).
                 # cortex-a72 (ARMv8.0, no VHE/SVE) sidesteps both and boots
-                # every ubuntu release artifact; ubuntu-builder pins the
-                # same model for its 26.04 aarch64 builds. Use --cpu-type
+                # every ubuntu/openeuler release artifact; the builders pin
+                # the same model for their aarch64 builds. Use --cpu-type
                 # to override.
                 cpu = "cortex-a72"
             elif config['os'] == "netbsd" and config['release'].split('.')[0] == "9":
@@ -7119,6 +7465,49 @@ def main():
                       "(RISCV_VIRT_CODE.fd), pass --firmware <path>, or provide "
                       "U-Boot at {}.".format(uboot_bin))
             args_qemu.extend(["-kernel", uboot_bin])
+    elif config['arch'] == "loongarch64":
+        # QEMU loongarch virt machine (docs/system/loongarch/virt.rst):
+        # -cpu la464 + the bundled EDK2 UEFI firmware loaded via -bios (the
+        # documented boot path for this machine; NVRAM vars are not
+        # persisted, the openEuler image boots via the EFI fallback path).
+        # QEMU bundles edk2-loongarch64-code.fd only since 9.2;
+        # ensure_pinned_qemu above swapped in the pinned 10.2.3 build when
+        # the system QEMU is older, so the search below looks next to the
+        # resolved QEMU binary first (the pinned tarball ships the firmware
+        # in its share/qemu tree).
+        machine_opts = "virt,accel=tcg"
+        cpu_opts = config['cputype'] or "la464"
+        args_qemu.extend([
+            "-machine", machine_opts,
+            "-cpu", cpu_opts,
+            "-device", "{},netdev=net0".format(net_card),
+        ])
+
+        fw_dirs = []
+        if qemu_bin:
+            try:
+                _qpref = os.path.dirname(os.path.dirname(os.path.realpath(qemu_bin)))
+                fw_dirs.append(os.path.join(_qpref, "share"))
+            except Exception:
+                pass
+        fw_dirs += ["/usr/share", "/opt/homebrew/share", "/usr/local/share"]
+
+        code_candidates = []
+        if config['firmware']:
+            code_candidates.append(config['firmware'])
+        for d in fw_dirs:
+            code_candidates.append(os.path.join(d, "qemu", "edk2-loongarch64-code.fd"))
+        code_src = ""
+        for c in code_candidates:
+            if os.path.exists(c):
+                code_src = c
+                break
+        if not code_src:
+            fatal("No LoongArch UEFI firmware (edk2-loongarch64-code.fd) "
+                  "found. Use a QEMU >= 9.2 that bundles it, or pass "
+                  "--firmware <path>.")
+        debuglog(config['debug'], "LoongArch UEFI firmware: {}".format(code_src))
+        args_qemu.extend(["-bios", code_src])
     elif config['arch'] == "s390x":
         # QEMU s390-ccw-virtio (IBM Z). The bundled s390-ccw.img firmware
         # reads the zipl boot map straight off the virtio disk, so no

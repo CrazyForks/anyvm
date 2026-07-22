@@ -1,0 +1,51 @@
+
+name: openEuler
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/openeuler.yml'
+      - '.github/workflows/testrun.yml'
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openeuler]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["22.03-LTS-SP4", "24.03-LTS-SP4", "25.09"]
+        arch: ["", "aarch64"]
+        runs: ["ubuntu-24.04"]
+        sync: [ "sshfs", "scp", "rsync", "nfs" ]
+        # loongarch64: upstream only ships a 24.03-LTS-SP4 image.
+        # riscv64: upstream only ships a 25.09 image, and its riscv64
+        # package set has no sshfs at all -- no sshfs test leg.
+        include:
+          - { release: "24.03-LTS-SP4", arch: "loongarch64", runs: "ubuntu-24.04", sync: "sshfs" }
+          - { release: "24.03-LTS-SP4", arch: "loongarch64", runs: "ubuntu-24.04", sync: "scp" }
+          - { release: "24.03-LTS-SP4", arch: "loongarch64", runs: "ubuntu-24.04", sync: "rsync" }
+          - { release: "24.03-LTS-SP4", arch: "loongarch64", runs: "ubuntu-24.04", sync: "nfs" }
+          - { release: "25.09", arch: "riscv64", runs: "ubuntu-24.04", sync: "scp" }
+          - { release: "25.09", arch: "riscv64", runs: "ubuntu-24.04", sync: "rsync" }
+          - { release: "25.09", arch: "riscv64", runs: "ubuntu-24.04", sync: "nfs" }
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: openeuler
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}

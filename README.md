@@ -73,6 +73,8 @@ python3 anyvm.py --os solaris
 python3 anyvm.py --os tribblix
 python3 anyvm.py --os ubuntu
 python3 anyvm.py --os ubuntu --release 24.04
+python3 anyvm.py --os openeuler
+python3 anyvm.py --os openeuler --release 24.03-LTS-SP4
 python3 anyvm.py --os ghostbsd
 python3 anyvm.py --os blissos
 
@@ -93,6 +95,10 @@ python3 anyvm.py --os ubuntu --release 24.04 --arch aarch64
 python3 anyvm.py --os ubuntu --release 24.04 --arch riscv64
 python3 anyvm.py --os ubuntu --release 24.04 --arch s390x
 python3 anyvm.py --os ubuntu --release 24.04 --arch ppc64le
+
+python3 anyvm.py --os openeuler --release 24.03-LTS-SP4 --arch aarch64
+python3 anyvm.py --os openeuler --release 25.09 --arch riscv64
+python3 anyvm.py --os openeuler --release 24.03-LTS-SP4 --arch loongarch64
 
 
 
@@ -138,34 +144,35 @@ More examples and tags: https://github.com/anyvm-org/docker
 
 ## 4. Guest build matrix (CI)
 
-| Guest | x86_64 | aarch64 (arm64) | riscv64 | powerpc64 | sparc64 | s390x | Builder |
-|-------|--------|-----------------|---------|-----------|---------|-------|---------|
-| Ubuntu<br>[![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | ✅ | ✅ | ✅ | — | ✅ | [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder) |
-| FreeBSD<br>[![Test FreeBSD](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml) | ✅ | ✅ | ✅ | ✅ | — | — | [![Build FreeBSD](https://github.com/anyvm-org/freebsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/freebsd-builder) |
-| OpenBSD<br>[![Test OpenBSD](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml) | ✅ | ✅ | ✅ | — | ✅ | — | [![Build OpenBSD](https://github.com/anyvm-org/openbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openbsd-builder) |
-| NetBSD<br>[![Test NetBSD](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml) | ✅ | ✅ | ✅ | — | ✅ | — | [![Build NetBSD](https://github.com/anyvm-org/netbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/netbsd-builder) |
-| DragonFlyBSD<br>[![Test DragonflyBSD](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml) | ✅ | — | — | — | — | — | [![Build DragonflyBSD](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/dragonflybsd-builder) |
-| MidnightBSD<br>[![Test MidnightBSD](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml) | ✅ | — | — | — | — | — | [![Build MidnightBSD](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/midnightbsd-builder) |
-| GhostBSD<br>[![Test GhostBSD](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml) | ✅ | — | — | — | — | — | [![Build GhostBSD](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ghostbsd-builder) |
-| Solaris<br>[![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | — | — | — | — | — | [![Build Solaris](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/solaris-builder) |
-| OmniOS<br>[![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | — | — | — | — | — | [![Build OmniOS](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/omnios-builder) |
-| OpenIndiana<br>[![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | — | — | — | — | — | [![Build OpenIndiana](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openindiana-builder) |
-| Tribblix<br>[![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | — | — | — | [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder) |
-| Haiku<br>[![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | — | — | — | [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder) |
-| BlissOS (Android)<br>[![Test BlissOS](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml) | ✅ | — | — | — | — | — | [![Build BlissOS](https://github.com/anyvm-org/blissos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/blissos-builder) |
-| GNU Hurd (Debian)<br>[![Test Hurd](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml) | ✅ (also i386) | — | — | — | — | — | [![Build Hurd](https://github.com/anyvm-org/hurd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/hurd-builder) |
-| Plan 9 (9front)<br>[![Test Plan 9](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml) | ✅ | — | — | — | — | — | [![Build Plan 9](https://github.com/anyvm-org/plan9-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/plan9-builder) |
+| Guest | x86_64 | aarch64 (arm64) | riscv64 | powerpc64 | sparc64 | s390x | loongarch64 | Builder |
+|-------|--------|-----------------|---------|-----------|---------|-------|-------------|---------|
+| Ubuntu<br>[![Test Ubuntu](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ubuntu.yml) | ✅ | ✅ | ✅ | ✅ | — | ✅ | — | [![Build Ubuntu](https://github.com/anyvm-org/ubuntu-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ubuntu-builder) |
+| openEuler<br>[![Test openEuler](https://github.com/anyvm-org/anyvm/actions/workflows/openeuler.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openeuler.yml) | ✅ | ✅ | ✅ | — | — | — | ✅ | [![Build openEuler](https://github.com/anyvm-org/openeuler-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openeuler-builder) |
+| FreeBSD<br>[![Test FreeBSD](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/freebsd.yml) | ✅ | ✅ | ✅ | ✅ | — | — | — | [![Build FreeBSD](https://github.com/anyvm-org/freebsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/freebsd-builder) |
+| OpenBSD<br>[![Test OpenBSD](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openbsd.yml) | ✅ | ✅ | ✅ | — | ✅ | — | — | [![Build OpenBSD](https://github.com/anyvm-org/openbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openbsd-builder) |
+| NetBSD<br>[![Test NetBSD](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/netbsd.yml) | ✅ | ✅ | ✅ | — | ✅ | — | — | [![Build NetBSD](https://github.com/anyvm-org/netbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/netbsd-builder) |
+| DragonFlyBSD<br>[![Test DragonflyBSD](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml) | ✅ | — | — | — | — | — | — | [![Build DragonflyBSD](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/dragonflybsd-builder) |
+| MidnightBSD<br>[![Test MidnightBSD](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml) | ✅ | — | — | — | — | — | — | [![Build MidnightBSD](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/midnightbsd-builder) |
+| GhostBSD<br>[![Test GhostBSD](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml) | ✅ | — | — | — | — | — | — | [![Build GhostBSD](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ghostbsd-builder) |
+| Solaris<br>[![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | — | — | — | — | — | — | [![Build Solaris](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/solaris-builder) |
+| OmniOS<br>[![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | — | — | — | — | — | — | [![Build OmniOS](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/omnios-builder) |
+| OpenIndiana<br>[![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | — | — | — | — | — | — | [![Build OpenIndiana](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openindiana-builder) |
+| Tribblix<br>[![Test Tribblix](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/tribblix.yml) | ✅ | — | — | — | — | — | — | [![Build Tribblix](https://github.com/anyvm-org/tribblix-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/tribblix-builder) |
+| Haiku<br>[![Test Haiku](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/haiku.yml) | ✅ | — | — | — | — | — | — | [![Build Haiku](https://github.com/anyvm-org/haiku-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/haiku-builder) |
+| BlissOS (Android)<br>[![Test BlissOS](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/blissos.yml) | ✅ | — | — | — | — | — | — | [![Build BlissOS](https://github.com/anyvm-org/blissos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/blissos-builder) |
+| GNU Hurd (Debian)<br>[![Test Hurd](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml) | ✅ (also i386) | — | — | — | — | — | — | [![Build Hurd](https://github.com/anyvm-org/hurd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/hurd-builder) |
+| Plan 9 (9front)<br>[![Test Plan 9](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml) | ✅ | — | — | — | — | — | — | [![Build Plan 9](https://github.com/anyvm-org/plan9-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/plan9-builder) |
 
 ## 5. Host support
 
-| Host | x86_64 guests | aarch64 guests | riscv64 guests | s390x guests | powerpc64 guests | sparc64 guests |
-|------|---------------|----------------|----------------|--------------|------------------|----------------|
-| Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Linux aarch64 (arm64)  | — | ✅ | — | — | — | — |
-| Linux s390x (IBM Z)  | — | — | — | ✅ (KVM) | — | — |
-| MacOS Apple silicon  | ✅ | ✅ | — | — | — | — |
-| Windows x86_64 Native | ✅ | — | — | — | — | — |
-| Windows x86_64 WSL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Host | x86_64 guests | aarch64 guests | riscv64 guests | s390x guests | powerpc64 guests | sparc64 guests | loongarch64 guests |
+|------|---------------|----------------|----------------|--------------|------------------|----------------|--------------------|
+| Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Linux aarch64 (arm64)  | — | ✅ | — | — | — | — | — |
+| Linux s390x (IBM Z)  | — | — | — | ✅ (KVM) | — | — | — |
+| MacOS Apple silicon  | ✅ | ✅ | — | — | — | — | — |
+| Windows x86_64 Native | ✅ | — | — | — | — | — | — |
+| Windows x86_64 WSL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## 6. Install dependencies
 
@@ -208,6 +215,12 @@ choco install qemu
   dropped from `-cpu host` automatically: nested AMD-V corrupts the guest's
   AVX512 state, which makes modern guests (Ubuntu 26.04+) randomly
   segfault. Bare-metal hosts keep full AVX512; override with `--cpu-type`.
+- Proxy support: if `http_proxy` / `https_proxy` / `all_proxy` (or their
+  uppercase forms) are set in the environment, AnyVM automatically detects
+  them and downloads images and tools through the proxy. Both HTTP proxies
+  (`http://host:port`) and SOCKS5 proxies (`socks5://` local DNS,
+  `socks5h://` proxy-side DNS, with optional `user:pass@`) are supported
+  natively; `no_proxy` is honored. SOCKS4 is not supported.
 - Click the quick launch buttons above to start in a ready-to-use cloud environment.
 
 ## 8. VNC Web UI (Display)
@@ -237,7 +250,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `blissos` / `hurd` / `plan9`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
@@ -248,7 +261,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 
 - `--arch <arch>`: Guest architecture.
   - Common values: `x86_64` / `aarch64` / `riscv64` / `s390x` / `powerpc64` /
-    `ppc64le` / `sparc64`
+    `ppc64le` / `sparc64` / `loongarch64`
   - Example: `python3 anyvm.py --os openbsd --release 7.5 --arch aarch64`
   - Notes for ubuntu guests on emulated arches (always TCG, slow):
     - `aarch64` defaults to `-cpu cortex-a72` (distro QEMU 8.2 aborts with a
@@ -271,6 +284,14 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
       these from source in its release-files job (they are no longer
       committed to git) and publishes them as release assets; see its
       `files/README.md`.
+  - `openeuler --arch loongarch64` (always TCG, slow): needs the EDK2
+    LoongArch firmware (`edk2-loongarch64-code.fd`), which QEMU only bundles
+    since 9.2. On Linux x86_64 hosts anyvm.py automatically downloads and
+    uses a pinned QEMU 10.2.3 whenever the system QEMU is too old -- no
+    manual setup needed.
+    [openeuler-builder](https://github.com/anyvm-org/openeuler-builder)
+    compiles it from source in its release-files job and publishes it as a
+    release asset; see its `files/README.md`.
   - `openbsd --arch sparc64`: anyvm.py automatically downloads the patched
     OpenBIOS firmware the image needs (QEMU's bundled OpenBIOS crashes every
     OpenBSD >= 7.3 sparc64 kernel on cold boot) and passes it via `-bios`.
