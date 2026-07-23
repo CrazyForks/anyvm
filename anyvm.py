@@ -8580,11 +8580,23 @@ def main():
                     except (ValueError, IndexError):
                         pass
                 elif cmd_list_retry and "qemu-system-x86_64" in str(cmd_list_retry[0]):
+                    # The conservative fallback model. qemu64 is the
+                    # historically validated choice, but it is baseline
+                    # x86-64-v1 ONLY (QEMU docs/system/cpu-models-x86-abi.csv:
+                    # qemu64-v1 has no v2 tick). openEuler userspace is built
+                    # for the x86-64-v2 baseline: under qemu64 its glibc
+                    # aborts init with "Fatal glibc error: CPU does not
+                    # support x86-64-v2" and the kernel panic-reboots forever
+                    # (seen on the Windows/WHPX CI leg). Nehalem-v1 is the
+                    # smallest named model with the v2 tick in that same
+                    # table; still model-based, so it keeps dodging the
+                    # host-feature-passthrough panics this retry exists for.
+                    conservative_cpu = "Nehalem" if config['os'] == "openeuler" else "qemu64"
                     try:
                         cpu_idx = cmd_list_retry.index("-cpu")
                         cpu_val = str(cmd_list_retry[cpu_idx + 1])
                         if cpu_val.startswith("host"):
-                            retry_cpu = "qemu64" + cpu_val[len("host"):]
+                            retry_cpu = conservative_cpu + cpu_val[len("host"):]
                             # migratable and host-cache-info are the ONLY
                             # two properties registered on the max/host CPU
                             # classes (max_x86_cpu_properties[], QEMU
@@ -8600,14 +8612,26 @@ def main():
                         elif cpu_val.split(",")[0] in (WHPX_AMD_CPU_MODELS
                                                        + WHPX_INTEL_CPU_MODELS):
                             # The WHPX named model timed out too; fall back
-                            # to qemu64 the same way (named models have no
-                            # migratable/host-cache-info to strip, every
-                            # other token is generic X86CPU).
+                            # to the conservative model the same way (named
+                            # models have no migratable/host-cache-info to
+                            # strip, every other token is generic X86CPU).
                             cmd_list_retry[cpu_idx + 1] = ",".join(
-                                ["qemu64"] + cpu_val.split(",")[1:])
+                                [conservative_cpu] + cpu_val.split(",")[1:])
                             log("Retrying with conservative CPU model: -cpu {}".format(cmd_list_retry[cpu_idx + 1]))
                     except (ValueError, IndexError):
                         pass
+                # Preserve the first attempt's serial log before the
+                # restarted QEMU truncates it: losing that console output
+                # made the openeuler Windows/WHPX CI failure undiagnosable
+                # (only the retry's panic survived into the debug
+                # artifact). The .attempt1.log suffix still matches the
+                # CI debug-artifact *.log glob.
+                try:
+                    if serial_log_file and os.path.exists(serial_log_file):
+                        shutil.copyfile(serial_log_file,
+                                        serial_log_file + ".attempt1.log")
+                except Exception:
+                    pass
                 try:
                     proc = subprocess.Popen(cmd_list_retry, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     proxy_proc = start_vnc_proxy_for_pid(proc.pid)
@@ -8654,16 +8678,33 @@ def main():
                             elapsed, retry_boot_timeout_seconds, last_probe_result))
                         last_boot_progress_log = elapsed
 
-                    ret, timed_out = call_with_timeout(
-                        ssh_base_cmd + ["exit"],
-                        timeout_seconds=probe_timeout_sec,
-                        stdout=DEVNULL,
-                        stderr=DEVNULL
-                    )
-                    last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
-                    if ret == 0:
-                        success = True
-                        break
+                    if config.get('transport') == "telnet":
+                        # plan9/9front: no sshd -- same telnet readiness
+                        # probe as the first boot attempt. Probing with ssh
+                        # here can NEVER succeed (the ssh client talks SSH
+                        # to the guest's telnetd, times out every cycle,
+                        # and each connect spuriously logs glenda in), so
+                        # before this branch existed a plan9 boot that fell
+                        # into the retry path always burned the full retry
+                        # timeout and failed even with the guest up
+                        # (Windows CI run 30001634758).
+                        timed_out = False
+                        if telnet_ready(config['sshport']):
+                            last_probe_result = "telnet ready"
+                            success = True
+                            break
+                        last_probe_result = "telnet not ready"
+                    else:
+                        ret, timed_out = call_with_timeout(
+                            ssh_base_cmd + ["exit"],
+                            timeout_seconds=probe_timeout_sec,
+                            stdout=DEVNULL,
+                            stderr=DEVNULL
+                        )
+                        last_probe_result = "rc={} timed_out={}".format(ret, timed_out)
+                        if ret == 0:
+                            success = True
+                            break
 
                     if (not hostfwd_guard_done and config.get('qmon') and hostfwd_specs
                             and elapsed >= 10 and (time.time() - hostfwd_guard_last_check) >= 5):
