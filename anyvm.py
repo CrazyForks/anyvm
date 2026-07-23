@@ -7660,25 +7660,28 @@ def main():
             else:
                 cpu_opts = "host,+rdrand,+rdseed"
                 if accel == "whpx":
-                    if config['os'] == "openeuler":
-                        # openEuler under WHPX + a modern named model
-                        # (EPYC-Turin-v1) hangs on first boot on the GHA
-                        # windows runners since 2026-07-23 (600s, zero
-                        # guest network traffic; green on 07-22 with
-                        # identical args/image/runner image -- an Azure
-                        # host/Hyper-V rollout is the only variable left).
-                        # The boot-retry's Nehalem model boots the same
-                        # image in ~19s, so go to Nehalem directly and
+                    if config['os'] in ("openeuler", "plan9"):
+                        # openEuler AND 9front under WHPX + a modern named
+                        # model hang on first boot on the GHA windows
+                        # runners since 2026-07-23 (600s, zero guest
+                        # network traffic) -- on BOTH host vendors:
+                        # EPYC-Turin-v1 on AMD hosts and GraniteRapids-v2
+                        # on Intel hosts (green on 07-22 with identical
+                        # args/image/runner image; an Azure host/Hyper-V
+                        # rollout is the only variable left). The
+                        # boot-retry's conservative model boots the same
+                        # images in ~20s, so go to Nehalem directly and
                         # skip the guaranteed 600s first-attempt burn.
                         # Nehalem is the smallest x86-64-v2 model (QEMU
-                        # docs/system/cpu-models-x86-abi.csv), which the
-                        # openEuler userspace requires. --cpu-type
-                        # overrides.
+                        # docs/system/cpu-models-x86-abi.csv) -- required
+                        # by openEuler userspace, and fine for 9front
+                        # (whose retry booted even on v1 qemu64).
+                        # --cpu-type overrides.
                         cpu_opts = "Nehalem,+rdrand,+rdseed"
-                        log("WHPX + openeuler: using Nehalem CPU model "
+                        log("WHPX + {}: using Nehalem CPU model "
                             "(modern named models hang this guest's first "
                             "boot on GHA runners; pass --cpu-type to "
-                            "override)")
+                            "override)".format(config['os']))
                     else:
                         # Use a vendor-matched named CPU model instead of
                         # -cpu host: the WHPX host-CPUID enumeration path can
