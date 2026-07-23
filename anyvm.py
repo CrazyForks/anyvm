@@ -7660,23 +7660,43 @@ def main():
             else:
                 cpu_opts = "host,+rdrand,+rdseed"
                 if accel == "whpx":
-                    # Use a vendor-matched named CPU model instead of
-                    # -cpu host: the WHPX host-CPUID enumeration path can
-                    # wedge QEMU, and the model's feature set does not
-                    # matter because the guest CPUID comes from Hyper-V
-                    # anyway (see WHPX_*_CPU_MODELS above). Pick the newest
-                    # model this QEMU ships; --cpu-type still overrides.
-                    vendor = windows_host_cpu_vendor()
-                    named_models = {"amd": WHPX_AMD_CPU_MODELS,
-                                    "intel": WHPX_INTEL_CPU_MODELS}.get(vendor, ())
-                    avail = qemu_cpu_models(qemu_bin)
-                    for named_model in named_models:
-                        if named_model in avail:
-                            cpu_opts = named_model + ",+rdrand,+rdseed"
-                            log("WHPX on {} host: using named CPU model {} "
-                                "(avoids -cpu host WHPX hang; pass --cpu-type "
-                                "to override)".format(vendor.upper(), named_model))
-                            break
+                    if config['os'] == "openeuler":
+                        # openEuler under WHPX + a modern named model
+                        # (EPYC-Turin-v1) hangs on first boot on the GHA
+                        # windows runners since 2026-07-23 (600s, zero
+                        # guest network traffic; green on 07-22 with
+                        # identical args/image/runner image -- an Azure
+                        # host/Hyper-V rollout is the only variable left).
+                        # The boot-retry's Nehalem model boots the same
+                        # image in ~19s, so go to Nehalem directly and
+                        # skip the guaranteed 600s first-attempt burn.
+                        # Nehalem is the smallest x86-64-v2 model (QEMU
+                        # docs/system/cpu-models-x86-abi.csv), which the
+                        # openEuler userspace requires. --cpu-type
+                        # overrides.
+                        cpu_opts = "Nehalem,+rdrand,+rdseed"
+                        log("WHPX + openeuler: using Nehalem CPU model "
+                            "(modern named models hang this guest's first "
+                            "boot on GHA runners; pass --cpu-type to "
+                            "override)")
+                    else:
+                        # Use a vendor-matched named CPU model instead of
+                        # -cpu host: the WHPX host-CPUID enumeration path can
+                        # wedge QEMU, and the model's feature set does not
+                        # matter because the guest CPUID comes from Hyper-V
+                        # anyway (see WHPX_*_CPU_MODELS above). Pick the newest
+                        # model this QEMU ships; --cpu-type still overrides.
+                        vendor = windows_host_cpu_vendor()
+                        named_models = {"amd": WHPX_AMD_CPU_MODELS,
+                                        "intel": WHPX_INTEL_CPU_MODELS}.get(vendor, ())
+                        avail = qemu_cpu_models(qemu_bin)
+                        for named_model in named_models:
+                            if named_model in avail:
+                                cpu_opts = named_model + ",+rdrand,+rdseed"
+                                log("WHPX on {} host: using named CPU model {} "
+                                    "(avoids -cpu host WHPX hang; pass --cpu-type "
+                                    "to override)".format(vendor.upper(), named_model))
+                                break
         else:
             # TCG (pure software emulation): default to -cpu max, which exposes
             # every feature QEMU can emulate. The previous minimal qemu64 model
@@ -8732,6 +8752,32 @@ def main():
                 if not success:
                     terminate_process(proc, "QEMU")
                     fatal("Boot timed out after retry. Giving up.")
+
+                # The retry succeeded: surface the FIRST attempt's console
+                # tail right here in the log. The .attempt1.log copy only
+                # ships in CI debug artifacts on FAILURE, so without this a
+                # hang that the retry recovers from (openeuler/WHPX first
+                # boot) leaves no trace of what the first boot actually did.
+                attempt1_log = (serial_log_file + ".attempt1.log"
+                                if serial_log_file else None)
+                if attempt1_log and os.path.exists(attempt1_log):
+                    try:
+                        with open(attempt1_log, "rb") as f:
+                            a1_data = f.read()[-4096:]
+                        a1_text = a1_data.decode("utf-8", "replace")
+                        a1_text = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", a1_text)
+                        a1_text = "".join(
+                            ch for ch in a1_text
+                            if ch in "\r\n\t" or ord(ch) >= 32)
+                        a1_lines = [l for l in
+                                    a1_text.replace("\r", "\n").split("\n")
+                                    if l.strip()]
+                        if a1_lines:
+                            log("First boot attempt failed; its serial console tail was:")
+                            for a1_line in a1_lines[-12:]:
+                                log("  attempt1| " + a1_line)
+                    except Exception:
+                        pass
             
             qemu_elapsed = time.time() - qemu_start_time
             debuglog(config['debug'], "VM Ready! Boot took {:.2f} seconds. Connect with: ssh {}".format(qemu_elapsed, vm_name))
