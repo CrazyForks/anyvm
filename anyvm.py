@@ -4343,83 +4343,128 @@ def qemu_cpu_models(qemu_bin):
             models.add(parts[0])
     return models
 
-def sync_sshfs(ssh_cmd, vhost, vguest, os_name, os_release=None):
-    """Mounts a host directory into the guest using SSHFS."""
-    if IS_WINDOWS:
-        log("Warning: SSHFS sync not supported on Windows host.")
-        return
+def hurd_nfs_mount_cmd(vguest, remote, nfs_port, mount_port):
+    """Returns the guest commands mounting `remote` at vguest via the
+    /hurd/nfs translator. Shared by sync_mynfs and sync_nfs; only the
+    ports and the remote path differ between the two.
 
-    # FreeBSD 13.2/14.0 images may not ship with sshfs; install on demand.
-    needs_pkg_install = (os_name == "freebsd" and os_release in ("13.2", "14.0"))
+    The translator is UDP-only and always sends MOUNT v1 (its
+    --mount-program flag aborts on an upstream argp bug), so the server
+    must serve MOUNT v1. --nfs-program=100003.3 selects NFSv3 for the
+    file protocol; explicit --nfs-port/--mount-port skip the portmapper;
+    --read-size/--write-size 1024 keep every RPC datagram under the MTU
+    (default 8192 fragments UDP packets, which wedges the whole guest
+    NIC under slirp -- verified 2026-07-20, killed even the ssh session).
 
-    mount_script = """
-{pre}
-mkdir -p "{vguest}"
-if [ "{os}" = "netbsd" ]; then
-  # NetBSD uses the base mount_psshfs with -t -1: never refetch node
-  # attributes / directory contents from the server (REFRESHTIMEOUT in
-  # NetBSD src usr.sbin/puffs/mount_psshfs/psshfs.h; the local attr cache
-  # is still updated by the guest's own writes). The default (30s expiry)
-  # and -t 0 (always expired) both let an open()-time getattr pull server
-  # attrs while async writeback is still in flight, which invalidates the
-  # dirty page cache and makes an immediate re-read return zero-filled or
-  # stale content -- the vmactions/netbsd-vm#21 corruption (short .o
-  # reads, corrupted build.ninja; CI coherence stress with -t 0 failed
-  # 4/25 sshfs legs, rewrites re-read as all zeros).
-  # Trade-off of -t -1: files the HOST creates/changes AFTER the mount are
-  # not noticed by the guest (host syncs before, guest builds, host reads
-  # results via its own filesystem, so the CI pattern is unaffected).
-  # pkgsrc fuse-sshfs (baked into the images) was tried and REJECTED:
-  # NetBSD's refuse/perfuse layer cannot resolve getcwd() for a cwd inside
-  # the mount, so `cd workspace && pkg_add/make/meson ...` dies instantly
-  # with "getcwd failed" (netbsd-vm test.yml run 29084790384).
-  if ! /usr/sbin/mount_psshfs -t -1 host:"{vhost}" "{vguest}" >/dev/null 2>&1; then
-    exit 1
-  fi
-else
-  if [ "{os}" = "freebsd" ] || [ "{os}" = "ghostbsd" ] || [ "{os}" = "midnightbsd" ]; then
-    kldload fusefs >/dev/null 2>&1 || kldload fuse >/dev/null 2>&1 || true
-  fi
-  if sshfs -o reconnect,ServerAliveCountMax=2,allow_other,default_permissions host:"{vhost}" "{vguest}" ; then
-    /sbin/mount >/dev/null 2>&1 || mount >/dev/null 2>&1
-  else
-    exit 1
-  fi
-fi
-""".format(
-                pre=("""
-if command -v pkg >/dev/null 2>&1; then
-    IGNORE_OSVERSION=yes pkg install -y fusefs-sshfs >/dev/null 2>&1 || true
-fi
-""" if needs_pkg_install else ""),
-                vguest=vguest,
-                vhost=vhost,
-                os=os_name,
-        )
+    The </dev/null >/dev/null 2>&1 is LOAD-BEARING: the translator
+    process settrans spawns runs forever (it IS the mounted filesystem)
+    and inherits these fds -- without the redirect it keeps the ssh
+    session's stdout/stderr open, the ssh never exits, and a capped
+    mount attempt gets killed even though the mount itself succeeded in
+    under a second."""
+    return ('settrans -ga "{vguest}" 2>/dev/null\n'
+            'settrans -a "{vguest}" /hurd/nfs --soft=3 '
+            '--nfs-port={nfs_port} --mount-port={mount_port} '
+            '--nfs-program=100003.3 '
+            '--read-size=1024 --write-size=1024 '
+            '"{remote}" </dev/null >/dev/null 2>&1').format(
+        vguest=vguest, remote=remote,
+        nfs_port=nfs_port, mount_port=mount_port)
 
-    mounted = False
-    for attempt in range(10):
+def run_guest_mount(ssh_cmd, vguest, mount_cmd, what, attempts,
+                    timeout=None):
+    """Creates vguest inside the guest and runs mount_cmd (a ready-made
+    shell command string) over ssh, retrying up to `attempts` times.
+    When `timeout` is set, each attempt is capped and a hung ssh session
+    is killed. Returns True once the script exits 0."""
+    mount_script = 'mkdir -p "{}"\n{}\n'.format(vguest, mount_cmd)
+    for attempt in range(attempts):
         p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
         try:
-            # Cap each attempt at 60s so a sshfs reconnect-loop inside the VM
-            # (when host-side ssh keeps dropping the inner connection) does NOT
-            # hang anyvm.py forever. sshfs runs with `-o reconnect`, so on a
-            # flaky connect it will retry without ever returning to the shell.
-            p_mount.communicate(input=mount_script.encode('utf-8'), timeout=60)
+            p_mount.communicate(input=mount_script.encode('utf-8'),
+                                timeout=timeout)
         except subprocess.TimeoutExpired:
-            log("SSHFS mount attempt {} hung beyond 60s, killing".format(attempt + 1))
+            log("{} mount attempt {} hung beyond {}s, killing".format(
+                what, attempt + 1, timeout))
             p_mount.kill()
             try:
                 p_mount.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
         if p_mount.returncode == 0:
-            mounted = True
-            break
-        log("SSHFS mount failed (attempt {}), retrying...".format(attempt + 1))
+            return True
+        log("{} mount failed (attempt {}), retrying...".format(
+            what, attempt + 1))
         time.sleep(2)
-    
-    if not mounted:
+    return False
+
+def sync_sshfs(ssh_cmd, vhost, vguest, os_name):
+    """Mounts a host directory into the guest using SSHFS."""
+    if IS_WINDOWS:
+        log("Warning: SSHFS sync not supported on Windows host.")
+        return
+
+    if os_name == "netbsd":
+        # NetBSD uses the base mount_psshfs with -t -1: never refetch node
+        # attributes / directory contents from the server (REFRESHTIMEOUT
+        # in NetBSD src usr.sbin/puffs/mount_psshfs/psshfs.h; the local
+        # attr cache is still updated by the guest's own writes). The
+        # default (30s expiry) and -t 0 (always expired) both let an
+        # open()-time getattr pull server attrs while async writeback is
+        # still in flight, which invalidates the dirty page cache and
+        # makes an immediate re-read return zero-filled or stale content
+        # -- the vmactions/netbsd-vm#21 corruption (short .o reads,
+        # corrupted build.ninja; CI coherence stress with -t 0 failed
+        # 4/25 sshfs legs, rewrites re-read as all zeros).
+        # Trade-off of -t -1: files the HOST creates/changes AFTER the
+        # mount are not noticed by the guest (host syncs before, guest
+        # builds, host reads results via its own filesystem, so the CI
+        # pattern is unaffected).
+        # pkgsrc fuse-sshfs (baked into the images) was tried and
+        # REJECTED: NetBSD's refuse/perfuse layer cannot resolve getcwd()
+        # for a cwd inside the mount, so `cd workspace && pkg_add/make/
+        # meson ...` dies instantly with "getcwd failed" (netbsd-vm
+        # test.yml run 29084790384).
+        mount_cmd = '/usr/sbin/mount_psshfs -t -1 host:"{vhost}" ' \
+                    '"{vguest}" >/dev/null 2>&1'
+    elif os_name == "haiku":
+        # Haiku has no sshfs CLI: sshfs_fuse installs as a userlandfs
+        # FUSE add-on, mounted via `mount -t userlandfs -p "sshfs <src>"
+        # <dir>`. The kernel's on-demand launch of userlandfs_server is
+        # broken on r1beta5 (runtime_loader tries to load the add-ons
+        # DIRECTORY as an ELF object -> the server never registers its
+        # port -> mount fails with "Bad port ID"). Pre-starting the named
+        # server bypasses that: `userlandfs_server sshfs` stays resident
+        # and registers the port, after which the mount succeeds. Whether
+        # the server is already running can only be probed inside the
+        # guest, so that check stays in shell. The </dev/null redirects
+        # are LOAD-BEARING (same as the hurd settrans case): the server
+        # is a long-lived process and would otherwise hold this ssh
+        # session's fds open forever.
+        mount_cmd = 'ps | grep userlandfs_server | grep -v grep ' \
+                    '>/dev/null 2>&1 || {{\n' \
+                    '  nohup /boot/system/servers/userlandfs_server sshfs ' \
+                    '</dev/null >/dev/null 2>&1 &\n' \
+                    '  sleep 2\n' \
+                    '}}\n' \
+                    'mount -t userlandfs -p "sshfs host:{vhost}" "{vguest}"'
+    else:
+        mount_cmd = ''
+        if os_name in ("freebsd", "ghostbsd", "midnightbsd"):
+            mount_cmd += 'kldload fusefs >/dev/null 2>&1 || ' \
+                         'kldload fuse >/dev/null 2>&1 || true\n'
+        mount_cmd += 'sshfs -o reconnect,ServerAliveCountMax=2,' \
+                     'allow_other,default_permissions ' \
+                     'host:"{vhost}" "{vguest}" || exit 1\n' \
+                     '/sbin/mount >/dev/null 2>&1 || mount >/dev/null 2>&1'
+    mount_cmd = mount_cmd.format(vguest=vguest, vhost=vhost)
+
+    # Cap each attempt at 60s so a sshfs reconnect-loop inside the VM
+    # (when host-side ssh keeps dropping the inner connection) does NOT
+    # hang anyvm.py forever. sshfs runs with `-o reconnect`, so on a
+    # flaky connect it will retry without ever returning to the shell.
+    if not run_guest_mount(ssh_cmd, vguest, mount_cmd, "SSHFS",
+                           attempts=10, timeout=60):
         log("Warning: Failed to mount shared folder via sshfs.")
 
 # Guests whose base system has no NFSv4 client AND whose mount_nfs has no
@@ -4621,8 +4666,8 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
     need_v3 = os_name in NFSV4LESS_GUESTS
     # The Hurd's /hurd/nfs translator is v3-only as well, but it accepts
     # explicit --nfs-port/--mount-port arguments, so it needs `-vers 3`
-    # WITHOUT the port-111 portmapper (no sudo dance either). See the hurd
-    # case in mount_script below for the whole story.
+    # WITHOUT the port-111 portmapper (no sudo dance either). See
+    # hurd_nfs_mount_cmd for the whole story.
     hurd_v3 = os_name == "hurd"
     use_sudo = False
     if need_v3 and not IS_WINDOWS:
@@ -4687,68 +4732,42 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
     # mount_nfs(8) (nfsv4, minorversion=, port=, tcp); illumos family --
     # mount_nfs(8) (vers=, port=); openbsd/netbsd/dragonflybsd --
     # mount_nfs(8) (-T tcp flag; dragonfly -3 forces v3).
-    # hurd -- the /hurd/nfs translator (UDP-only, hence nfsd >= 0.0.9 with
-    # the UDP transport + MOUNT v1 compat): it always sends MOUNT v1 (its
-    # --mount-program flag aborts on an upstream argp bug), so the server
-    # must serve MOUNT v1; --nfs-program=100003.3 selects NFSv3 for the
-    # file protocol; explicit --nfs-port/--mount-port skip the portmapper;
-    # --read-size/--write-size 1024 keep every RPC datagram under the MTU
-    # (default 8192 fragments UDP packets, which wedges the whole guest
-    # NIC under slirp -- verified 2026-07-20, killed even the ssh session).
-    mount_script = """
-mkdir -p "{vguest}"
-case "{os}" in
-  solaris|omnios|openindiana|tribblix)
-    mount -F nfs -o vers=4,port={port} 192.168.122.2:/ "{vguest}" ;;
-  freebsd|ghostbsd|midnightbsd)
-    mount -t nfs -o nfsv4,minorversion=0,tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
-  openbsd|netbsd)
-    /sbin/mount_nfs -T 192.168.122.2:/ "{vguest}" ;;
-  dragonflybsd)
-    /sbin/mount_nfs -3 -T 192.168.122.2:/ "{vguest}" ;;
-  hurd)
-    settrans -ga "{vguest}" 2>/dev/null
-    # </dev/null >/dev/null 2>&1 is LOAD-BEARING: the translator process
-    # settrans spawns runs forever (it IS the mounted filesystem) and
-    # inherits these fds -- without the redirect it keeps the ssh
-    # session's stdout/stderr open, the ssh never exits, and the mount
-    # loop kills it at 60s even though the mount itself succeeded in
-    # under a second.
-    settrans -a "{vguest}" /hurd/nfs --soft=3 \
-      --nfs-port={port} --mount-port={port} \
-      --nfs-program=100003.3 \
-      --read-size=1024 --write-size=1024 \
-      "192.168.122.2:/" </dev/null >/dev/null 2>&1 ;;
-  *)
-    mount -t nfs -o vers=4.0,proto=tcp,port={port} 192.168.122.2:/ "{vguest}" ;;
-esac
-""".format(vguest=vguest, os=os_name, port=port)
+    # haiku -- the in-kernel nfs4 add-on (NFSv4.0 client): mount syntax is
+    # `mount -t nfs4 -p "server:path opt1 opt2" dir`, space-separated opts,
+    # path after the LAST colon; port= and proto= (tcp default) per
+    # ParseArguments in src/add-ons/kernel/file_systems/nfs4/
+    # kernel_interface.cpp.
+    # hurd -- see hurd_nfs_mount_cmd (needs nfsd >= 0.0.9 with the UDP
+    # transport + MOUNT v1 compat).
+    if os_name == "hurd":
+        mount_cmd = hurd_nfs_mount_cmd(vguest, "192.168.122.2:/",
+                                       port, port)
+    else:
+        if os_name in ("solaris", "omnios", "openindiana", "tribblix"):
+            mount_cmd = 'mount -F nfs -o vers=4,port={port} ' \
+                        '192.168.122.2:/ "{vguest}"'
+        elif os_name in ("freebsd", "ghostbsd", "midnightbsd"):
+            mount_cmd = 'mount -t nfs -o ' \
+                        'nfsv4,minorversion=0,tcp,port={port} ' \
+                        '192.168.122.2:/ "{vguest}"'
+        elif os_name == "haiku":
+            mount_cmd = 'mount -t nfs4 -p "192.168.122.2:/ port={port}" ' \
+                        '"{vguest}"'
+        elif os_name in ("openbsd", "netbsd"):
+            mount_cmd = '/sbin/mount_nfs -T 192.168.122.2:/ "{vguest}"'
+        elif os_name == "dragonflybsd":
+            mount_cmd = '/sbin/mount_nfs -3 -T 192.168.122.2:/ "{vguest}"'
+        else:
+            mount_cmd = 'mount -t nfs -o vers=4.0,proto=tcp,port={port} ' \
+                        '192.168.122.2:/ "{vguest}"'
+        mount_cmd = mount_cmd.format(vguest=vguest, port=port)
 
-    mounted = False
-    for attempt in range(5):
-        p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
-        try:
-            # Cap each attempt: when the portmapper is unreachable, BSD
-            # mount_nfs retries the portmap query forever (OpenBSD logged
-            # "Port mapper failure - RPC: Timed out" every 2 minutes for
-            # an hour on a macOS runner) and would hang anyvm here.
-            p_mount.communicate(input=mount_script.encode('utf-8'),
-                                timeout=60)
-        except subprocess.TimeoutExpired:
-            log("mynfs mount attempt {} hung beyond 60s, killing".format(
-                attempt + 1))
-            p_mount.kill()
-            try:
-                p_mount.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-        if p_mount.returncode == 0:
-            mounted = True
-            break
-        log("mynfs mount failed, retrying...")
-        time.sleep(2)
-
-    if not mounted:
+    # Cap each attempt at 60s: when the portmapper is unreachable, BSD
+    # mount_nfs retries the portmap query forever (OpenBSD logged
+    # "Port mapper failure - RPC: Timed out" every 2 minutes for an hour
+    # on a macOS runner) and would hang anyvm here.
+    if not run_guest_mount(ssh_cmd, vguest, mount_cmd, "mynfs",
+                           attempts=5, timeout=60):
         log("Warning: failed to mount the shared folder via the user-space "
             "nfsd (see {}).".format(log_path))
 
@@ -4883,41 +4902,29 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
                 "user-space nfsd) instead.")
 
     # Guest side mounting
-    mount_script = """
-mkdir -p "{vguest}"
-if [ "{os}" = "openbsd" ]; then
-  mount -t nfs -o -T 192.168.122.2:"{vhost}" "{vguest}"
-elif [ "{os}" = "hurd" ]; then
-  settrans -ga "{vguest}" 2>/dev/null
-  # Explicit ports: the kernel nfsd's UDP transport (added via portlist
-  # above) is not registered with rpcbind, so the translator's own
-  # portmapper discovery would come back empty; the mountd port was
-  # resolved host-side from rpcinfo. The stdio redirect is LOAD-BEARING
-  # (see the hurd case in sync_mynfs): the spawned translator would
-  # otherwise hold the ssh session open forever.
-  settrans -a "{vguest}" /hurd/nfs --soft=3 \\
-    --nfs-port=2049 --mount-port={hurd_mnt_port} \\
-    --nfs-program=100003.3 \\
-    --read-size=1024 --write-size=1024 \\
-    "192.168.122.2:{vhost}" </dev/null >/dev/null 2>&1
-elif [ -e "/sbin/mount" ]; then
-  /sbin/mount 192.168.122.2:"{vhost}" "{vguest}"
-else
-  mount 192.168.122.2:"{vhost}" "{vguest}"
-fi
-""".format(vguest=vguest, vhost=vhost, os=os_name, hurd_mnt_port=hurd_mnt_port)
+    if os_name == "hurd":
+        # Explicit ports: the kernel nfsd's UDP transport (added via
+        # portlist above) is not registered with rpcbind, so the
+        # translator's own portmapper discovery would come back empty;
+        # NFS is fixed at 2049 and the mountd port was resolved
+        # host-side from rpcinfo.
+        mount_cmd = hurd_nfs_mount_cmd(vguest, "192.168.122.2:" + vhost,
+                                       2049, hurd_mnt_port)
+    else:
+        if os_name == "openbsd":
+            mount_cmd = 'mount -t nfs -o -T 192.168.122.2:"{vhost}" ' \
+                        '"{vguest}"'
+        else:
+            # Whether /sbin/mount exists can only be probed inside the
+            # guest, so this one check stays in shell.
+            mount_cmd = 'if [ -e "/sbin/mount" ]; then\n' \
+                        '  /sbin/mount 192.168.122.2:"{vhost}" "{vguest}"\n' \
+                        'else\n' \
+                        '  mount 192.168.122.2:"{vhost}" "{vguest}"\n' \
+                        'fi'
+        mount_cmd = mount_cmd.format(vguest=vguest, vhost=vhost)
 
-    mounted = False
-    for _ in range(10):
-        p_mount = subprocess.Popen(ssh_cmd + ["sh"], stdin=subprocess.PIPE)
-        p_mount.communicate(input=mount_script.encode('utf-8'))
-        if p_mount.returncode == 0:
-            mounted = True
-            break
-        log("NFS mount failed, retrying...")
-        time.sleep(2)
-    
-    if not mounted:
+    if not run_guest_mount(ssh_cmd, vguest, mount_cmd, "NFS", attempts=10):
         log("Warning: Failed to mount shared folder via NFS.")
 
 def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=None):
@@ -7678,7 +7685,38 @@ def main():
             # guest that booted on qemu64 still boots, and modern userlands
             # that assume the x86-64-v2+ baseline now work too. Override with
             # --cpu-type for a leaner/faster named model (e.g. Nehalem/Haswell).
+            #
+            # ...minus avx2 on the broken QEMU range: TCG's AVX decoder sized
+            # the 128-bit memory operand of VINSERTx128 as 256 bits from the
+            # day AVX landed in TCG (7.2, commit 790684776861) until
+            # "target/i386: fix width of third operand of VINSERTx128"
+            # (feea87cd6b64, 2025-07; first mainline release with it is
+            # v10.1.0, stable backports 7.2.20 / 10.0.4 -- the EOL 8.x and
+            # 9.x series never get it). A legal 16-byte load whose operand
+            # ends flush at a page boundary reads 16 bytes into the next
+            # page and faults. FreeBSD 15.1 hits this deterministically on
+            # every boot: the OpenZFS 2.4 checksum benchmark runs
+            # zfs_sha256_transform_avx2 over a buffer whose end abuts an
+            # unmapped page, and the guest panics ("Fatal trap 12" in zfs.ko
+            # at uptime 2s) before sshd ever starts (anyvm issue #54, Google
+            # Cloud Shell's distro QEMU 8.2.2; flag-bisected there:
+            # -sha-ni/-vaes still panic, -avx2 boots clean; validated fixed
+            # on ubuntu 26.04's QEMU 10.2.1, same image + -cpu max).
+            # qemu_version() only exposes (major, minor), so the two
+            # boundary branches stay masked even on their fixed micros
+            # (7.2.20 / 10.0.4): masking avx2 under TCG costs nothing -- the
+            # guest just picks its SSE/AVX code paths. An unparseable
+            # version is treated as broken for the same reason. --cpu-type
+            # overrides.
             cpu_opts = "max"
+            qver = qemu_version(qemu_bin)
+            if qver is None or (7, 2) <= qver <= (10, 0):
+                cpu_opts = "max,-avx2"
+                debuglog(config['debug'],
+                         "TCG QEMU {} is in the broken VINSERTx128 range "
+                         "(7.2-10.0): masking avx2 (pass --cpu-type to "
+                         "override)".format(
+                             "{}.{}".format(*qver) if qver else "of unknown version"))
 
         # Disable the guest PMU by default. Exposing the host PMU via -cpu host
         # can trigger intermittent #GP-in-wrmsr crashes during early guest boot
@@ -8825,7 +8863,7 @@ Host host
                                 log("Warning: --sync 9p but no 9P host port was "
                                     "forwarded; skipping folder sync.")
                         else:
-                            sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'], config.get('release'))
+                            sync_sshfs(ssh_base_cmd, vhost, vguest, config['os'])
 
                     except ValueError:
                         log("Invalid format for -v. Use host_path:guest_path")

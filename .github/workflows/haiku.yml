@@ -19,12 +19,20 @@ concurrency:
   cancel-in-progress: true
 
 # Coverage tracks haiku-builder v2.0.1 (ALL_RELEASES = r1beta5), x86_64 only.
-# Sync backends are rsync + scp. Haiku has no NFS client, so nfs is not
-# offered. sshfs is NOT usable either: the sshfs_fuse pkg installs only as a
-# userlandfs add-on (there is no `sshfs` CLI command), and the native
-# `mount -t userlandfs -p "sshfs ..."` fails with "Bad port ID" on r1beta5
-# (userlandfs_server will not start; syslog logs a userlandfs ELF-load error).
-# Verified by booting the image under QEMU/KVM and testing the mount directly.
+# Sync backends are rsync + scp + nfs + sshfs.
+# nfs uses Haiku's in-kernel NFSv4.0 client (the nfs4 file system add-on,
+# in the default image) against the bundled user-space nfsd:
+# `mount -t nfs4 -p "server:/ port=N" dir`, TCP by default, port= honored
+# (ParseArguments in src/add-ons/kernel/file_systems/nfs4/
+# kernel_interface.cpp). Verified locally 2026-07-23 under QEMU/KVM:
+# read + write-back, 4MB sha256 both directions, nonstandard port 2050.
+# sshfs has no CLI on Haiku: sshfs_fuse (baked into the v2.0.2 image) is a
+# userlandfs FUSE add-on mounted via `mount -t userlandfs -p "sshfs <src>"`.
+# The kernel's on-demand userlandfs_server launch is broken on r1beta5
+# (runtime_loader tries to load the add-ons DIRECTORY as an ELF -> mount
+# fails with "Bad port ID"), so anyvm's sync_sshfs haiku branch pre-starts
+# `userlandfs_server sshfs` first; with that, the mount works. Verified
+# locally 2026-07-23: read + write-back, 4MB sha256 both directions.
 # The guest user is "user" and the share lands under /boot/home.
 #
 # Both backends run on the Linux runner plus the macOS / Windows runners as a
@@ -39,7 +47,7 @@ jobs:
         release: ["r1beta5"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["rsync", "scp"]
+        sync: ["rsync", "scp", "nfs", "sshfs"]
 
 
     uses: ./.github/workflows/testrun.yml
