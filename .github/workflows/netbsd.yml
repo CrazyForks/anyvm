@@ -25,11 +25,13 @@ concurrency:
 # Sync: x86_64 / aarch64 / riscv64 run every backend (sshfs uses NetBSD's
 # base mount_psshfs; nfs is the user-space nfsd via its port-111 portmapper,
 # bound with sudo on the runner; sys-nfs the host kernel server).
-# sparc64 (QEMU sun4u, TCG) IS built and published for 10.0 / 10.1 / 11.0, but
-# it is intentionally NOT tested here: the emulated CMD646 PCI-IDE controller
-# intermittently loses interrupts under sustained net+disk DMA, so the guest
-# occasionally fails to boot (see netbsd-builder .github/data/table.md). Run it
-# by hand if you need to exercise it.
+# sparc64 (QEMU sun4u, TCG): 10.0 / 10.1 use the hybrid disk layout since
+# builder v2.1.5 (boot-only IDE disk + root on an mptsas1068 SCSI disk), which
+# eliminated the CMD646 lost-interrupt wedge, so they ARE tested below --
+# including rsync, to find out whether its old instability (wedge-era verdict)
+# is gone on the SCSI path. 11.0 still runs the classic single-IDE-disk image
+# where the wedge can intermittently kill a boot, so it stays untested here;
+# run it by hand if you need to exercise it.
 jobs:
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
@@ -99,6 +101,28 @@ jobs:
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
 
-  # NOTE: sparc64 (QEMU sun4u, TCG) is built/published for 10.0 / 10.1 / 11.0
-  # but is deliberately NOT exercised by CI -- see the header comment above for
-  # why (intermittent CMD646 lost-interrupt boot failures).
+  # sparc64 hybrid-layout releases (boot-only IDE disk + root on mptsas1068,
+  # builder >= v2.1.5): the CMD646 wedge that used to keep sparc64 out of CI
+  # is gone on these, so exercise the full sync matrix. rsync is included on
+  # purpose even though the confs' VM_SYNC_METHODS still omit it -- the image
+  # ships the rsync binary, and its old "not stable" verdict dates from the
+  # wedge era; if it stays green here, add it back to VM_SYNC_METHODS.
+  # 11.0 sparc64 (classic single-disk image) stays untested -- see the header.
+  testsparc64:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["10.0", "10.1"]
+        arch: ["sparc64"]
+        runs: ["ubuntu-24.04"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: netbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}
