@@ -123,7 +123,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.2.5",
     "openbsd": "2.0.8",
-    "netbsd": "2.1.4",
+    "netbsd": "2.1.5",
     "dragonflybsd": "2.0.6",
     "solaris": "2.0.6",
     "omnios": "2.1.2",
@@ -6705,6 +6705,48 @@ def main():
             fatal("Could not download {} from {} (OpenBSD sparc64 cannot boot "
                   "on QEMU's bundled OpenBIOS).".format(OPENBIOS_SPARC64_ASSET, OPENBIOS_SPARC64_REPO))
 
+    # Hybrid two-disk images (NetBSD 10.x sparc64 cmd646-wedge bypass): when
+    # the profile says boot_disk, the MAIN qcow2 asset is the ROOT disk (guest
+    # sd0 behind the profile's scsi_controller) and a small companion asset
+    # <vm_name>-boot.qcow2.zst (bootblock + ofwboot + kernel on IDE) is what
+    # the machine actually boots from. Fetch + decompress it beside the main
+    # image with the same cache-dir behaviour as the other sidecar assets.
+    boot_disk_file = None
+    if guest_profile and guest_profile.get('boot_disk'):
+        boot_zst_name = vm_name + "-boot.qcow2.zst"
+        boot_disk_file = os.path.join(output_dir, vm_name + "-boot.qcow2")
+        if not os.path.exists(boot_disk_file):
+            boot_zst_file = os.path.join(output_dir, boot_zst_name)
+            if not os.path.exists(boot_zst_file):
+                boot_url = "https://github.com/{}/releases/download/v{}/{}".format(
+                    builder_repo, config['builder'], boot_zst_name)
+                if config.get('cachedir'):
+                    rel_path = os.path.relpath(output_dir, working_dir)
+                    cache_output_dir = os.path.join(config['cachedir'], rel_path)
+                    if not os.path.exists(cache_output_dir):
+                        debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
+                        os.makedirs(cache_output_dir)
+                    cached_boot = os.path.join(cache_output_dir, boot_zst_name)
+                    if not os.path.exists(cached_boot):
+                        debuglog(config['debug'], "Boot disk not found in cache, downloading to: {}".format(cached_boot))
+                        download_file(boot_url, cached_boot, config['debug'])
+                    if os.path.exists(cached_boot):
+                        debuglog(config['debug'], "Copying boot disk from cache to: {}".format(boot_zst_file))
+                        shutil.copy2(cached_boot, boot_zst_file)
+                else:
+                    download_file(boot_url, boot_zst_file, config['debug'])
+            if os.path.exists(boot_zst_file):
+                if subprocess.call(['zstd', '-d', boot_zst_file, '-o', boot_disk_file]) != 0:
+                    for stale in (boot_zst_file, boot_disk_file):
+                        try:
+                            os.remove(stale)
+                        except OSError:
+                            pass
+                    fatal("zstd extraction of the boot disk failed (removed corrupt download; re-run to download again)")
+        if not os.path.exists(boot_disk_file):
+            fatal("Could not fetch {} (this release uses a two-disk layout "
+                  "and cannot boot without its boot disk).".format(boot_zst_name))
+
     vm_user = "user" if config['os'] == "haiku" else "root"
 
     # Ports
@@ -7171,9 +7213,28 @@ def main():
         # `-drive if=ide,index=0` (no discard) and its boots show ZERO lost
         # interrupts; match it exactly so the runtime boot stays clean. (Thinness
         # from discard does not matter for the small 4G ephemeral sparc64 disk.)
-        args_qemu.extend([
-            "-drive", "file={},format=qcow2,if=ide,index=0".format(qcow_name)
-        ])
+        #
+        # Hybrid two-disk images (NetBSD 10.x, profile boot_disk=true): the
+        # small boot disk (bootblock + ofwboot + kernel) sits on IDE index 0
+        # purely to be booted from, and the MAIN qcow2 is the root disk (sd0)
+        # behind the profile's SCSI HBA on pciB -- attached AFTER the NIC so
+        # the controller lands on pciB dev 1, matching the builder topology.
+        # This mirrors netbsd-builder's cmd646-wedge bypass: the IDE disk is
+        # never mounted at runtime, and an idle cmd646 cannot wedge.
+        # Only the -drive entries go here; the SCSI HBA -device pair is added
+        # in the sparc64 machine branch below, AFTER the NIC -device, so the
+        # controller lands on pciB dev 1 exactly like the builder topology
+        # (QEMU assigns slots in -device argv order; -drive order is free).
+        scsi_ctrl = guest_profile.get('scsi_controller') if guest_profile else None
+        if boot_disk_file and scsi_ctrl:
+            args_qemu.extend([
+                "-drive", "file={},format=qcow2,if=ide,index=0".format(boot_disk_file),
+                "-drive", "file={},format=qcow2,if=none,id=root0".format(qcow_name),
+            ])
+        else:
+            args_qemu.extend([
+                "-drive", "file={},format=qcow2,if=ide,index=0".format(qcow_name)
+            ])
     else:
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
@@ -7581,6 +7642,17 @@ def main():
             "-device", "{},netdev=net0,bus=pciB".format(net_card),
             "-boot", "order=c",
         ])
+        # Hybrid two-disk images (NetBSD 10.x, profile boot_disk=true): root
+        # disk behind the profile's SCSI HBA. The -device pair sits here,
+        # after the NIC, so the HBA takes pciB dev 1 (builder-verified
+        # topology); the matching -drive entries were added in the disk
+        # section above. mptsas1068 is the only SCSI model both QEMU
+        # emulates and NetBSD/sparc64 GENERIC drives correctly.
+        if boot_disk_file and (guest_profile.get('scsi_controller') if guest_profile else None):
+            args_qemu.extend([
+                "-device", "{},id=anyscsi0,bus=pciB".format(guest_profile['scsi_controller']),
+                "-device", "scsi-hd,drive=root0,bus=anyscsi0.0",
+            ])
         if sparc64_bios_file:
             # openbsd: replace the bundled OpenBIOS with the patched blob
             # downloaded above (-bios overrides the machine firmware).
