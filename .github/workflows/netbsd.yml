@@ -29,8 +29,10 @@ concurrency:
 # classic single-IDE-disk image and run on the patched QEMU that anyvm pins for
 # this arch -- the sabre IRQ-clobber fix, which is what actually cured the
 # CMD646 lost-interrupt wedge (the wedge is a QEMU host-bridge bug, not a guest
-# or disk-controller one). All three are therefore tested below, including
-# rsync, to find out whether its old instability (a wedge-era verdict) is gone.
+# or disk-controller one). All three are therefore tested below. rsync is
+# covered on 10.0 / 10.1 -- its old "not stable" verdict dates from the wedge
+# era -- but 11.0 has no rsync binary at all (pkgsrc ships only a 10.0-linked
+# one), so that one combination is excluded.
 jobs:
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
@@ -104,10 +106,11 @@ jobs:
   # release now ships on the patched QEMU (the sabre IRQ-clobber fix), so the
   # CMD646 "lost interrupt" wedge that used to keep sparc64 out of CI is gone
   # for all of 10.0 / 10.1 / 11.0 -- exercise the full sync matrix on each.
-  # rsync is included on purpose even though the confs' VM_SYNC_METHODS still
-  # omit it -- the image ships the rsync binary, and its old "not stable"
-  # verdict dates from the wedge era; if it stays green here, add it back to
-  # VM_SYNC_METHODS.
+  # rsync runs on 10.0 / 10.1 only. 11.0 sparc64 ships WITHOUT the rsync binary
+  # on purpose: pkgsrc only has a sparc64 rsync built against 10.0's
+  # libcrypto.so.15, which hard-fails to install on 11.0's newer OpenSSL, so
+  # netbsd-11.0-sparc64.conf sets VM_RSYNC_PKG="". Restore the combination here
+  # once native sparc64/11.0 packages exist (see that conf for the trigger).
   testsparc64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
     strategy:
@@ -117,6 +120,9 @@ jobs:
         arch: ["sparc64"]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
+        exclude:
+          - release: "11.0"
+            sync: "rsync"
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
