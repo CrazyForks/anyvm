@@ -148,37 +148,37 @@ DEFAULT_BUILDER_VERSIONS = {
 # by ensure_pinned_qemu() when the system QEMU is too old for a guest (the
 # asset file names are explicit on purpose -- they match
 # ubuntu-builder/.github/data/uploadfiles.yml one to one).
-PINNED_QEMU_REPO = "anyvm-org/ubuntu-builder"
 PINNED_QEMU_ASSETS = {
     "riscv64": "qemu-10.2.3-riscv64-noble.tar.zst",
     "s390x": "qemu-10.2.3-s390x-noble.tar.zst",
     "ppc64le": "qemu-10.2.3-ppc64le-noble.tar.zst",
     "loongarch64": "qemu-10.2.3-loongarch64-noble.tar.zst",
-    # 10.2.3 PLUS netbsd-builder files/qemu-sabre-irq-clobber.patch: every
+    # 10.2.3 PLUS the builder's own files/qemu-sabre-irq-clobber.patch: every
     # released qemu-system-sparc64 carries the sun4u sabre IRQ-dispatch
     # clobber bug (see the sparc64 branch at the ensure_pinned_qemu call
     # site), so this pin is preferred REGARDLESS of the system version.
     "sparc64": "qemu-10.2.3-sparc64-noble.tar.zst",
 }
-# Per-arch repo override: builders are self-contained and never reference
-# each other, so an arch-specific pinned QEMU is published by the builder
-# whose guests need it -- loongarch64 by openeuler-builder, the patched
-# sparc64 build by netbsd-builder (same pattern as the sparc64 OpenBIOS
-# below); everything else comes from ubuntu-builder (PINNED_QEMU_REPO).
-PINNED_QEMU_REPOS = {
-    "loongarch64": "anyvm-org/openeuler-builder",
-    "sparc64": "anyvm-org/netbsd-builder",
-}
+# There is deliberately NO table mapping an arch to the repo that publishes
+# its pinned QEMU. The asset is always fetched from the guest's OWN builder,
+# at the guest's OWN pinned release (the same builder_repo + config['builder']
+# the image itself came from). Every builder builds and publishes whatever
+# its own guests need -- two builders that need the same patched QEMU each
+# ship their own copy on purpose. That is what keeps builders and VM actions
+# mutually independent: deleting any one builder must not affect any other.
+# A per-arch table would quietly reintroduce the coupling the moment a second
+# OS gained that arch, so the repo is derived, never looked up.
 
-# Patched OpenBIOS published as a release asset by openbsd-builder (see that
-# repo's bios/README.md): the OpenBIOS bundled with QEMU crashes every
+# Patched OpenBIOS published as a release asset by the openbsd builder (see
+# that repo's bios/README.md): the OpenBIOS bundled with QEMU crashes every
 # OpenBSD >= 7.3 sparc64 kernel on cold boot and names IDE channel nodes
 # "ide" instead of OBP's "ata", which breaks root-device autodetection.
 # The builder no longer commits the blob to git -- its release-files job
 # rebuilds it from source (bios/build-openbios.sh) and uploads it to the
 # release, so the release asset is the only place to fetch it. Downloaded
-# on demand for openbsd/sparc64 guests and passed via -bios.
-OPENBIOS_SPARC64_REPO = "anyvm-org/openbsd-builder"
+# on demand for openbsd/sparc64 guests and passed via -bios. Like every
+# other pinned asset it is fetched from the image's own builder_repo at the
+# image's own release, so only the file name is a constant here.
 OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
 
 # Pinned user-space NFS server (github.com/anyvm-org/nfsd): one pure-Python
@@ -4118,25 +4118,30 @@ def qemu_version(qemu_bin):
     return None
 
 def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bin_name=None,
-                       builder_tag=None, force=False):
+                       repo=None, builder_tag=None, force=False):
     """Returns a qemu-system binary that is at least min_version for arch.
 
     If the system binary is new enough it is returned unchanged. Otherwise,
-    on Linux x86_64 hosts, the pinned build published by ubuntu-builder
-    (PINNED_QEMU_ASSETS) is downloaded into <working_dir>/tools, extracted,
-    and returned instead. QEMU locates its firmware (opensbi, s390-ccw.img,
-    ...) relative to the binary, so the extracted tree is self-contained.
-    On any failure (no pinned build for this host, download or extraction
-    error, binary that does not run) the system binary is returned with a
-    warning so the caller can still try it.
+    on Linux x86_64 hosts, the pinned build published by the guest's OWN
+    builder (PINNED_QEMU_ASSETS names the file) is downloaded into
+    <working_dir>/tools, extracted, and returned instead. QEMU locates its
+    firmware (opensbi, s390-ccw.img, ...) relative to the binary, so the
+    extracted tree is self-contained. On any failure (no pinned build for
+    this host, download or extraction error, binary that does not run) the
+    system binary is returned with a warning so the caller can still try it.
 
-    builder_tag: the resolved builder version the IMAGE came from (e.g.
-    "2.0.0"). When set, that release's asset is tried FIRST and
-    releases/latest is only the fallback. releases/latest alone races
-    freshly-cut releases: the moment a new tag is published it becomes
-    "latest", but its assets only appear when the release workflow's
-    upload jobs finish, so every download in that window 404s (bit the
-    openeuler v2.0.1 cut on 2026-07-22).
+    repo / builder_tag: the repo and release the IMAGE itself came from
+    (builder_repo and config['builder']). The asset is fetched from exactly
+    that release and NOWHERE else -- there is no releases/latest fallback and
+    no other builder's repo is ever consulted. Two reasons:
+      * releases/latest is a moving target on someone else's release
+        schedule. It also races a freshly-cut tag: the tag becomes "latest"
+        the moment it is pushed, but its assets only appear once the release
+        workflow's upload jobs finish, so every download in that window 404s
+        (this bit the openeuler v2.0.1 cut on 2026-07-22).
+      * pinning to the image's own release is what makes the QEMU and the
+        image a matched, reproducible pair.
+    Both are required; without them the pin is skipped (system QEMU is used).
 
     force: ignore the version check and always prefer the pinned build. Used
     when the pin fixes a bug present in EVERY upstream version (sparc64: the
@@ -4148,6 +4153,14 @@ def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bi
         return qemu_bin
     ver = qemu_version(qemu_bin)
     if not force and ver and ver >= min_version:
+        return qemu_bin
+    if not repo or not builder_tag:
+        # No pinned release to fetch from. Deliberately NOT falling back to
+        # releases/latest or to another builder: an unpinned asset is not a
+        # matched pair with the image, and reaching into a sibling builder
+        # would couple two repos that must stay independent.
+        log("Warning: no pinned builder release known for {} ({}); "
+            "continuing with system QEMU.".format(arch, asset))
         return qemu_bin
     want = "patched" if force else "{}.{}".format(min_version[0], min_version[1])
     if ver:
@@ -4186,22 +4199,16 @@ def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bi
         if not os.path.isdir(extract_dir):
             os.makedirs(extract_dir)
         tar_path = os.path.join(tools_dir, asset)
-        repo = PINNED_QEMU_REPOS.get(arch, PINNED_QEMU_REPO)
-        urls = []
-        if builder_tag:
-            urls.append("https://github.com/{}/releases/download/v{}/{}".format(
-                repo, str(builder_tag).lstrip("v"), asset))
-        urls.append("https://github.com/{}/releases/latest/download/{}".format(repo, asset))
+        # Exactly one URL: the guest's own builder, at the guest's own
+        # release. No releases/latest, no sibling builder (see the module
+        # comment next to PINNED_QEMU_ASSETS).
+        url = "https://github.com/{}/releases/download/v{}/{}".format(
+            repo, str(builder_tag).lstrip("v"), asset)
         if not os.path.exists(tar_path):
             log("System QEMU for {} is {} (need >= {}); downloading pinned build...".format(arch, have, want))
-            downloaded = False
-            for url in urls:
-                if download_file(url, tar_path, debug):
-                    downloaded = True
-                    break
-                log("Warning: failed to download {}".format(url))
-            if not downloaded:
-                log("Warning: no pinned QEMU could be downloaded; continuing with system QEMU ({}).".format(have))
+            if not download_file(url, tar_path, debug):
+                log("Warning: failed to download {}; continuing with system "
+                    "QEMU ({}).".format(url, have))
                 return qemu_bin
         # tarfile in the Python versions we target has no zstd support;
         # GNU tar on any current Linux does.
@@ -6680,24 +6687,23 @@ def main():
         config['transport'] = "telnet"
 
     # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
-    # (see OPENBIOS_SPARC64_REPO above); fetch the patched blob published
-    # next to the VM images. Preferred from the same builder tag as the
-    # image so firmware and image stay version-matched; releases that
-    # predate the release-files job fall back to the newest release's copy.
+    # (see OPENBIOS_SPARC64_ASSET above); fetch the patched blob published
+    # next to the VM images, from the image's OWN builder at the image's OWN
+    # release, so firmware and image are always a version-matched pair.
+    # No releases/latest fallback: that is a moving target which can hand a
+    # guest firmware built for a different image (and it races a freshly-cut
+    # tag, whose assets appear only after its upload jobs finish).
     sparc64_bios_file = None
     if config['os'] == "openbsd" and config['arch'] == "sparc64":
         sparc64_bios_file = os.path.join(output_dir, OPENBIOS_SPARC64_ASSET)
         if not os.path.exists(sparc64_bios_file):
-            bios_url = "https://github.com/{}/releases/latest/download/{}".format(
-                OPENBIOS_SPARC64_REPO, OPENBIOS_SPARC64_ASSET)
-            if config['builder']:
-                tagged_url = "https://github.com/{}/releases/download/v{}/{}".format(
-                    OPENBIOS_SPARC64_REPO, config['builder'], OPENBIOS_SPARC64_ASSET)
-                if check_url_exists(tagged_url, config['debug']):
-                    bios_url = tagged_url
-                else:
-                    debuglog(config['debug'], "No {} in builder release v{}; using latest".format(
-                        OPENBIOS_SPARC64_ASSET, config['builder']))
+            if not config['builder']:
+                fatal("OpenBSD sparc64 needs {} from its builder release, but "
+                      "no builder version was resolved (pass --builder).".format(
+                          OPENBIOS_SPARC64_ASSET))
+            bios_url = "https://github.com/{}/releases/download/v{}/{}".format(
+                builder_repo, str(config['builder']).lstrip("v"),
+                OPENBIOS_SPARC64_ASSET)
             if config.get('cachedir'):
                 rel_path = os.path.relpath(output_dir, working_dir)
                 cache_output_dir = os.path.join(config['cachedir'], rel_path)
@@ -6714,8 +6720,9 @@ def main():
             else:
                 download_file(bios_url, sparc64_bios_file, config['debug'])
         if not os.path.exists(sparc64_bios_file):
-            fatal("Could not download {} from {} (OpenBSD sparc64 cannot boot "
-                  "on QEMU's bundled OpenBIOS).".format(OPENBIOS_SPARC64_ASSET, OPENBIOS_SPARC64_REPO))
+            fatal("Could not download {} from {} v{} (OpenBSD sparc64 cannot "
+                  "boot on QEMU's bundled OpenBIOS).".format(
+                      OPENBIOS_SPARC64_ASSET, builder_repo, config['builder']))
 
     vm_user = "user" if config['os'] == "haiku" else "root"
 
@@ -6798,9 +6805,11 @@ def main():
     if (config['arch'] == "riscv64" and config['os'] == "ubuntu"
             and (config['release'] or "").startswith("26.")):
         qemu_bin = ensure_pinned_qemu("riscv64", qemu_bin, (9, 1), working_dir, config['debug'],
+                                      repo=builder_repo,
                                       builder_tag=config.get('builder'))
     elif config['arch'] == "s390x" and host_arch != "s390x":
         qemu_bin = ensure_pinned_qemu("s390x", qemu_bin, (10, 0), working_dir, config['debug'],
+                                      repo=builder_repo,
                                       builder_tag=config.get('builder'))
     elif (config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le")
             and config['os'] == "ubuntu"
@@ -6808,38 +6817,39 @@ def main():
             and host_arch not in ("ppc64", "ppc64le", "powerpc64", "powerpc64le")):
         qemu_bin = ensure_pinned_qemu("ppc64le", qemu_bin, (10, 0), working_dir,
                                       config['debug'], bin_name="qemu-system-ppc64",
+                                      repo=builder_repo,
                                       builder_tag=config.get('builder'))
     elif config['arch'] == "loongarch64" and host_arch != "loongarch64":
         # The loongarch virt machine needs the bundled EDK2 LoongArch
         # firmware (edk2-loongarch64-code.fd), which QEMU only ships since
         # 9.2 -- noble's stock 8.2 has the binary but not the firmware, so
-        # a UEFI disk image cannot boot on it. The pinned tarball comes
-        # from openeuler-builder's release assets (PINNED_QEMU_REPOS).
+        # a UEFI disk image cannot boot on it. The pinned tarball comes from
+        # this guest's own builder release, like every other pinned asset.
         qemu_bin = ensure_pinned_qemu("loongarch64", qemu_bin, (9, 2),
                                       working_dir, config['debug'],
+                                      repo=builder_repo,
                                       builder_tag=config.get('builder'))
     elif config['arch'] == "sparc64" and host_arch != "sparc64":
         # sun4u's sabre PCI host bridge has a single-slot IRQ-dispatch bug
         # in EVERY upstream QEMU (the PCI-INO branch clobbers an outstanding
         # OBIO request, so the guest's interrupt-clear is dropped and both
-        # devices' interrupts wedge -- the NetBSD/OpenBSD sparc64 "lost
-        # interrupt" storm under concurrent disk+NIC DMA). netbsd-builder's
-        # pinned build (PINNED_QEMU_REPOS) carries its
-        # files/qemu-sabre-irq-clobber.patch, so force it regardless of the
-        # system QEMU version (a newer stock QEMU is NOT good enough -- it
-        # has the same bug). Linux x86_64 only, like the other pinned
-        # builds; elsewhere the guest falls back to system QEMU (10.x
-        # images still avoid the wedge via their hybrid mpt-disk layout;
-        # 11.0 keeps the classic single disk and may wedge there).
-        # builder_tag only for netbsd images (their builder tag names a
-        # netbsd-builder release, where the asset lives); openbsd sparc64
-        # tags name openbsd-builder, so those fall through to
-        # releases/latest.
+        # devices' interrupts wedge. Both sparc64 guests hit it under
+        # concurrent disk+NIC DMA, from whichever side loses the race:
+        # NetBSD as "cmdide0: lost interrupt" / "wm0: device timeout",
+        # OpenBSD as "wd0(pciide0:0:0): timeout" / "em0: watchdog".
+        # Each builder ships its own files/qemu-sabre-irq-clobber.patch and
+        # publishes its own patched tarball, so this fetches from whichever
+        # builder the running image came from -- never from a sibling.
+        # Forced regardless of the system QEMU version: a newer stock QEMU
+        # is NOT good enough, it has the same bug. Linux x86_64 only, like
+        # the other pinned builds; on macOS / Windows the guest falls back
+        # to system QEMU and can still wedge under heavy concurrent I/O --
+        # every sparc64 image is a plain single-disk one, so nothing else
+        # absorbs it.
         qemu_bin = ensure_pinned_qemu("sparc64", qemu_bin, (0, 0),
                                       working_dir, config['debug'], force=True,
-                                      builder_tag=(config.get('builder')
-                                                   if config['os'] == "netbsd"
-                                                   else None))
+                                      repo=builder_repo,
+                                      builder_tag=config.get('builder'))
 
     if not qemu_bin:
         fatal("QEMU binary '{}' not found (searched PATH and common "
@@ -7206,8 +7216,8 @@ def main():
         # interrupts; match it exactly so the runtime boot stays clean. (Thinness
         # from discard does not matter for the small 4G ephemeral sparc64 disk.)
         # The cmd646 wedge itself is fixed at its source by the patched QEMU
-        # (PINNED_QEMU_REPOS sparc64 -> netbsd-builder) that ensure_pinned_qemu
-        # forces on Linux x86_64 hosts.
+        # that ensure_pinned_qemu forces on Linux x86_64 hosts (each builder
+        # publishes its own patched tarball).
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if=ide,index=0".format(qcow_name)
         ])
