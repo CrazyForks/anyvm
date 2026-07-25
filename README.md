@@ -58,6 +58,14 @@ anyvm.py --os freebsd
 Or use a virtual environment: `python3 -m venv ~/.venvs/anyvm &&
 ~/.venvs/anyvm/bin/pip install anyvm.py`.
 
+On macOS, install with Homebrew instead (also pulls in `qemu` and `zstd`):
+
+```bash
+brew install anyvm-org/tap/anyvm
+
+anyvm --os freebsd
+```
+
 Or download the single file and run it directly:
 
 ```bash
@@ -192,6 +200,10 @@ sudo apt-get --no-install-recommends -y install \
 ```bash
 brew install qemu
 ```
+
+Not needed when anyvm was installed from the Homebrew tap
+(`brew install anyvm-org/tap/anyvm`) -- that already installs `qemu`
+and `zstd` as dependencies.
 
 ### 6.3 Windows [![Windows](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml)
 

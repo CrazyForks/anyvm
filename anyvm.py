@@ -154,13 +154,20 @@ PINNED_QEMU_ASSETS = {
     "s390x": "qemu-10.2.3-s390x-noble.tar.zst",
     "ppc64le": "qemu-10.2.3-ppc64le-noble.tar.zst",
     "loongarch64": "qemu-10.2.3-loongarch64-noble.tar.zst",
+    # 10.2.3 PLUS netbsd-builder files/qemu-sabre-irq-clobber.patch: every
+    # released qemu-system-sparc64 carries the sun4u sabre IRQ-dispatch
+    # clobber bug (see the sparc64 branch at the ensure_pinned_qemu call
+    # site), so this pin is preferred REGARDLESS of the system version.
+    "sparc64": "qemu-10.2.3-sparc64-noble.tar.zst",
 }
-# Per-arch repo override: the loongarch64 tarball is published by
-# openeuler-builder's release-files job (the OS that needs it), same
-# pattern as the sparc64 OpenBIOS below; everything else comes from
-# ubuntu-builder (PINNED_QEMU_REPO).
+# Per-arch repo override: builders are self-contained and never reference
+# each other, so an arch-specific pinned QEMU is published by the builder
+# whose guests need it -- loongarch64 by openeuler-builder, the patched
+# sparc64 build by netbsd-builder (same pattern as the sparc64 OpenBIOS
+# below); everything else comes from ubuntu-builder (PINNED_QEMU_REPO).
 PINNED_QEMU_REPOS = {
     "loongarch64": "anyvm-org/openeuler-builder",
+    "sparc64": "anyvm-org/netbsd-builder",
 }
 
 # Patched OpenBIOS published as a release asset by openbsd-builder (see that
@@ -4111,7 +4118,7 @@ def qemu_version(qemu_bin):
     return None
 
 def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bin_name=None,
-                       builder_tag=None):
+                       builder_tag=None, force=False):
     """Returns a qemu-system binary that is at least min_version for arch.
 
     If the system binary is new enough it is returned unchanged. Otherwise,
@@ -4130,14 +4137,19 @@ def ensure_pinned_qemu(arch, qemu_bin, min_version, working_dir, debug=False, bi
     "latest", but its assets only appear when the release workflow's
     upload jobs finish, so every download in that window 404s (bit the
     openeuler v2.0.1 cut on 2026-07-22).
+
+    force: ignore the version check and always prefer the pinned build. Used
+    when the pin fixes a bug present in EVERY upstream version (sparc64: the
+    sabre IRQ-clobber patch), where a newer system QEMU is not "good enough".
+    min_version is then irrelevant to the decision.
     """
     asset = PINNED_QEMU_ASSETS.get(arch)
     if not asset:
         return qemu_bin
     ver = qemu_version(qemu_bin)
-    if ver and ver >= min_version:
+    if not force and ver and ver >= min_version:
         return qemu_bin
-    want = "{}.{}".format(min_version[0], min_version[1])
+    want = "patched" if force else "{}.{}".format(min_version[0], min_version[1])
     if ver:
         have = "{}.{}".format(ver[0], ver[1])
     else:
@@ -6705,48 +6717,6 @@ def main():
             fatal("Could not download {} from {} (OpenBSD sparc64 cannot boot "
                   "on QEMU's bundled OpenBIOS).".format(OPENBIOS_SPARC64_ASSET, OPENBIOS_SPARC64_REPO))
 
-    # Hybrid two-disk images (NetBSD 10.x sparc64 cmd646-wedge bypass): when
-    # the profile says boot_disk, the MAIN qcow2 asset is the ROOT disk (guest
-    # sd0 behind the profile's scsi_controller) and a small companion asset
-    # <vm_name>-boot.qcow2.zst (bootblock + ofwboot + kernel on IDE) is what
-    # the machine actually boots from. Fetch + decompress it beside the main
-    # image with the same cache-dir behaviour as the other sidecar assets.
-    boot_disk_file = None
-    if guest_profile and guest_profile.get('boot_disk'):
-        boot_zst_name = vm_name + "-boot.qcow2.zst"
-        boot_disk_file = os.path.join(output_dir, vm_name + "-boot.qcow2")
-        if not os.path.exists(boot_disk_file):
-            boot_zst_file = os.path.join(output_dir, boot_zst_name)
-            if not os.path.exists(boot_zst_file):
-                boot_url = "https://github.com/{}/releases/download/v{}/{}".format(
-                    builder_repo, config['builder'], boot_zst_name)
-                if config.get('cachedir'):
-                    rel_path = os.path.relpath(output_dir, working_dir)
-                    cache_output_dir = os.path.join(config['cachedir'], rel_path)
-                    if not os.path.exists(cache_output_dir):
-                        debuglog(config['debug'], "Creating cache directory: {}".format(cache_output_dir))
-                        os.makedirs(cache_output_dir)
-                    cached_boot = os.path.join(cache_output_dir, boot_zst_name)
-                    if not os.path.exists(cached_boot):
-                        debuglog(config['debug'], "Boot disk not found in cache, downloading to: {}".format(cached_boot))
-                        download_file(boot_url, cached_boot, config['debug'])
-                    if os.path.exists(cached_boot):
-                        debuglog(config['debug'], "Copying boot disk from cache to: {}".format(boot_zst_file))
-                        shutil.copy2(cached_boot, boot_zst_file)
-                else:
-                    download_file(boot_url, boot_zst_file, config['debug'])
-            if os.path.exists(boot_zst_file):
-                if subprocess.call(['zstd', '-d', boot_zst_file, '-o', boot_disk_file]) != 0:
-                    for stale in (boot_zst_file, boot_disk_file):
-                        try:
-                            os.remove(stale)
-                        except OSError:
-                            pass
-                    fatal("zstd extraction of the boot disk failed (removed corrupt download; re-run to download again)")
-        if not os.path.exists(boot_disk_file):
-            fatal("Could not fetch {} (this release uses a two-disk layout "
-                  "and cannot boot without its boot disk).".format(boot_zst_name))
-
     vm_user = "user" if config['os'] == "haiku" else "root"
 
     # Ports
@@ -6848,6 +6818,28 @@ def main():
         qemu_bin = ensure_pinned_qemu("loongarch64", qemu_bin, (9, 2),
                                       working_dir, config['debug'],
                                       builder_tag=config.get('builder'))
+    elif config['arch'] == "sparc64" and host_arch != "sparc64":
+        # sun4u's sabre PCI host bridge has a single-slot IRQ-dispatch bug
+        # in EVERY upstream QEMU (the PCI-INO branch clobbers an outstanding
+        # OBIO request, so the guest's interrupt-clear is dropped and both
+        # devices' interrupts wedge -- the NetBSD/OpenBSD sparc64 "lost
+        # interrupt" storm under concurrent disk+NIC DMA). netbsd-builder's
+        # pinned build (PINNED_QEMU_REPOS) carries its
+        # files/qemu-sabre-irq-clobber.patch, so force it regardless of the
+        # system QEMU version (a newer stock QEMU is NOT good enough -- it
+        # has the same bug). Linux x86_64 only, like the other pinned
+        # builds; elsewhere the guest falls back to system QEMU (10.x
+        # images still avoid the wedge via their hybrid mpt-disk layout;
+        # 11.0 keeps the classic single disk and may wedge there).
+        # builder_tag only for netbsd images (their builder tag names a
+        # netbsd-builder release, where the asset lives); openbsd sparc64
+        # tags name openbsd-builder, so those fall through to
+        # releases/latest.
+        qemu_bin = ensure_pinned_qemu("sparc64", qemu_bin, (0, 0),
+                                      working_dir, config['debug'], force=True,
+                                      builder_tag=(config.get('builder')
+                                                   if config['os'] == "netbsd"
+                                                   else None))
 
     if not qemu_bin:
         fatal("QEMU binary '{}' not found (searched PATH and common "
@@ -7213,28 +7205,12 @@ def main():
         # `-drive if=ide,index=0` (no discard) and its boots show ZERO lost
         # interrupts; match it exactly so the runtime boot stays clean. (Thinness
         # from discard does not matter for the small 4G ephemeral sparc64 disk.)
-        #
-        # Hybrid two-disk images (NetBSD 10.x, profile boot_disk=true): the
-        # small boot disk (bootblock + ofwboot + kernel) sits on IDE index 0
-        # purely to be booted from, and the MAIN qcow2 is the root disk (sd0)
-        # behind the profile's SCSI HBA on pciB -- attached AFTER the NIC so
-        # the controller lands on pciB dev 1, matching the builder topology.
-        # This mirrors netbsd-builder's cmd646-wedge bypass: the IDE disk is
-        # never mounted at runtime, and an idle cmd646 cannot wedge.
-        # Only the -drive entries go here; the SCSI HBA -device pair is added
-        # in the sparc64 machine branch below, AFTER the NIC -device, so the
-        # controller lands on pciB dev 1 exactly like the builder topology
-        # (QEMU assigns slots in -device argv order; -drive order is free).
-        scsi_ctrl = guest_profile.get('scsi_controller') if guest_profile else None
-        if boot_disk_file and scsi_ctrl:
-            args_qemu.extend([
-                "-drive", "file={},format=qcow2,if=ide,index=0".format(boot_disk_file),
-                "-drive", "file={},format=qcow2,if=none,id=root0".format(qcow_name),
-            ])
-        else:
-            args_qemu.extend([
-                "-drive", "file={},format=qcow2,if=ide,index=0".format(qcow_name)
-            ])
+        # The cmd646 wedge itself is fixed at its source by the patched QEMU
+        # (PINNED_QEMU_REPOS sparc64 -> netbsd-builder) that ensure_pinned_qemu
+        # forces on Linux x86_64 hosts.
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=ide,index=0".format(qcow_name)
+        ])
     else:
         args_qemu.extend([
             "-drive", "file={},format=qcow2,if={},discard=unmap,detect-zeroes=unmap".format(qcow_name, disk_if)
@@ -7642,17 +7618,6 @@ def main():
             "-device", "{},netdev=net0,bus=pciB".format(net_card),
             "-boot", "order=c",
         ])
-        # Hybrid two-disk images (NetBSD 10.x, profile boot_disk=true): root
-        # disk behind the profile's SCSI HBA. The -device pair sits here,
-        # after the NIC, so the HBA takes pciB dev 1 (builder-verified
-        # topology); the matching -drive entries were added in the disk
-        # section above. mptsas1068 is the only SCSI model both QEMU
-        # emulates and NetBSD/sparc64 GENERIC drives correctly.
-        if boot_disk_file and (guest_profile.get('scsi_controller') if guest_profile else None):
-            args_qemu.extend([
-                "-device", "{},id=anyscsi0,bus=pciB".format(guest_profile['scsi_controller']),
-                "-device", "scsi-hd,drive=root0,bus=anyscsi0.0",
-            ])
         if sparc64_bios_file:
             # openbsd: replace the bundled OpenBIOS with the patched blob
             # downloaded above (-bios overrides the machine firmware).
