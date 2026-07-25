@@ -6392,10 +6392,25 @@ def main():
         log("Using release: " + config['release'])
         # Find download link
         def find_image_link(releases, target_zst, target_xz):
+            # Two passes: an exact match always wins, then the same search
+            # case-insensitively. A release name can carry upper case
+            # (openEuler ships "22.03-LTS-SP4" / "24.03-LTS-SP4"), and a user
+            # typing "24.03-lts-sp4" should still get the image. The asset
+            # name is the authority on the spelling -- the caller adopts it
+            # right after this returns, because the sidecar URLs are built
+            # from <os>-<release>[-<arch>] and would 404 on the wrong case.
             for r in releases:
                 for asset in r.get('assets', []):
                     u = asset.get('browser_download_url', '')
                     if u.endswith(target_zst) or u.endswith(target_xz):
+                        return u
+            lower_zst = target_zst.lower()
+            lower_xz = target_xz.lower()
+            for r in releases:
+                for asset in r.get('assets', []):
+                    u = asset.get('browser_download_url', '')
+                    ul = u.lower()
+                    if ul.endswith(lower_zst) or ul.endswith(lower_xz):
                         return u
             return ""
 
@@ -6443,6 +6458,29 @@ def main():
 
         if not zst_link:
             fatal("Cannot find the image link.")
+
+        # The asset name is the authority on how the release is spelled, so
+        # adopt it whenever the user typed a different case (find_image_link
+        # above matches case-insensitively). Everything downstream derives
+        # from config['release'] -- vm_name, and with it the -host.id_rsa /
+        # -id_rsa.pub / .profile.json / .qemu sidecar URLs and the local
+        # state file names -- so leaving the user's spelling in place would
+        # 404 every sidecar and split the state dir in two. Only a pure case
+        # difference is rewritten: variant assets whose name extends the
+        # release (freebsd-15.1-xfce) are left alone.
+        asset_release = removesuffix(zst_link.split('/')[-1], ".qcow2.zst")
+        asset_release = removesuffix(asset_release, ".qcow2.xz")
+        os_prefix = config['os'] + "-"
+        if asset_release.lower().startswith(os_prefix.lower()):
+            asset_release = asset_release[len(os_prefix):]
+            if config['arch'] and config['arch'] != "x86_64":
+                asset_release = removesuffix(asset_release, "-" + config['arch'])
+            if (asset_release and config['release']
+                    and asset_release != config['release']
+                    and asset_release.lower() == config['release'].lower()):
+                log("Release '{}' published as '{}', using the published "
+                    "spelling.".format(config['release'], asset_release))
+                config['release'] = asset_release
 
         debuglog(config['debug'],"Using link: " + zst_link)
 

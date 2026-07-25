@@ -270,6 +270,8 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 
 - `--release <ver>`: Guest release version. If omitted, anyvm auto-selects an available release.
   - Example: `python3 anyvm.py --os freebsd --release 14.4`
+  - Matched case-insensitively, so `--release 24.03-lts-sp4` also finds
+    openEuler's `24.03-LTS-SP4`; the published spelling is used from then on.
 
 - `--arch <arch>`: Guest architecture.
   - Common values: `x86_64` / `aarch64` / `riscv64` / `s390x` / `powerpc64` /
