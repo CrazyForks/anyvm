@@ -25,13 +25,12 @@ concurrency:
 # Sync: x86_64 / aarch64 / riscv64 run every backend (sshfs uses NetBSD's
 # base mount_psshfs; nfs is the user-space nfsd via its port-111 portmapper,
 # bound with sudo on the runner; sys-nfs the host kernel server).
-# sparc64 (QEMU sun4u, TCG): 10.0 / 10.1 use the hybrid disk layout since
-# builder v2.1.5 (boot-only IDE disk + root on an mptsas1068 SCSI disk), which
-# eliminated the CMD646 lost-interrupt wedge, so they ARE tested below --
-# including rsync, to find out whether its old instability (wedge-era verdict)
-# is gone on the SCSI path. 11.0 still runs the classic single-IDE-disk image
-# where the wedge can intermittently kill a boot, so it stays untested here;
-# run it by hand if you need to exercise it.
+# sparc64 (QEMU sun4u, TCG): all three releases (10.0 / 10.1 / 11.0) ship the
+# classic single-IDE-disk image and run on the patched QEMU that anyvm pins for
+# this arch -- the sabre IRQ-clobber fix, which is what actually cured the
+# CMD646 lost-interrupt wedge (the wedge is a QEMU host-bridge bug, not a guest
+# or disk-controller one). All three are therefore tested below, including
+# rsync, to find out whether its old instability (a wedge-era verdict) is gone.
 jobs:
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
@@ -101,19 +100,20 @@ jobs:
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
 
-  # sparc64 hybrid-layout releases (boot-only IDE disk + root on mptsas1068,
-  # builder >= v2.1.5): the CMD646 wedge that used to keep sparc64 out of CI
-  # is gone on these, so exercise the full sync matrix. rsync is included on
-  # purpose even though the confs' VM_SYNC_METHODS still omit it -- the image
-  # ships the rsync binary, and its old "not stable" verdict dates from the
-  # wedge era; if it stays green here, add it back to VM_SYNC_METHODS.
-  # 11.0 sparc64 (classic single-disk image) stays untested -- see the header.
+  # sparc64 (QEMU sun4u, TCG, single-disk image, builder >= v2.1.5): every
+  # release now ships on the patched QEMU (the sabre IRQ-clobber fix), so the
+  # CMD646 "lost interrupt" wedge that used to keep sparc64 out of CI is gone
+  # for all of 10.0 / 10.1 / 11.0 -- exercise the full sync matrix on each.
+  # rsync is included on purpose even though the confs' VM_SYNC_METHODS still
+  # omit it -- the image ships the rsync binary, and its old "not stable"
+  # verdict dates from the wedge era; if it stays green here, add it back to
+  # VM_SYNC_METHODS.
   testsparc64:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
     strategy:
       fail-fast: false
       matrix:
-        release: ["10.0", "10.1"]
+        release: ["10.0", "10.1", "11.0"]
         arch: ["sparc64"]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
