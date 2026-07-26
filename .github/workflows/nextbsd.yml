@@ -1,0 +1,50 @@
+name: NextBSD
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/nextbsd.yml'
+      - '.github/workflows/testrun.yml'
+
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Coverage tracks nextbsd-builder v1.0.0 (ALL_RELEASES = continuous),
+# x86_64 only -- upstream builds no other arch. NextBSD publishes no
+# versioned releases: one rolling `continuous` tag is refreshed on every
+# push to main, and each builder release tag freezes one of those snapshots.
+#
+# The conf's VM_SYNC_METHODS is rsync,scp,nfs. No sshfs leg: the NEXTBSD
+# kernel is built NO_MODULES and the image ships no kldload, so fusefs cannot
+# be loaded and there is no /dev/fuse. nfs only works because the builder
+# bakes /etc/netconfig into the image (the curated /etc omits the RPC netid
+# table, and without it every mount dies with "Netconfig database not found").
+jobs:
+  test:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=nextbsd]') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["continuous"]
+        arch: [""]
+        runs: ["ubuntu-24.04"]
+        sync: ["scp", "rsync", "nfs"]
+
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: nextbsd
+      release: ${{ matrix.release }}
+      arch: ${{ matrix.arch }}
+      sync: ${{ matrix.sync }}

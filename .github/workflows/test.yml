@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
@@ -37,6 +37,15 @@ jobs:
           # The Hurd has no FUSE and the hurd archive has no sshfs package.
           - os: hurd
             sync: sshfs
+          # nextbsd-builder ships amd64 (x86_64) only -- upstream builds no
+          # other arch.
+          - os: nextbsd
+            arch: aarch64
+          # NextBSD cannot load fusefs: the NEXTBSD kernel is built
+          # NO_MODULES and the image ships no kldload (Darwin's kextload
+          # replaces it and only loads kext bundles).
+          - os: nextbsd
+            sync: sshfs
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -47,14 +56,19 @@ jobs:
       sync: ${{ matrix.sync }}
 
 
+  # nextbsd is in this job (the bundled user-space nfsd) but deliberately NOT
+  # in testsysnfs below: only the user-space path has been verified on it.
   testnfs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
+          # nextbsd-builder ships amd64 (x86_64) only.
+          - os: nextbsd
+            arch: aarch64
           - os: solaris
             arch: aarch64
           - os: dragonflybsd

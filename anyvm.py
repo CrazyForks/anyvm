@@ -136,7 +136,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "ghostbsd": "2.0.5",
     "blissos": "2.0.2",
     "hurd": "2.0.0",
-    "plan9": "2.0.0"
+    "plan9": "2.0.0",
+    "nextbsd": "2.0.0"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
@@ -2654,8 +2655,9 @@ Description:
 
 Options:
   --os <name>            Operating System name (Required).
-                         Supported: freebsd, ghostbsd, midnightbsd, openbsd, netbsd, dragonflybsd,
-                                    solaris, omnios, openindiana, tribblix, haiku, ubuntu, blissos
+                         Supported: freebsd, ghostbsd, midnightbsd, nextbsd, openbsd, netbsd,
+                                    dragonflybsd, solaris, omnios, openindiana, tribblix, haiku,
+                                    ubuntu, openeuler, blissos, hurd, plan9
   --release <ver>        OS Release version (e.g., 15.0, 7.4). 
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64, powerpc64, s390x
@@ -3808,7 +3810,7 @@ def sync_vm_time(config, ssh_base_cmd):
         try:
             # Try to get date with milliseconds
             cmd = "date '+%Y-%m-%d %H:%M:%S.%3N'"
-            if guest_os in ['freebsd', 'ghostbsd', 'midnightbsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
+            if guest_os in ['freebsd', 'ghostbsd', 'midnightbsd', 'nextbsd', 'openbsd', 'netbsd', 'dragonflybsd', 'solaris', 'omnios', 'openindiana', 'haiku']:
                 cmd = "date '+%Y-%m-%d %H:%M:%S.000'"
             
             p = subprocess.Popen(ssh_base_cmd + [cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -3855,6 +3857,15 @@ def sync_vm_time(config, ssh_base_cmd):
                     "/usr/local/sbin/ntpdate -u {0} || ntpdate -u {0} || "
                     "/usr/local/bin/ntpdig -S {0} || ntpdig -S {0} || "
                     "/usr/local/bin/sntp -sS {0} || sntp -sS {0}").format(ntp_servers)
+    elif guest_os == 'nextbsd':
+        # NextBSD: a FreeBSD 15 base, which no longer ships ntp in base at
+        # all, and its curated userland has no ports installed by default --
+        # so all of these may legitimately be absent. The whole chain is
+        # best-effort (a failed time sync is only a warning), and the VM
+        # boots with -rtc base=utc,clock=host anyway, so the clock starts
+        # correct. There is no rc.d/service(8) to enable a daemon with.
+        sync_cmd = ("ntpdate -u {0} || ntpdig -S {0} || sntp -sS {0} || "
+                    "rdate -s time.nist.gov || rdate time.nist.gov").format(ntp_servers)
     elif guest_os == 'omnios':
         # OmniOS: chrony is the preferred and often only functional tool.
         sync_cmd = "chronyc -a makestep || (svcadm enable chrony && sleep 2 && chronyc -a makestep)"
@@ -4765,7 +4776,12 @@ def sync_mynfs(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, qemu_pid, d
         if os_name in ("solaris", "omnios", "openindiana", "tribblix"):
             mount_cmd = 'mount -F nfs -o vers=4,port={port} ' \
                         '192.168.122.2:/ "{vguest}"'
-        elif os_name in ("freebsd", "ghostbsd", "midnightbsd"):
+        elif os_name in ("freebsd", "ghostbsd", "midnightbsd", "nextbsd"):
+            # nextbsd runs a FreeBSD 15 kernel + mount_nfs, so it takes the
+            # FreeBSD syntax. Its image needs /etc/netconfig for any RPC at
+            # all (nextbsd-builder bakes it in; the curated /etc omits it),
+            # without which this mount fails with "tcp: Netconfig database
+            # not found".
             mount_cmd = 'mount -t nfs -o ' \
                         'nfsv4,minorversion=0,tcp,port={port} ' \
                         '192.168.122.2:/ "{vguest}"'
@@ -5064,7 +5080,9 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
     
     # Specify remote rsync path as it might not be in default non-interactive PATH.
     # These MUST come before the source/destination arguments.
-    if os_name in ("freebsd", "ghostbsd", "midnightbsd"):
+    if os_name in ("freebsd", "ghostbsd", "midnightbsd", "nextbsd"):
+        # nextbsd installs rsync from the FreeBSD ports repo too -- its
+        # pkg(8) is preconfigured for pkg.FreeBSD.org with ABI FreeBSD:15:amd64.
         cmd.extend(["--rsync-path", "/usr/local/bin/rsync"])
     elif os_name in ["openindiana", "solaris", "omnios"]:
         cmd.extend(["--rsync-path", "/usr/bin/rsync"])

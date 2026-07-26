@@ -91,6 +91,8 @@ python3 anyvm.py --os hurd --release 2025 --arch i386
 
 python3 anyvm.py --os plan9                           # Plan 9 (9front, amd64)
 
+python3 anyvm.py --os nextbsd                         # NextBSD (launchd/Mach, amd64)
+
 python3 anyvm.py --os freebsd --release 14.4 --arch riscv64
 python3 anyvm.py --os freebsd --release 15.1 --arch riscv64
 python3 anyvm.py --os freebsd --release 15.1 --arch powerpc64
@@ -162,6 +164,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | DragonFlyBSD<br>[![Test DragonflyBSD](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/dragonflybsd.yml) | ✅ | — | — | — | — | — | — | [![Build DragonflyBSD](https://github.com/anyvm-org/dragonflybsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/dragonflybsd-builder) |
 | MidnightBSD<br>[![Test MidnightBSD](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/midnightbsd.yml) | ✅ | — | — | — | — | — | — | [![Build MidnightBSD](https://github.com/anyvm-org/midnightbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/midnightbsd-builder) |
 | GhostBSD<br>[![Test GhostBSD](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/ghostbsd.yml) | ✅ | — | — | — | — | — | — | [![Build GhostBSD](https://github.com/anyvm-org/ghostbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/ghostbsd-builder) |
+| NextBSD<br>[![Test NextBSD](https://github.com/anyvm-org/anyvm/actions/workflows/nextbsd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/nextbsd.yml) | ✅ | — | — | — | — | — | — | [![Build NextBSD](https://github.com/anyvm-org/nextbsd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/nextbsd-builder) |
 | Solaris<br>[![Test Solaris](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/solaris.yml) | ✅ | — | — | — | — | — | — | [![Build Solaris](https://github.com/anyvm-org/solaris-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/solaris-builder) |
 | OmniOS<br>[![Test OmniOS](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/omnios.yml) | ✅ | — | — | — | — | — | — | [![Build OmniOS](https://github.com/anyvm-org/omnios-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/omnios-builder) |
 | OpenIndiana<br>[![Test OpenIndiana](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/openindiana.yml) | ✅ | — | — | — | — | — | — | [![Build OpenIndiana](https://github.com/anyvm-org/openindiana-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/openindiana-builder) |
@@ -262,7 +265,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `nextbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
