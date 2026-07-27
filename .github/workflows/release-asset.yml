@@ -1,0 +1,38 @@
+name: Release asset
+
+# Publish anyvm.py as a release asset so every consumer -- the vmactions
+# *-vm actions, the anyvm skill's install snippet, humans -- fetches it
+# from an explicit pinned version:
+#   https://github.com/anyvm-org/anyvm/releases/download/v<ver>/anyvm.py
+# Never through a branch (raw.githubusercontent) and never
+# releases/latest: the runtime a job pulls must be the exact version its
+# config pins, the same matched-pair rule the builders' images follow.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  # required to attach an asset to the release
+  contents: write
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Upload anyvm.py Release Asset
+        # Gate on the event, not github.ref: for a 'release' event
+        # github.ref is not guaranteed to be refs/tags/<tag> -- it can come
+        # through as refs/heads/<target_commitish>, silently skipping the
+        # upload. event_name is stable.
+        if: "github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')"
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # action-gh-release derives the tag from github.ref by default,
+          # which can be a branch ref on a release event. Pass it explicitly.
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          files: anyvm.py

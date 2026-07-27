@@ -123,14 +123,14 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.2.5",
     "openbsd": "2.0.9",
-    "netbsd": "2.1.5",
+    "netbsd": "2.1.6",
     "dragonflybsd": "2.0.6",
     "solaris": "2.0.6",
     "omnios": "2.1.2",
     "haiku": "2.0.2",
     "midnightbsd": "2.0.5",
     "tribblix": "2.0.6",
-    "openindiana": "2.1.0",
+    "openindiana": "2.1.1",
     "ubuntu": "2.0.7",
     "openeuler": "2.0.1",
     "ghostbsd": "2.0.5",
@@ -7464,15 +7464,27 @@ def main():
                 # the same model for their aarch64 builds. Use --cpu-type
                 # to override.
                 cpu = "cortex-a72"
-            elif config['os'] == "netbsd" and config['release'].split('.')[0] == "9":
-                # NetBSD 9.x aarch64's sshd is corrupted by -cpu max under QEMU
-                # TCG: it completes one connection, then the listener crashes, so
-                # every later ssh gets "connection closed before banner" (boot
-                # probe hangs). cortex-a72 (ARMv8.0, no VHE/SVE) is stable.
-                # 10.x/11.0 are unaffected (newer userland). Mirrors the
-                # VM_CPU_MODEL pin in netbsd-builder's netbsd-9.x-aarch64.conf
-                # (anyvm does not read cpu_model from the profile). Override
-                # with --cpu-type.
+            elif config['os'] == "netbsd" and (
+                    config['release'].split('.')[0] == "9"
+                    or config['release'].split('.')[:2] == ["10", "1"]):
+                # NetBSD aarch64 sshd is corrupted by -cpu max under QEMU TCG on
+                # 9.x and on 10.1: sshd accepts a connection and then dies in the
+                # handshake, so probes get "connection closed before banner" /
+                # "kex_exchange_identification: read: Connection reset by peer"
+                # until the boot wait gives up. cortex-a72 (ARMv8.0, no VHE/SVE)
+                # is the stable model for those releases. anyvm does not read
+                # cpu_model from the profile, so this mirrors the VM_CPU_MODEL
+                # pins in netbsd-builder's netbsd-9.x/10.1-aarch64.conf.
+                # Override with --cpu-type.
+                #
+                # The release test is deliberately EXACT, not a 10.x prefix.
+                # 10.0 fails the opposite way: under cortex-a72 its guest sshd
+                # refuses to start at all ("/etc/rc.d/sshd exited with code 1",
+                # netbsd-builder run 30199351351) after ten consecutive green
+                # builds on max. So 10.0 and 11.0 must stay on max -- the right
+                # model differs per release inside 10.x and cannot be
+                # generalised. Both directions were learned the hard way on
+                # 2026-07-26; check a real build before adding another release.
                 cpu = "cortex-a72"
             else:
                 cpu = "max"

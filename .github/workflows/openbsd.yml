@@ -26,7 +26,7 @@ concurrency:
 # runner), sys-nfs the host kernel server. sparc64 is scp+rsync
 # only -- the QEMU sun4u CMD646 PCI-IDE loses interrupts under sustained
 # net+disk DMA (a live sshfs/nfs mount wedges the guest); one-shot scp/rsync
-# stay clean. 7.3 has no aarch64 image.
+# stay clean.
 jobs:
   test:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=openbsd]') }}
@@ -61,10 +61,6 @@ jobs:
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
-        exclude:
-          # No aarch64 image for 7.3.
-          - release: "7.3"
-            arch: aarch64
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit

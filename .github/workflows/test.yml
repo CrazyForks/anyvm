@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
@@ -30,6 +30,8 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
+            arch: aarch64
+          - os: haiku
             arch: aarch64
           # hurd-builder ships x86_64 + i386 only (no aarch64 port exists).
           - os: hurd
@@ -62,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -82,6 +84,8 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
+            arch: aarch64
+          - os: haiku
             arch: aarch64
           - os: hurd
             arch: aarch64
@@ -106,7 +110,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -123,6 +127,8 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
+            arch: aarch64
+          - os: haiku
             arch: aarch64
           - os: hurd
             arch: aarch64
