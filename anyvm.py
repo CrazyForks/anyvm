@@ -123,7 +123,7 @@ OPENBSD_E1000_RELEASES = {"7.3", "7.4", "7.5", "7.6"}
 DEFAULT_BUILDER_VERSIONS = {
     "freebsd": "2.2.5",
     "openbsd": "2.0.9",
-    "netbsd": "2.1.6",
+    "netbsd": "2.1.7",
     "dragonflybsd": "2.0.6",
     "solaris": "2.0.6",
     "omnios": "2.1.2",
@@ -7446,6 +7446,10 @@ def main():
         else:
             if accel in ["kvm", "hvf"]:
                 cpu = "host"
+            # Everything below is a HAND-MAINTAINED mirror of the VM_CPU_MODEL
+            # pins in the builders' confs -- anyvm deliberately does not read
+            # cpu_model out of the guest profile, so a conf pin and the branch
+            # here must be changed together or the two sides silently disagree.
             elif config['os'] == "openbsd":
                 # OpenBSD fails with "FP exception in kernel" on cpu=max
                 cpu = "neoverse-n1"
@@ -7460,9 +7464,19 @@ def main():
                 #  * Ubuntu 26.04's shim/grub also hangs at BdsDxe under
                 #    -cpu max during image builds (SVE/SME mishandling).
                 # cortex-a72 (ARMv8.0, no VHE/SVE) sidesteps both and boots
-                # every ubuntu/openeuler release artifact; the builders pin
-                # the same model for their aarch64 builds. Use --cpu-type
-                # to override.
+                # every ubuntu/openeuler release artifact. Use --cpu-type to
+                # override.
+                #
+                # Builder side, checked 2026-07-28: all three openeuler-aarch64
+                # confs and ubuntu-26.04-aarch64 pin VM_CPU_MODEL=cortex-a72
+                # too, so those agree. ubuntu 22.04/24.04-aarch64 do NOT -- they
+                # BUILD on -cpu max (runner's stock QEMU 8.2) and pass, while
+                # this OS-wide branch runs them on cortex-a72. It has covered
+                # the whole ubuntu family since commit 4fdfc4e, whose evidence
+                # was 26.04 only, so max is merely untested at run time for
+                # 22.04/24.04 -- untested, not known-broken. To settle it, pin
+                # VM_CPU_MODEL in those two confs and narrow this branch to
+                # match; do not just drop it and hope.
                 cpu = "cortex-a72"
             elif config['os'] == "netbsd" and (
                     config['release'].split('.')[0] == "9"
@@ -7472,9 +7486,11 @@ def main():
                 # handshake, so probes get "connection closed before banner" /
                 # "kex_exchange_identification: read: Connection reset by peer"
                 # until the boot wait gives up. cortex-a72 (ARMv8.0, no VHE/SVE)
-                # is the stable model for those releases. anyvm does not read
-                # cpu_model from the profile, so this mirrors the VM_CPU_MODEL
-                # pins in netbsd-builder's netbsd-9.x/10.1-aarch64.conf.
+                # is the stable model for those releases. anyvm deliberately does
+                # NOT read cpu_model from the profile, so this mirrors the
+                # VM_CPU_MODEL pins in netbsd-builder's netbsd-9.x/10.1-aarch64
+                # .conf and the two sides must be kept in sync BY HAND: changing
+                # a conf pin alone does not change what the runtime launches.
                 # Override with --cpu-type.
                 #
                 # The release test is deliberately EXACT, not a 10.x prefix.
