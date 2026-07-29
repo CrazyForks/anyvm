@@ -3601,6 +3601,13 @@ def call_with_timeout(cmd, timeout_seconds, **popen_kwargs):
 SLIRP_NETWORK_PREFIX = "192.168.122."
 SLIRP_EXPECTED_GUEST_IP = SLIRP_NETWORK_PREFIX + "10"
 
+# How long into the boot wait to run the dead-VM check (see the boot loop).
+# It only fires when the serial log is EMPTY and the QEMU monitor answers
+# nothing, so it needs to sit past the slowest plausible "firmware has not
+# printed its first byte yet" moment, not past a slow boot: the monitor is
+# served by QEMU's main loop and replies regardless of guest speed.
+DEAD_VM_CHECK_SECONDS = 120
+
 def _qmon_send(monitor_port, command, timeout=2.0):
     """Send a single HMP command to the QEMU monitor TCP port, return the reply text or None.
 
@@ -5557,6 +5564,77 @@ def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_
             debuglog(debug, "host CPU:\n{}".format("\n".join(picked)))
         except Exception as e:
             debuglog(debug, "host cpuinfo read failed: {}".format(e))
+    else:
+        # Same information on Windows, same key names, because the WHPX
+        # launch has the same question to answer and had no way to answer it:
+        # the CPU model anyvm hands WHPX is chosen from the vendor ALONE
+        # (any AuthenticAMD host gets the newest entry in
+        # WHPX_AMD_CPU_MODELS), so a wedged WHPX launch always raises "was
+        # that model newer than this host?" -- and every Windows boot-timeout
+        # snapshot so far recorded no CPU at all.
+        #
+        # Read the registry rather than shelling out: WMIC is gone from
+        # current Windows images and a PowerShell Get-CimInstance costs a
+        # second or two, while this key is a plain read.
+        # HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0 holds
+        # ProcessorNameString (the brand string) and Identifier
+        # ("AMD64 Family 26 Model 112 Stepping 0"); PROCESSOR_IDENTIFIER is
+        # the same Identifier plus the vendor, and serves as the fallback.
+        try:
+            picked = []
+            ident = ""
+            name = ""
+            vendor = ""
+            try:
+                import winreg
+                key = winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+                try:
+                    for value, target in (("VendorIdentifier", "vendor"),
+                                          ("ProcessorNameString", "name"),
+                                          ("Identifier", "ident")):
+                        try:
+                            got = str(winreg.QueryValueEx(key, value)[0]).strip()
+                        except OSError:
+                            got = ""
+                        if target == "vendor":
+                            vendor = got
+                        elif target == "name":
+                            name = got
+                        else:
+                            ident = got
+                finally:
+                    winreg.CloseKey(key)
+            except Exception:
+                pass
+            env_ident = os.environ.get("PROCESSOR_IDENTIFIER", "").strip()
+            if not ident and env_ident:
+                # "AMD64 Family 26 Model 112 Stepping 0, AuthenticAMD"
+                parts = env_ident.rsplit(",", 1)
+                ident = parts[0].strip()
+                if not vendor and len(parts) == 2:
+                    vendor = parts[1].strip()
+            if vendor:
+                picked.append("vendor_id: {}".format(vendor))
+            if name:
+                picked.append("model name: {}".format(name))
+            # Split the Identifier into the same fields /proc/cpuinfo names,
+            # so a Windows snapshot can be read next to a Linux one.
+            m = re.search(r"Family\s+(\d+)\s+Model\s+(\d+)\s+Stepping\s+(\d+)",
+                          ident or "")
+            if m:
+                picked.append("cpu family: {}".format(m.group(1)))
+                picked.append("model: {}".format(m.group(2)))
+                picked.append("stepping: {}".format(m.group(3)))
+            elif ident:
+                picked.append("identifier: {}".format(ident))
+            picked.append("cpu count: {}".format(
+                os.environ.get("NUMBER_OF_PROCESSORS", "?")))
+            picked.append("whpx available: {}".format(whpx_available()))
+            debuglog(debug, "host CPU:\n{}".format("\n".join(picked)))
+        except Exception as e:
+            debuglog(debug, "host CPU read failed: {}".format(e))
 
     # QEMU full launch command line -- the exact args we passed
     if cmd_list:
@@ -6062,6 +6140,18 @@ def main():
     if not config['arch']:
         debuglog(config['debug'], "Host arch: " + host_arch)
         config['arch'] = host_arch
+
+    # Record WHICH x86 host this is, not just its width. The WHPX CPU-model
+    # choice below is VENDOR-only -- any AuthenticAMD host gets the newest
+    # name in WHPX_AMD_CPU_MODELS -- so when a WHPX launch misbehaves the
+    # first question is always "was the model newer than the host?", and
+    # nothing in the log could answer it. PROCESSOR_IDENTIFIER carries the
+    # family/model/stepping (e.g. "AMD64 Family 26 Model 112 Stepping 0,
+    # AuthenticAMD" is Zen 5), which is exactly what is needed to tell a
+    # Turin host from a Milan one.
+    if platform.system() == "Windows":
+        debuglog(config['debug'], "Host CPU: {}".format(
+            os.environ.get("PROCESSOR_IDENTIFIER", "?") or "?"))
 
     # Normalize arch string
     if config['arch'] in ["x86_64", "amd64"]:
@@ -6911,6 +7001,20 @@ def main():
         fatal("QEMU binary '{}' not found (searched PATH and common "
               "install locations).\n{}".format(
                   bin_name, deps_install_hint()))
+
+    # Log which QEMU actually got picked, AFTER every pinned-build swap above.
+    # Some packagings do not carry an upstream version anywhere a log reader
+    # can see it -- chocolatey's `qemu` is versioned by date (2026.7.23), and
+    # neither the install output nor the package metadata names the QEMU
+    # release -- so without this a Windows CI log cannot answer "which QEMU
+    # was that?" at all. One cheap subprocess, once per launch.
+    try:
+        _qv = subprocess.check_output([qemu_bin, "--version"], stderr=DEVNULL)
+        _qv = _qv.decode("utf-8", "replace").strip().splitlines()
+        debuglog(config['debug'], "QEMU: {} ({})".format(
+            _qv[0] if _qv else "?", qemu_bin))
+    except Exception:
+        debuglog(config['debug'], "QEMU: version query failed ({})".format(qemu_bin))
 
     # VNC Console Auto-detection logic:
     vnc_val = config.get('vnc', '')
@@ -8592,6 +8696,29 @@ def main():
                 proc.pid, boot_timeout_seconds, probe_timeout_sec, config.get('qmon') or '<unset>', config['sshport']))
 
             whpx_died_early = False
+            # A VM that never started at all, as opposed to one booting slowly.
+            # WHPX can accept a named host CPU model on the command line and
+            # then wedge QEMU before the guest executes a single instruction:
+            # the process stays alive and its sockets listen, but the machine
+            # never runs. Seen on every Windows CI leg with
+            # -cpu EPYC-Turin-v1 under accel=whpx (anyvm run 30416930603):
+            # serial.log 0 bytes, RSS 14 MB against -m 4096, 1 s of CPU time
+            # after ten minutes, and all fifteen monitor queries answered
+            # <no response>. The conservative-CPU retry below fixes it and
+            # boots in 36 s -- but only after the full boot timeout plus the
+            # guest-IP sweep plus the debug snapshot, ~12.5 min wasted on a VM
+            # that was dead within a second of launch.
+            #
+            # Two signals, required together so a merely slow guest is never
+            # mistaken for a dead one:
+            #   * the serial log is still EMPTY -- any firmware, on any arch,
+            #     prints something long before this deadline; and
+            #   * the QEMU monitor does not answer `info version`. The monitor
+            #     is served by QEMU's own main loop, so it replies as soon as
+            #     the process is running, no matter how slow the GUEST is.
+            # A guest can be arbitrarily slow and still fail neither test.
+            vm_never_started = False
+            dead_vm_checked = False
             while True:
                 if proc.poll() is not None:
                     if accel == "whpx" and not config['whpx']:
@@ -8616,6 +8743,32 @@ def main():
                     debuglog(config['debug'], "Boot wait: elapsed={:.1f}s/{}s, last probe={}".format(
                         elapsed, boot_timeout_seconds, last_probe_result))
                     last_boot_progress_log = elapsed
+
+                # Dead-VM fast fail (see vm_never_started above). Checked once,
+                # late enough that no real boot can still be silent on both
+                # channels, early enough to save most of the timeout.
+                if (not dead_vm_checked and config.get('qmon')
+                        and elapsed >= DEAD_VM_CHECK_SECONDS
+                        and boot_timeout_seconds > DEAD_VM_CHECK_SECONDS):
+                    dead_vm_checked = True
+                    serial_bytes = 0
+                    try:
+                        if serial_log_file and os.path.exists(serial_log_file):
+                            serial_bytes = os.path.getsize(serial_log_file)
+                    except OSError:
+                        serial_bytes = -1
+                    if serial_bytes == 0:
+                        qmon_reply = _qmon_send(config['qmon'], "info version", timeout=3.0)
+                        if not (qmon_reply or "").strip():
+                            log("VM never started: {:.0f}s in, the serial log is empty AND the "
+                                "QEMU monitor does not answer. QEMU is up but the machine is not "
+                                "running -- not waiting out the remaining {:.0f}s.".format(
+                                    elapsed, boot_timeout_seconds - elapsed))
+                            vm_never_started = True
+                            break
+                        debuglog(config['debug'],
+                                 "Dead-VM check: serial still empty but the monitor answers; "
+                                 "the guest is merely slow, continuing to wait.")
 
                 if config.get('transport') == "telnet":
                     # plan9/9front: no sshd -- readiness is the guest's telnetd
@@ -8696,7 +8849,8 @@ def main():
                     except:
                         pass
             
-            if not success and not whpx_died_early and config.get('qmon') and hostfwd_specs:
+            if (not success and not whpx_died_early and not vm_never_started
+                    and config.get('qmon') and hostfwd_specs):
                 # Ask slirp for the guest's real address first: 'info usernet'
                 # lists every guest-originated flow, so a hit means the guest
                 # is up but behind a misrouted hostfwd -- rewrite the forwards
@@ -8734,7 +8888,13 @@ def main():
 
             if not success:
                 # First timeout - dump diagnostics, then kill QEMU and retry once
-                if not whpx_died_early:
+                if vm_never_started:
+                    # Skip the snapshot: we already know what it would say, and
+                    # every one of its ~15 monitor queries would sit out its
+                    # own timeout against a monitor that answers nothing --
+                    # another ~34 s spent re-proving the same thing.
+                    log("Killing the dead QEMU and retrying with a different CPU model...")
+                elif not whpx_died_early:
                     log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
                     _dump_boot_debug_snapshot(config, "first-timeout", serial_log_file, config.get('qmon'), output_dir, vm_name, proc, cmd_list=cmd_list)
                 terminate_process(proc, "QEMU")
