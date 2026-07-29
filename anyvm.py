@@ -5093,6 +5093,22 @@ def sync_nfs(ssh_cmd, vhost, vguest, os_name, sudo_cmd):
         if os_name == "openbsd":
             mount_cmd = 'mount -t nfs -o -T 192.168.122.2:"{vhost}" ' \
                         '"{vguest}"'
+        elif os_name == "haiku":
+            # Haiku's nfs4 add-on wants server, path and options as ONE
+            # space-separated -p string with the path after the LAST colon;
+            # the generic `mount server:path dir` below is BSD/Linux syntax
+            # and Haiku answers it with "mount: No such file or directory"
+            # (anyvm run 30427154344, ten attempts, every one the same).
+            # sync_mynfs() already carries this syntax -- source cited there:
+            # ParseArguments in
+            # src/add-ons/kernel/file_systems/nfs4/kernel_interface.cpp --
+            # only --sync sys-nfs was missing its branch.
+            #
+            # Two differences from the sync_mynfs form: the path is the real
+            # exported directory (the kernel nfsd exports it in place, it is
+            # not the server's root), and no port= option is needed because
+            # knfsd sits on the standard 2049 that the client defaults to.
+            mount_cmd = 'mount -t nfs4 -p "192.168.122.2:{vhost}" "{vguest}"'
         else:
             # Whether /sbin/mount exists can only be probed inside the
             # guest, so this one check stays in shell.
