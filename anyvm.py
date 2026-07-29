@@ -4338,6 +4338,94 @@ def windows_host_cpu_vendor():
         return "intel"
     return ""
 
+def windows_host_cpu_gen():
+    """(vendor, family, model) for the Windows host, from PROCESSOR_IDENTIFIER.
+
+    'AMD64 Family 26 Model 112 Stepping 0, AuthenticAMD' -> ('amd', 26, 112).
+    Returns ('', 0, 0) when it cannot be parsed.
+    """
+    if platform.system() != "Windows":
+        return ("", 0, 0)
+    ident = os.environ.get("PROCESSOR_IDENTIFIER", "") + " " + platform.processor()
+    vendor = ""
+    if "AuthenticAMD" in ident:
+        vendor = "amd"
+    elif "GenuineIntel" in ident:
+        vendor = "intel"
+    m = re.search(r"Family\s+(\d+)\s+Model\s+(\d+)", ident)
+    if not m:
+        return (vendor, 0, 0)
+    return (vendor, int(m.group(1)), int(m.group(2)))
+
+
+def whpx_named_model_candidates(vendor):
+    """WHPX_*_CPU_MODELS trimmed so nothing NEWER than this host is offered.
+
+    Handing WHPX a CPU model from a LATER generation than the host wedges QEMU
+    before the guest runs a single instruction: the process stays alive with
+    its sockets listening, the serial log stays empty, the monitor answers
+    nothing, and only a restart with another model recovers it. Both GitHub
+    Windows runner fleets do this, measured 2026-07-29 with the host identity
+    now logged (anyvm run 30418497615):
+
+      * AMD64 Family 25 Model 1   given EPYC-Turin-v1     -> wedged
+      * Intel64 Family 6 Model 106 given GraniteRapids-v2 -> wedged
+
+    The reverse direction is fine -- an older model on a newer host is what
+    the lists were validated with, and it costs nothing because under WHPX
+    the guest's CPUID comes from Hyper-V's host-derived values rather than
+    from the model (see WHPX_*_CPU_MODELS).
+
+    So: for a host generation we can actually IDENTIFY, start the list at that
+    generation. For anything we cannot identify, keep the previous behaviour
+    and start at the NEWEST entry (Zen 5 / Xeon 6): an unrecognised host is
+    more likely to be newer than these lists than older, and a wrong guess is
+    no longer expensive -- the dead-VM fast fail in the boot wait catches it
+    in ~2 min instead of the 12.5 min it used to cost. Guessing a mapping for
+    families nobody here has run on would be worse than that.
+    """
+    vendor_models = {"amd": WHPX_AMD_CPU_MODELS,
+                     "intel": WHPX_INTEL_CPU_MODELS}.get(vendor, ())
+    if not vendor_models:
+        return ((), "no vendor match")
+
+    _v, family, model = windows_host_cpu_gen()
+    start = None
+    why = ""
+
+    if vendor == "amd":
+        if family >= 26:
+            # Family 1Ah. Verified directly: this branch was developed on an
+            # "AMD RYZEN AI MAX+ 395" reporting Family 26 Model 112, where
+            # -cpu EPYC-Turin-v1 under WHPX starts and runs normally.
+            start, why = "EPYC-Turin-v1", "family {} (>=26)".format(family)
+        elif family == 25:
+            # Family 19h spans several server generations, and the CI runner
+            # in it (Model 1) wedged on EPYC-Turin-v1. Start at the OLDEST
+            # member of the family so the choice holds for every model in it.
+            start, why = "EPYC-Milan-v3", "family 25 (model {})".format(model)
+        elif family and family <= 23:
+            start, why = "EPYC-Rome-v5", "family {} (<=23)".format(family)
+    elif vendor == "intel":
+        # Intel family 6 covers everything from Core 2 to the newest Xeon, so
+        # the family number alone identifies nothing -- only the model does.
+        # The one model measured here is 106 (the runner that wedged on
+        # GraniteRapids-v2); anything at or below it starts at Icelake-Server.
+        if family == 6 and model and model <= 106:
+            start, why = "Icelake-Server-v7", "family 6 model {} (<=106)".format(model)
+
+    if start is None:
+        # Unidentified host: unchanged behaviour, newest model first.
+        return (vendor_models, "unidentified host (family {} model {}), "
+                               "keeping the newest model".format(family, model))
+
+    try:
+        idx = vendor_models.index(start)
+    except ValueError:
+        return (vendor_models, "{} not in the list, keeping the newest".format(start))
+    return (vendor_models[idx:], why)
+
+
 def whpx_available():
     """True if the Windows Hypervisor Platform can run guests right now.
 
@@ -7975,15 +8063,17 @@ def main():
                         # anyway (see WHPX_*_CPU_MODELS above). Pick the newest
                         # model this QEMU ships; --cpu-type still overrides.
                         vendor = windows_host_cpu_vendor()
-                        named_models = {"amd": WHPX_AMD_CPU_MODELS,
-                                        "intel": WHPX_INTEL_CPU_MODELS}.get(vendor, ())
+                        # ...and never a model NEWER than the host: that is its
+                        # own WHPX wedge (see whpx_named_model_candidates).
+                        named_models, why = whpx_named_model_candidates(vendor)
                         avail = qemu_cpu_models(qemu_bin)
                         for named_model in named_models:
                             if named_model in avail:
                                 cpu_opts = named_model + ",+rdrand,+rdseed"
                                 log("WHPX on {} host: using named CPU model {} "
-                                    "(avoids -cpu host WHPX hang; pass --cpu-type "
-                                    "to override)".format(vendor.upper(), named_model))
+                                    "[{}] (avoids -cpu host WHPX hang; pass "
+                                    "--cpu-type to override)".format(
+                                        vendor.upper(), named_model, why))
                                 break
         else:
             # TCG (pure software emulation): default to -cpu max, which exposes
