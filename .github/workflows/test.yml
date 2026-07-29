@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
@@ -52,6 +52,24 @@ jobs:
           # replaces it and only loads kext bundles).
           - os: nextbsd
             sync: sshfs
+          - os: haiku
+            arch: aarch64
+        include:
+          # haiku is the one guest in these matrices that needs non-default
+          # inputs, so they ride along as matrix data rather than as a
+          # per-caller conditional. Its "/" is a rootfs that holds
+          # directories and symlinks but NOT regular files, so a share under
+          # the default /mnt/host takes every write with B_BAD_VALUE (scp
+          # "dest open ...: Bad message", rsync "mkstemp ... failed: Invalid
+          # Argument (-2147483643)") -- it has to land on the real BFS
+          # volume. And the guest account is `user`; the default root cannot
+          # log in at all, which is what testrun.yml's
+          # `${{ inputs.user }}@localhost` check trips over. Every other os
+          # leaves both unset and testrun.yml falls back to its documented
+          # defaults. Matches what haiku.yml has always passed.
+          - os: haiku
+            user: user
+            vmpath: /boot/home/host
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -60,6 +78,8 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
+      user: ${{ matrix.user }}
+      vmpath: ${{ matrix.vmpath }}
 
 
   # nextbsd is in this job (the bundled user-space nfsd) but deliberately NOT
@@ -72,7 +92,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -95,6 +115,24 @@ jobs:
             arch: aarch64
           - os: hurd
             arch: aarch64
+          - os: haiku
+            arch: aarch64
+        include:
+          # haiku is the one guest in these matrices that needs non-default
+          # inputs, so they ride along as matrix data rather than as a
+          # per-caller conditional. Its "/" is a rootfs that holds
+          # directories and symlinks but NOT regular files, so a share under
+          # the default /mnt/host takes every write with B_BAD_VALUE (scp
+          # "dest open ...: Bad message", rsync "mkstemp ... failed: Invalid
+          # Argument (-2147483643)") -- it has to land on the real BFS
+          # volume. And the guest account is `user`; the default root cannot
+          # log in at all, which is what testrun.yml's
+          # `${{ inputs.user }}@localhost` check trips over. Every other os
+          # leaves both unset and testrun.yml falls back to its documented
+          # defaults. Matches what haiku.yml has always passed.
+          - os: haiku
+            user: user
+            vmpath: /boot/home/host
 
 
     uses: ./.github/workflows/testrun.yml
@@ -104,6 +142,8 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: nfs
+      user: ${{ matrix.user }}
+      vmpath: ${{ matrix.vmpath }}
 
 
   # Kept: the host kernel NFS server path (--sync sys-nfs), which is what
@@ -120,7 +160,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -140,6 +180,24 @@ jobs:
             arch: aarch64
           - os: hurd
             arch: aarch64
+          - os: haiku
+            arch: aarch64
+        include:
+          # haiku is the one guest in these matrices that needs non-default
+          # inputs, so they ride along as matrix data rather than as a
+          # per-caller conditional. Its "/" is a rootfs that holds
+          # directories and symlinks but NOT regular files, so a share under
+          # the default /mnt/host takes every write with B_BAD_VALUE (scp
+          # "dest open ...: Bad message", rsync "mkstemp ... failed: Invalid
+          # Argument (-2147483643)") -- it has to land on the real BFS
+          # volume. And the guest account is `user`; the default root cannot
+          # log in at all, which is what testrun.yml's
+          # `${{ inputs.user }}@localhost` check trips over. Every other os
+          # leaves both unset and testrun.yml falls back to its documented
+          # defaults. Matches what haiku.yml has always passed.
+          - os: haiku
+            user: user
+            vmpath: /boot/home/host
 
 
     uses: ./.github/workflows/testrun.yml
@@ -149,6 +207,8 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: sys-nfs
+      user: ${{ matrix.user }}
+      vmpath: ${{ matrix.vmpath }}
 
 
   # Plan 9 (9front) has no sshd, so it cannot reuse the ssh-based

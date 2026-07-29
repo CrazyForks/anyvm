@@ -54,7 +54,7 @@ jobs:
         release: ["r1beta5"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["rsync", "scp", "nfs", "sys-nfs", "sshfs"]
+        sync: ["rsync", "scp", "nfs", "sshfs"]
 
 
     uses: ./.github/workflows/testrun.yml
