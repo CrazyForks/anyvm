@@ -35,7 +35,14 @@ concurrency:
 # one), so that one combination is excluded.
 jobs:
   test:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=netbsd]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +70,14 @@ jobs:
   # action repos. aarch64 only -- there is no point running the x86_64 guest on
   # an ARM host.
   testarm:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=netbsd]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +98,14 @@ jobs:
   # riscv64 (QEMU virt + u-boot/EDK2) ships only for 11.0 -- the riscv port
   # does not exist on the netbsd-9 / netbsd-10 branches.
   testriscv64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=netbsd]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +133,14 @@ jobs:
   # netbsd-11.0-sparc64.conf sets VM_RSYNC_PKG="". Restore the combination here
   # once native sparc64/11.0 packages exist (see that conf for the trigger).
   testsparc64:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=netbsd]') }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=netbsd]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
     strategy:
       fail-fast: false
       matrix:

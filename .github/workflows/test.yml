@@ -19,10 +19,16 @@ concurrency:
 
 jobs:
   testsync:
+    # Guest filtering ([testos=...]) happens per-leg in testrun.yml -- the
+    # os here is a matrix axis. This gate is the host half only.
+    if: >-
+      ${{ github.event_name != 'push'
+          || !contains(github.event.head_commit.message, '[testhost=')
+          || contains(github.event.head_commit.message, '[testhost=linux') }}
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         sync: ["sshfs", "scp", "rsync"]
@@ -30,8 +36,6 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
-            arch: aarch64
-          - os: haiku
             arch: aarch64
           # hurd-builder ships x86_64 + i386 only (no aarch64 port exists).
           - os: hurd
@@ -61,10 +65,14 @@ jobs:
   # nextbsd is in this job (the bundled user-space nfsd) but deliberately NOT
   # in testsysnfs below: only the user-space path has been verified on it.
   testnfs:
+    if: >-
+      ${{ github.event_name != 'push'
+          || !contains(github.event.head_commit.message, '[testhost=')
+          || contains(github.event.head_commit.message, '[testhost=linux') }}
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -84,8 +92,6 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
-            arch: aarch64
-          - os: haiku
             arch: aarch64
           - os: hurd
             arch: aarch64
@@ -107,10 +113,14 @@ jobs:
   # with no_root_squash for hurd. Remaining unknown exercised by this
   # leg: whether the runner's rpc.mountd still answers MOUNT v1.
   testsysnfs:
+    if: >-
+      ${{ github.event_name != 'push'
+          || !contains(github.event.head_commit.message, '[testhost=')
+          || contains(github.event.head_commit.message, '[testhost=linux') }}
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "midnightbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
         exclude:
@@ -127,8 +137,6 @@ jobs:
           - os: midnightbsd
             arch: aarch64
           - os: ghostbsd
-            arch: aarch64
-          - os: haiku
             arch: aarch64
           - os: hurd
             arch: aarch64
@@ -147,7 +155,14 @@ jobs:
   # testrun.yml. Same standalone telnet-exec + 9P-sync verification as
   # plan9.yml, on the Linux host.
   plan9:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=plan9]') }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=plan9]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
     runs-on: ubuntu-24.04
     name: Test plan9 9p
     env:

@@ -23,7 +23,14 @@ concurrency:
 #   2. 9p sync: a host file placed via `--sync 9p -v` shows up in the guest
 jobs:
   test:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, '[testos=plan9]') }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=plan9]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
     strategy:
       fail-fast: false
       matrix:

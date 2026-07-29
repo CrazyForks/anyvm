@@ -46,8 +46,28 @@ on:
 
 
 jobs:
+  # Commit-message filters (push events only). Both are optional and
+  # orthogonal -- when both appear, a leg must match BOTH to run:
+  #   [testos=<guest>]        e.g. [testos=netbsd]  -- filter by guest OS
+  #   [testhost=win|macos|linux]                    -- filter by HOST runner
+  # The host token is derived from the runner label: *windows* -> win,
+  # *macos* -> mac(os), everything else -> linux. Matching is on the
+  # prefix (no closing bracket) so [testhost=win] and [testhost=windows]
+  # (likewise mac / macos) both work. Repeat a marker to select several,
+  # e.g. "[testos=netbsd][testhost=win][testhost=macos]".
   test:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[testos=') || contains(github.event.head_commit.message, format('[testos={0}]', inputs.os)) }}
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, format('[testos={0}]', inputs.os)) )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message,
+                      format('[testhost={0}',
+                             contains(inputs.runs, 'windows') && 'win'
+                             || contains(inputs.runs, 'macos') && 'mac'
+                             || 'linux')) )
+             ) }}
     runs-on: ${{ inputs.runs }}
     name: Test ${{ inputs.release }} ${{ inputs.arch }} ${{ inputs.sync }}
     env:
