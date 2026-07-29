@@ -5613,9 +5613,19 @@ def tail_serial_log(path, stop_event):
         pass
 
 
-def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_dir, vm_name, proc, cmd_list=None):
+def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_dir, vm_name, proc, cmd_list=None,
+                              skip_monitor=False):
     """Dump diagnostic info on a boot-wait timeout. All output via debuglog so it only
     fires under --debug. Useful for triaging intermittent CI boot failures.
+
+    skip_monitor=True keeps everything that is free -- the launch command line,
+    the host CPU, the process state, the serial tail -- and drops only the
+    sixteen monitor queries plus the screendump. Use it when the caller has
+    ALREADY established that the monitor answers nothing (the dead-VM fast
+    fail): each of those queries then sits out its own timeout, ~34 s spent
+    re-proving a known fact. Dropping the whole snapshot instead was a
+    mistake: the command line is the one thing a launch that never ran can
+    still be compared on, and it costs nothing to print.
     """
     debug = config.get('debug')
     debuglog(debug, "===== boot-debug snapshot [{}] begin =====".format(label))
@@ -5777,7 +5787,11 @@ def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_
         debuglog(debug, "serial.log tail failed: {}".format(e))
 
     # QEMU monitor info commands (VM running? paused? network up? CPU stuck?)
-    if qmon_port:
+    if skip_monitor:
+        debuglog(debug, "monitor queries skipped: the caller already found the "
+                        "monitor unresponsive (each query would wait out its "
+                        "own timeout for a known answer)")
+    elif qmon_port:
         qmon_cmds = (
             'info version',
             'info name',
@@ -5806,7 +5820,9 @@ def _dump_boot_debug_snapshot(config, label, serial_log_file, qmon_port, output_
         debuglog(debug, "qmon not available; skipping monitor commands")
 
     # VNC screendump (PPM) -- visual snapshot of guest console at the moment of timeout
-    if qmon_port and output_dir:
+    if skip_monitor:
+        pass
+    elif qmon_port and output_dir:
         try:
             screenshot_path = os.path.abspath(os.path.join(output_dir, "{}.boot-debug-{}.ppm".format(vm_name, label)))
             resp = _qmon_send(qmon_port, "screendump {}".format(screenshot_path), timeout=5.0)
@@ -8979,10 +8995,18 @@ def main():
             if not success:
                 # First timeout - dump diagnostics, then kill QEMU and retry once
                 if vm_never_started:
-                    # Skip the snapshot: we already know what it would say, and
-                    # every one of its ~15 monitor queries would sit out its
-                    # own timeout against a monitor that answers nothing --
-                    # another ~34 s spent re-proving the same thing.
+                    # Snapshot WITHOUT the monitor queries: those would each sit
+                    # out their own timeout against a monitor already known to
+                    # answer nothing (~34 s to re-prove it), but the launch
+                    # command line and the host identity cost nothing and are
+                    # precisely what a launch that never ran can be compared on
+                    # -- the CPU model turned out NOT to be the discriminator
+                    # (a generation-matched model wedges too, and the newest one
+                    # sometimes boots), so the next question is which other args
+                    # differ, and that needs the cmd_list.
+                    _dump_boot_debug_snapshot(config, "vm-never-started", serial_log_file,
+                                              config.get('qmon'), output_dir, vm_name, proc,
+                                              cmd_list=cmd_list, skip_monitor=True)
                     log("Killing the dead QEMU and retrying with a different CPU model...")
                 elif not whpx_died_early:
                     log("Boot timed out after {} seconds. Killing QEMU and retrying...".format(boot_timeout_seconds))
