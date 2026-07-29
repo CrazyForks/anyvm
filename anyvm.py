@@ -4338,6 +4338,55 @@ def windows_host_cpu_vendor():
         return "intel"
     return ""
 
+# SMBIOS strings that mean "this Windows is itself running in a VM". Matched
+# case-insensitively as substrings against the manufacturer / product / BIOS
+# vendor fields. Bare metal reports its real OEM instead (verified on an ASUS
+# ProArt: SystemManufacturer=ASUS, SystemProductName=ProArt PX13 HN7306EA).
+WINDOWS_VM_SMBIOS_SIGNS = (
+    "virtual machine", "virtualbox", "vmware", "qemu", "kvm", "bochs",
+    "xen", "parallels", "amazon ec2", "google compute engine", "openstack",
+    "innotek", "hyper-v",
+)
+
+
+def windows_host_is_virtual():
+    """(is_vm, evidence) -- is this Windows itself running inside a VM?
+
+    NOT the same question as "is a hypervisor present": with Hyper-V or WSL2
+    enabled, Windows runs in the hypervisor's root partition and reports
+    HypervisorPresent=True on bare metal too (measured on the ASUS laptop
+    above). The SMBIOS identity does distinguish them -- a VM reports its
+    virtual platform there, a physical machine reports its OEM.
+
+    Read from the registry, not WMI: the key is a plain read, while a
+    Get-CimInstance subprocess would cost a second or two on every launch.
+    """
+    if platform.system() != "Windows":
+        return (False, "")
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"HARDWARE\DESCRIPTION\System\BIOS")
+        try:
+            fields = []
+            for value in ("SystemManufacturer", "SystemProductName",
+                          "BIOSVendor", "BaseBoardManufacturer"):
+                try:
+                    fields.append((value, str(winreg.QueryValueEx(key, value)[0]).strip()))
+                except OSError:
+                    pass
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        return (False, "smbios unreadable")
+    for name, val in fields:
+        low = val.lower()
+        for sign in WINDOWS_VM_SMBIOS_SIGNS:
+            if sign in low:
+                return (True, "{}={}".format(name, val))
+    return (False, "; ".join("{}={}".format(n, v) for n, v in fields) or "no smbios fields")
+
+
 def windows_host_cpu_gen():
     """(vendor, family, model) for the Windows host, from PROCESSOR_IDENTIFIER.
 
@@ -8078,19 +8127,64 @@ def main():
                         # matter because the guest CPUID comes from Hyper-V
                         # anyway (see WHPX_*_CPU_MODELS above). Pick the newest
                         # model this QEMU ships; --cpu-type still overrides.
+                        # NESTED WHPX (the Windows host is itself a VM, e.g. a
+                        # GitHub Actions runner on Azure): every feature-rich
+                        # named model wedges QEMU before the guest runs -- the
+                        # process lives, the serial log stays empty, the
+                        # monitor answers nothing, and only a restart with a
+                        # leaner model recovers it. Measured across all 43 jobs
+                        # of anyvm run 30420415750, on three different runner
+                        # hosts:
+                        #
+                        #   EPYC-Milan-v3 / Icelake-Server-v7 /
+                        #   GraniteRapids-v2, -smp 4 ....... 33 of 33 wedged
+                        #   Nehalem, -smp 4 ................  0 of  4 wedged
+                        #   the same rich models at -smp 1 ..  0 of  3 wedged
+                        #
+                        # so it takes BOTH a rich model and more than one vCPU.
+                        # Neither the model generation nor the vCPU count alone
+                        # explains it, and a generation-matched model (Milan on
+                        # a Milan host, Icelake on an Icelake host) wedges just
+                        # the same. Twelve configurations on bare-metal WHPX
+                        # reproduce none of it, so the trigger needs the nested
+                        # setup; without a nested host to bisect on, take the
+                        # arrangement the data says works.
+                        #
+                        # Nehalem is also strictly better than what these
+                        # guests get today: the rich model wedges, the retry
+                        # falls back to qemu64 (x86-64-v1), so every guest ends
+                        # up on v1 anyway -- via a dead first launch. Nehalem
+                        # is the smallest named model with the v2 tick, first
+                        # try. --cpu-type still overrides.
+                        #
+                        # On BARE METAL the rich models are fine (verified on
+                        # an ASUS ProArt: EPYC-Turin-v1 under WHPX starts and
+                        # runs), so that path keeps the generation-aware pick.
                         vendor = windows_host_cpu_vendor()
-                        # ...and never a model NEWER than the host: that is its
-                        # own WHPX wedge (see whpx_named_model_candidates).
-                        named_models, why = whpx_named_model_candidates(vendor)
-                        avail = qemu_cpu_models(qemu_bin)
-                        for named_model in named_models:
-                            if named_model in avail:
-                                cpu_opts = named_model + ",+rdrand,+rdseed"
-                                log("WHPX on {} host: using named CPU model {} "
-                                    "[{}] (avoids -cpu host WHPX hang; pass "
-                                    "--cpu-type to override)".format(
-                                        vendor.upper(), named_model, why))
-                                break
+                        nested, evidence = windows_host_is_virtual()
+                        debuglog(config['debug'],
+                                 "WHPX host is {}: {}".format(
+                                     "VIRTUAL (nested)" if nested else "bare metal",
+                                     evidence))
+                        if nested:
+                            cpu_opts = "Nehalem,+rdrand,+rdseed"
+                            log("WHPX on a nested host ({}): using Nehalem "
+                                "(richer named models wedge QEMU before the "
+                                "guest starts here; pass --cpu-type to "
+                                "override)".format(evidence))
+                        else:
+                            # ...and never a model NEWER than the host: that is
+                            # its own WHPX wedge (whpx_named_model_candidates).
+                            named_models, why = whpx_named_model_candidates(vendor)
+                            avail = qemu_cpu_models(qemu_bin)
+                            for named_model in named_models:
+                                if named_model in avail:
+                                    cpu_opts = named_model + ",+rdrand,+rdseed"
+                                    log("WHPX on bare-metal {} host: using named "
+                                        "CPU model {} [{}] (avoids -cpu host WHPX "
+                                        "hang; pass --cpu-type to override)".format(
+                                            vendor.upper(), named_model, why))
+                                    break
         else:
             # TCG (pure software emulation): default to -cpu max, which exposes
             # every feature QEMU can emulate. The previous minimal qemu64 model
