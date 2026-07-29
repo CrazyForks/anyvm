@@ -7364,6 +7364,56 @@ def main():
             # VM_NIC=virtio); the BlissOS kernel drives it as eth0. Match it.
             net_card = "virtio-net-pci"
 
+    # NetBSD + virtio-net: withdraw the control virtqueue.
+    #
+    # NetBSD's vioif(4) wedges FOREVER on a control-queue command that never
+    # completes. if_vioif.c does:
+    #
+    #     mutex_enter(&ctrlq->ctrlq_wait_lock);
+    #     while (ctrlq->ctrlq_inuse != DONE)
+    #             cv_wait(&ctrlq->ctrlq_wait, &ctrlq->ctrlq_wait_lock);
+    #
+    # -- a cv_wait with NO timeout and no retry, woken only by the vq
+    # interrupt. Miss that wakeup once and the interface is dead for the life
+    # of the boot, with the interface lock held: dhcpcd (promisc for BPF ->
+    # VIRTIO_NET_CTRL_RX_PROMISC) and mdnsd (multicast -> CTRL_MAC_TABLE_SET)
+    # sleep in state D on wchan "ctrl_vq", every later network consumer piles
+    # up behind them on "tstile", and even `ifconfig vioif0` never returns.
+    # The guest still boots and reaches rc, so it looks like a hung kernel:
+    # no DHCP lease, no address for slirp's hostfwd to reach, zero
+    # guest-originated packets, and rc stops dead at whichever service touches
+    # the network first (Starting ntpd. / sshd. / postfix.).
+    #
+    # Measured on netbsd 10.0-aarch64 v2.1.7, QEMU 8.2.2 TCG: 14 hangs in 34
+    # boots (41%). anyvm CI run 30353533772 lost 3 of its 10 10.0-aarch64 jobs
+    # to it in one go.
+    #
+    # vioif only builds that code path when BOTH CTRL_VQ and CTRL_RX are
+    # negotiated:
+    #
+    #     if ((features & VIRTIO_NET_F_CTRL_VQ) &&
+    #         (features & VIRTIO_NET_F_CTRL_RX)) { sc->sc_has_ctrl = true; ...
+    #
+    # so withholding CTRL_VQ makes the wedge structurally unreachable rather
+    # than merely rarer. Verified: 10/10 clean boots with the knob vs 3/10
+    # hangs without it in the same interleaved run, and a booted guest is
+    # fully functional -- DHCP lease, default route, DNS, scp both ways, and
+    # dhcpcd/mdnsd/ntpd all in normal sleep states instead of D/ctrl_vq.
+    #
+    # Cost: the guest can no longer program the RX filters, so the NIC runs
+    # PROMISC,ALLMULTI and receives everything. On a private slirp segment
+    # that changes nothing that matters.
+    #
+    # Two knobs that do NOT fix it, both measured, so do not "simplify" this
+    # into one of them: event_idx=off (7 green/5 hang, same as baseline) and
+    # -cpu cortex-a72 vs max (7/5 vs 6/6). -smp 1 makes it WORSE (7/10 hang).
+    if (config['os'] == "netbsd"
+            and net_card.startswith("virtio-net")
+            and "ctrl_vq" not in net_card):
+        net_card = net_card + ",ctrl_vq=off"
+        debuglog(config['debug'],
+                 "NetBSD vioif: withdrawing CTRL_VQ -> {}".format(net_card))
+
     # Platform specific args
     if config['arch'] == "aarch64":
         efi_path = os.path.join(output_dir, vm_name + "-QEMU_EFI.fd")
