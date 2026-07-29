@@ -62,15 +62,6 @@ solaris * test.yml
 # in testnfs/testsysnfs; only testsync is affected.
 tribblix * test.yml
 
-# haiku on non-Linux hosts: commit ad3ba42 ("unstable") removed
-# windows-latest/macos-latest from haiku.yml's own runs matrix (it once
-# tested there per the surviving comment/dead sleep-conditional, but was
-# pulled back to ubuntu-24.04 only for CI instability). No macOS/Windows
-# haiku coverage exists anywhere right now, so the shared cross-host jobs
-# can't cover it either.
-haiku * testmacos.yml
-haiku * testwindows.yml
-
 # The -build variants (base OS plus a preinstalled build-essential
 # toolchain) are deliberately untested -- maintainer decision 2026-07-26:
 # the base release of each already exercises the same boot/sync paths.

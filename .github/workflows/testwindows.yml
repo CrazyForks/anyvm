@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["freebsd", "ghostbsd", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: [""]
         runs: ["windows-latest"]
         sync: ["scp", "rsync", "nfs"]
@@ -43,6 +43,18 @@ jobs:
             arch: aarch64
           - os: tribblix
             arch: aarch64
+        include:
+          # haiku needs non-default inputs, carried as matrix data the same
+          # way test.yml does it: its "/" holds directories and symlinks but
+          # NOT regular files, so the share has to land on the real BFS
+          # volume, and the guest account is "user" (root cannot log in).
+          # The guest runs under TCG here and boots slowly, so it also gets
+          # the pause between ssh probes that haiku.yml used when it still
+          # ran this host itself (commit 54949d5).
+          - os: haiku
+            user: user
+            vmpath: /boot/home/host
+            sleep: "sleep 10;"
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -51,6 +63,9 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       sync: ${{ matrix.sync }}
+      user: ${{ matrix.user }}
+      vmpath: ${{ matrix.vmpath }}
+      sleep: ${{ matrix.sleep }}
 
 
   # Plan 9 (9front) has no sshd, so it cannot reuse the ssh-based

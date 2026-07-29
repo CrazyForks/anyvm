@@ -35,9 +35,15 @@ concurrency:
 # locally 2026-07-23: read + write-back, 4MB sha256 both directions.
 # The guest user is "user" and the share lands under /boot/home.
 #
-# Both backends run on the Linux runner plus the macOS / Windows runners as a
-# host-portability check. Those guests run under TCG and boot slowly, so a
-# pause is inserted between the ssh probes.
+# This workflow is the Linux-host matrix (all four sync backends). The
+# macOS / Windows host-portability legs live in testmacos.yml and
+# testwindows.yml instead. History: 54949d5 put windows-latest +
+# macos-latest into the runs axis here, and ad3ba42 ("unstable") pulled
+# them back out nine days later -- the completed legs all passed (3-5 min
+# on Windows, ~5 min on macOS) but some hung for hours before the run was
+# cancelled, once for the full 6h job limit, always on macOS. Those guests
+# run under TCG and boot slowly, so a pause is inserted between the ssh
+# probes there.
 jobs:
   test:
     if: >-
