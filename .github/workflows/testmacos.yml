@@ -3,8 +3,6 @@ name: MacOS
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
   push:
     branches:
       - '*'

@@ -3,8 +3,6 @@ name: BlissOS
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
   push:
     branches:
       - '*'

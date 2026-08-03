@@ -3,8 +3,6 @@ name: Windows
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
   push:
     branches:
       - '*'
