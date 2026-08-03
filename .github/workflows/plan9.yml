@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        release: ["11554"]
+        release: ["11554", "11952"]
         runs: ["ubuntu-24.04"]
     runs-on: ${{ matrix.runs }}
     name: Test ${{ matrix.release }}

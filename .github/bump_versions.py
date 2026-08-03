@@ -153,9 +153,12 @@ def _base_of(release, bases):
 def extend_matrices(osname, index):
     """Append new releases to `<os>.yml` matrix release lists.
 
-    A job's matrix is recognized when a `release: [...]` line is followed
-    (within the same matrix block) by an `arch: [...]` line at the same
-    indent. Three refusals keep hand-curated jobs safe:
+    A job's matrix is recognized by its `release: [...]` line. An
+    `arch: [...]` line at the same indent, within the same matrix block,
+    names the arches the release must ship for; a job that has none
+    (plan9.yml lists release + runs and carries its own steps instead of
+    calling testrun.yml) is single-arch by construction and is read as
+    x86_64, with a note. Three refusals keep hand-curated jobs safe:
 
     - a list that is empty or contains "" is a SENTINEL (freebsd's
       cross-host powerpc64 job uses release: [""] to mean "the default
@@ -177,9 +180,15 @@ def extend_matrices(osname, index):
     byte of the file survives. Returns (changed, notes).
     """
     path = os.path.join(WF_DIR, "%s.yml" % osname)
+    notes = []
     if not os.path.exists(path):
-        warn("no %s, skipping matrices" % path)
-        return (False, [])
+        # Not a warning to swallow: it means NO matrix tracks this OS at
+        # all, so its new releases are untested until someone writes the
+        # workflow. It travels in notes so the notification issue says so.
+        notes.append("no %s -- this OS has no per-OS workflow, so nothing "
+                     "tracks its releases" % path)
+        warn(notes[-1])
+        return (False, notes)
     bases = _bases_of(index)
     shipped = {}
     for e in index:
@@ -202,9 +211,17 @@ def extend_matrices(osname, index):
                           for a in _parse_list(am.group(2))]
                 break
         if arches is None:
-            warn("%s:%d: release list without an arch list, skipping"
-                 % (path, i + 1))
-            continue
+            # No arch axis: a bespoke job (plan9.yml -- release + runs,
+            # own steps rather than testrun.yml) that is single-arch by
+            # construction, so read it as the x86_64 the index spells
+            # out. Skipping it -- the behaviour until 2026-08-03 -- left
+            # plan9 tracking 11554 while its builder had moved to 11952:
+            # the warning went to stderr, the job stayed green, and a
+            # re-run never revisits it because extend_matrices() only
+            # runs on the pass that moves the pin. Noted, not silent.
+            arches = ["x86_64"]
+            notes.append("%s:%d: job has no arch axis; assumed x86_64"
+                         % (path, i + 1))
         current = _parse_list(raw)
         if not current or "" in current:
             # sentinel list (default-release-only job); never touched
@@ -214,9 +231,8 @@ def extend_matrices(osname, index):
                      "maxbase": max((_base_of(r, bases) for r in current),
                                     key=natural_key)})
     if not jobs:
-        return (False, [])
+        return (False, notes)
     filemax = max((j["maxbase"] for j in jobs), key=natural_key)
-    notes = []
     changed = False
     for job in jobs:
         if job["maxbase"] != filemax:
@@ -319,6 +335,11 @@ def main(argv=None, fetch=_fetch):
                     help="write a summary line per bumped OS here, so the "
                          "workflow can open the notification issue (never "
                          "written on --check or a no-op run)")
+    ap.add_argument("--notes-out",
+                    help="write the matrix notes here -- assumptions the "
+                         "bot made and releases it would not add on its "
+                         "own -- so the notification issue carries them "
+                         "instead of leaving them in the run log")
     args = ap.parse_args(argv)
     if not os.path.exists(ANYVM_PY):
         sys.stderr.write("bump: no anyvm.py here; run from the repo root\n")
@@ -376,10 +397,15 @@ def main(argv=None, fetch=_fetch):
         for line in added:
             log("coverage.allow += %s" % line)
     if all_notes:
-        # surfaced for the commit message: these need a human exclude
-        log("NOT auto-added (needs a hand-written exclude):")
+        # Assumptions the bot made and releases it refused to add. Both
+        # need a human eye, and both used to live only in the run log.
+        log("Matrix notes (confirm these by hand):")
         for n in all_notes:
             log("  " + n)
+        if args.notes_out and not args.check:
+            with open(args.notes_out, "w", encoding="utf-8",
+                      newline=chr(10)) as f:
+                f.write(chr(10).join(all_notes) + chr(10))
     if landed and args.landed_out and not args.check:
         # A silent success is a miss: the maintainer should hear which
         # defaults moved (and cut an anyvm release when convenient so CLI

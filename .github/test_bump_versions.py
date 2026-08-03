@@ -202,6 +202,39 @@ class TestMatrixEdit(Case):
                       '"27.0", "27.0-xfce", "27.0-gershwin"]',
                       open(".github/workflows/demo.yml").read())
 
+    def test_job_without_arch_axis_is_read_as_x86_64(self):
+        # plan9.yml's shape: its own steps instead of testrun.yml, so the
+        # matrix carries release + runs and no arch axis at all. Skipping
+        # it left plan9 pinned to 11554 while the builder shipped 11952.
+        wf = ("jobs:\n  t:\n    strategy:\n      matrix:\n"
+              '        release: ["11554"]\n'
+              '        runs: ["ubuntu-24.04"]\n')
+        write(".github/workflows/demo.yml", wf)
+        index = [rel("11554", build=False), rel("11952")]
+        changed, notes = bv.extend_matrices("demo", index)
+        self.assertTrue(changed)
+        self.assertIn('release: ["11554", "11952"]',
+                      open(".github/workflows/demo.yml").read())
+        self.assertTrue(any("no arch axis" in n for n in notes))
+
+    def test_job_without_arch_axis_still_respects_the_index(self):
+        # the assumption is x86_64, not "add it regardless": a release
+        # published only for another arch stays out
+        wf = ("jobs:\n  t:\n    strategy:\n      matrix:\n"
+              '        release: ["11554"]\n'
+              '        runs: ["ubuntu-24.04"]\n')
+        write(".github/workflows/demo.yml", wf)
+        index = [rel("11554"), rel("11952", arch="aarch64")]
+        changed, notes = bv.extend_matrices("demo", index)
+        self.assertFalse(changed)
+        self.assertIn('release: ["11554"]\n',
+                      open(".github/workflows/demo.yml").read())
+
+    def test_missing_workflow_is_reported_not_swallowed(self):
+        changed, notes = bv.extend_matrices("nosuchos", [rel("1.0")])
+        self.assertFalse(changed)
+        self.assertTrue(any("no per-OS workflow" in n for n in notes))
+
     def test_unsorted_current_list_still_tracks(self):
         wf = ("jobs:\n  t:\n    strategy:\n      matrix:\n"
               '        release: ["26.1", "26.1-xfce"]\n'
@@ -312,6 +345,33 @@ class TestMain(Case):
         self.assertEqual(bv.main(["--check", "--landed-out",
                                   "landed.txt"], fetch=fetch2), 0)
         self.assertFalse(os.path.exists("landed.txt"))
+
+    def test_notes_out_written_on_bump(self):
+        write("anyvm.py", 'DEFAULT_BUILDER_VERSIONS = {\n'
+              '    "demo": "2.0.0",\n}\n')
+        # 15.2 ships x86_64 + aarch64 but not riscv64, so the riscv64 job
+        # refuses it and says why -- exactly what belongs in the issue.
+        index = [rel("15.1"), rel("15.1", arch="aarch64"),
+                 rel("15.1", arch="riscv64"),
+                 rel("15.2"), rel("15.2", arch="aarch64")]
+        fetch = Fetch({
+            "demo-builder/releases/latest": self._latest("v2.0.1"),
+            "v2.0.1/releases.json": self._index(index),
+        })
+        rc = bv.main(["--notes-out", "notes.txt"], fetch=fetch)
+        self.assertEqual(rc, 0)
+        self.assertIn("riscv64", open("notes.txt", encoding="utf-8").read())
+
+    def test_notes_out_absent_on_check(self):
+        write("anyvm.py", 'DEFAULT_BUILDER_VERSIONS = {\n'
+              '    "demo": "2.0.0",\n}\n')
+        fetch = Fetch({
+            "demo-builder/releases/latest": self._latest("v2.0.1"),
+            "v2.0.1/releases.json": self._index([rel("15.2")]),
+        })
+        self.assertEqual(bv.main(["--check", "--notes-out", "notes.txt"],
+                                 fetch=fetch), 0)
+        self.assertFalse(os.path.exists("notes.txt"))
 
     def test_check_writes_nothing(self):
         write("anyvm.py", 'DEFAULT_BUILDER_VERSIONS = {\n'

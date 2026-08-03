@@ -34,7 +34,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           git switch main || (git fetch --all && git checkout -b main origin/main)
-          python3 .github/bump_versions.py --landed-out "${RUNNER_TEMP}/landed.txt"
+          python3 .github/bump_versions.py \
+            --landed-out "${RUNNER_TEMP}/landed.txt" \
+            --notes-out "${RUNNER_TEMP}/notes.txt"
 
       # Runs even when the bump step failed: bump_versions.py works
       # per-OS, so one builder with a missing releases.json (rc=1, that
@@ -116,6 +118,15 @@ jobs:
             echo "The per-OS test matrices and coverage.allow were updated"
             echo "where applicable (see the commit). Cut an anyvm release"
             echo "when convenient so CLI users get the new default pins."
+            # Matrix notes: what the bot assumed, and what it would not
+            # add on its own. These used to stay in the run log, which is
+            # how plan9 11952 sat unnoticed until coverage.yml caught it.
+            if [ -s "${RUNNER_TEMP}/notes.txt" ]; then
+              echo
+              echo "Matrix notes -- confirm these by hand:"
+              echo
+              sed 's/^/- /' "${RUNNER_TEMP}/notes.txt"
+            fi
             echo
             echo "Close this issue once reviewed."
           } > "${RUNNER_TEMP}/landed-issue.txt"
