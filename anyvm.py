@@ -12,6 +12,7 @@ import json
 import getpass
 import shutil
 import shlex
+import tarfile
 import tempfile
 import re
 import threading
@@ -2681,7 +2682,7 @@ Options:
                          Format: /host/path:/guest/path
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
-                         Supported: rsync (default), sshfs, nfs, sys-nfs, scp, no/off (disable sync).
+                         Supported: rsync (default), sshfs, nfs, sys-nfs, scp, tar, no/off (disable sync).
                          nfs runs the bundled user-space NFS server
                          (anyvm-org/nfsd, v3/v4 + portmapper) on the host:
                          no kernel nfsd, no root needed, works on
@@ -2693,6 +2694,13 @@ Options:
                          Linux hosts: use sys-nfs for them there. sys-nfs
                          uses the host kernel NFS server (needs root/sudo;
                          not available on macOS/Windows hosts).
+                         tar streams the folder as a ustar archive over the
+                         guest's remote-exec channel (ssh; telnet or a raw
+                         TCP shell for guests without an sshd) and unpacks
+                         it on the other side: a one-shot push at boot plus
+                         a pull back after the `-- cmd` finishes. Needs no
+                         package in the guest beyond the base-system tar
+                         and no tar on the host at all.
                          Note: sshfs not supported on Windows hosts; rsync
                          requires rsync.exe.
   --data-dir <dir>       Directory to store images and metadata (Default: ./output).
@@ -5282,9 +5290,16 @@ def sync_rsync(ssh_cmd, vhost, vguest, os_name, output_dir, vm_name, excludes=No
 # and mounts the guest's exportfs 9P share (Linux kernel v9fs) for -v folders.
 # ---------------------------------------------------------------------------
 
-def _telnet_eat_iac(sock, data, out):
+def _telnet_eat_iac(sock, data, out, binary=None):
     """Refuse all telnet IAC option negotiation in `data`; append plain bytes
-    to `out`."""
+    to `out`.
+
+    When `binary` is a dict, option 0 (TRANSMIT-BINARY, RFC 856) is treated
+    as already REQUESTED by us in both directions (the tar-sync stream path
+    sends IAC WILL 0 + IAC DO 0 right after connect): an incoming DO/WILL 0
+    is the peer's acceptance and only flips binary['out']/binary['in'] --
+    answering it again would start a negotiation loop -- and DONT/WONT 0
+    flips the flag back off. Every other option is refused as before."""
     IAC, SE, SB = 255, 240, 250
     WILL, WONT, DO, DONT = 251, 252, 253, 254
     i, n = 0, len(data)
@@ -5300,7 +5315,16 @@ def _telnet_eat_iac(sock, data, out):
         if cmd in (DO, DONT, WILL, WONT) and i + 2 < n:
             opt = data[i + 2]
             try:
-                if cmd == DO:
+                if binary is not None and opt == 0:
+                    if cmd == DO:
+                        binary['out'] = True
+                    elif cmd == DONT:
+                        binary['out'] = False
+                    elif cmd == WILL:
+                        binary['in'] = True
+                    elif cmd == WONT:
+                        binary['in'] = False
+                elif cmd == DO:
                     sock.sendall(bytes([IAC, WONT, opt]))
                 elif cmd == WILL:
                     sock.sendall(bytes([IAC, DONT, opt]))
@@ -5363,9 +5387,17 @@ def telnet_exec(host_port, cmds, settle=2.0, connect_timeout=10):
 
 def telnet_ready(host_port):
     """One telnet marker probe: connect, echo a split marker (so the guest's
-    own echo of the command can't match), look for the reassembled marker."""
-    ok, text = telnet_exec(host_port, ["echo anyvm''-ready"], settle=2.0,
-                           connect_timeout=5)
+    own echo of the command can't match), look for the reassembled marker.
+
+    The shell on the far side is not universal. plan9/9front answers with rc,
+    where '' splits the word; ReactOS answers with cmd.exe, where '' is not a
+    quote at all and the caret is the escape character instead. Both forms go
+    out in one session and either marker counts -- the wrong form for a given
+    shell just prints itself and fails to match, which is harmless."""
+    ok, text = telnet_exec(host_port,
+                           ["echo anyvm''-ready",     # rc (plan9/9front)
+                            "echo anyvm^-ready"],     # cmd.exe (reactos)
+                           settle=2.0, connect_timeout=5)
     return ok and ("anyvm-ready" in text)
 
 
@@ -5632,6 +5664,690 @@ def sync_scp(ssh_cmd, vhost, vguest, sshport, hostid_file, ssh_user, excludes=No
         
     if not synced:
         log("Warning: SCP sync failed.")
+
+
+# ---------------------------------------------------------------------------
+# tar sync: stream a directory as a ustar archive and unpack it on the other
+# side. push = host -> guest at boot; pull = guest -> host after the
+# passthrough command finishes (a one-shot copy, not a live mount -- the
+# same semantics the vmactions copyback uses). The archive rides the guest's
+# remote-exec channel: ssh when the guest has an sshd, else its telnetd
+# (plan9/9front), else a raw TCP shell. Everything moves in ustar format:
+# the GUEST only needs a tar that can read/write ustar on stdin/stdout
+# (base-system tar everywhere we ship, including toybox tar on BlissOS and
+# Sun tar on Solaris -- ustar is the dialect they all agree on, the same
+# reason the vmactions copyback pipes `cpio -o -H ustar`).
+#
+# The HOST side prefers the system tar binary when one is on PATH (GNU tar
+# on Linux, bsdtar on macOS and Windows 10+ -- both accept --format=ustar
+# and -C): it is much faster than pure-Python archiving. Python's tarfile
+# module is the fallback, so the sync still works on a tar-less host.
+# ---------------------------------------------------------------------------
+
+_host_tar_cache = [False]  # False = not probed yet; then a path or None
+
+
+def find_host_tar():
+    """Absolute path of the host tar binary, or None. Cached."""
+    if _host_tar_cache[0] is False:
+        _host_tar_cache[0] = shutil.which("tar")
+    return _host_tar_cache[0]
+
+
+def _tar_create_cmd(tar, vhost, excludes=None):
+    """argv for the host tar that streams vhost as a ustar archive to
+    stdout. `excludes` are /-separated paths relative to vhost."""
+    if os.path.isdir(vhost):
+        base, item = vhost, "."
+    else:
+        base, item = (os.path.dirname(vhost) or "."), os.path.basename(vhost)
+    cmd = [tar, "-cf", "-", "--format=ustar"]
+    for rel in (excludes or []):
+        rel = rel.replace(os.sep, '/').strip('/')
+        if not rel:
+            continue
+        # Entries are named "./<rel>/..." (the -C base + "." form). GNU tar
+        # and bsdtar anchor/expand exclusion patterns differently; the pair
+        # covers the directory itself and its contents on both.
+        cmd.extend(["--exclude", "./" + rel, "--exclude", "./" + rel + "/*"])
+    cmd.extend(["-C", base, item])
+    return cmd
+
+
+def _write_archive_to(writer, vhost, excludes=None):
+    """Stream vhost as a ustar archive into writer.write(). Uses the host
+    tar when available, Python tarfile otherwise. Returns True on success.
+    Transport errors raised by writer.write() propagate to the caller."""
+    tar = find_host_tar()
+    if tar:
+        try:
+            p = subprocess.Popen(_tar_create_cmd(tar, vhost, excludes),
+                                 stdout=subprocess.PIPE)
+        except OSError as exc:
+            log("Warning: could not run the host tar ({}); falling back to "
+                "the built-in archiver.".format(exc))
+            p = None
+        if p is not None:
+            while True:
+                chunk = p.stdout.read(65536)
+                if not chunk:
+                    break
+                writer.write(chunk)
+            p.stdout.close()
+            if p.wait() != 0:
+                log("Warning: the host tar exited non-zero while creating "
+                    "the archive.")
+                return False
+            return True
+    tf = tarfile.open(fileobj=writer, mode='w|', format=tarfile.USTAR_FORMAT)
+    _tar_write_dir(tf, vhost, excludes)
+    tf.close()
+    return True
+
+
+def _host_tar_extract_pump(tar, reader, dest):
+    """Feed bytes from reader.read() into a host `tar -xf - -C dest` child.
+
+    The pump tracks the archive structure itself and stops at the
+    end-of-archive marker (two consecutive all-zero 512-byte blocks): GNU
+    tar reading a pipe blocks until it fills a whole 10240-byte record, so
+    an archive whose producer pads less (busybox tar) would otherwise leave
+    tar -- and this pump -- waiting on bytes that never come. Closing tar's
+    stdin at the marker resolves that: tar sees EOF on a complete archive
+    and exits 0. Anything the remote shell prints after the marker (prompt
+    bytes, padding) is deliberately not fed to tar. True on tar rc 0."""
+    try:
+        p = subprocess.Popen([tar, "-xf", "-", "-C", dest],
+                             stdin=subprocess.PIPE)
+    except OSError as exc:
+        log("Warning: could not run the host tar for extraction: {}".format(exc))
+        return False
+    # Belt and braces: if tar exits early (bad archive), stop the reader
+    # from waiting out its quiet timeout on a stream nobody consumes.
+    if hasattr(reader, 'stop_check'):
+        reader.stop_check = lambda: p.poll() is not None
+    pend = bytearray()
+    zeros = 0
+    eoa = False
+    zero_block = b"\x00" * 512
+    try:
+        while not eoa:
+            chunk = reader.read(65536)
+            if not chunk:
+                break
+            p.stdin.write(chunk)
+            pend.extend(chunk)
+            while len(pend) >= 512:
+                if bytes(pend[:512]) == zero_block:
+                    zeros += 1
+                    if zeros >= 2:
+                        eoa = True
+                        break
+                else:
+                    zeros = 0
+                del pend[:512]
+    except OSError:
+        # tar finished the archive and exited; the broken pipe is the
+        # expected end signal, and the rc below is the real verdict.
+        pass
+    try:
+        p.stdin.close()
+    except OSError:
+        pass
+    return p.wait() == 0
+
+
+def _extract_from_reader(reader, dest):
+    """Extract a tar stream arriving via reader.read() into dest, with the
+    host tar when available and tarfile otherwise."""
+    tar = find_host_tar()
+    if tar:
+        return _host_tar_extract_pump(tar, reader, dest)
+    return _tar_extract_stream(reader, dest)
+
+
+def _tar_write_dir(tf, vhost, excludes=None):
+    """Add vhost's contents to the open TarFile `tf`, arcnames relative to
+    vhost (or the basename when vhost is a single file). `excludes` are
+    /-separated paths relative to vhost; a match skips that entry and
+    everything below it. Entries ustar cannot represent (paths over 255
+    bytes, files over 8GB) are warned about and skipped instead of aborting
+    the whole stream."""
+    ex = set()
+    for e in (excludes or []):
+        ex.add(e.replace(os.sep, '/').strip('/'))
+
+    def add_one(path, arcname):
+        try:
+            tf.add(path, arcname=arcname, recursive=False)
+            return True
+        except (ValueError, OSError) as exc:
+            log("Warning: tar sync skipping {}: {}".format(path, exc))
+            return False
+
+    def walk(dirpath, rel):
+        try:
+            entries = sorted(os.listdir(dirpath))
+        except OSError as exc:
+            log("Warning: tar sync cannot read {}: {}".format(dirpath, exc))
+            return
+        for entry in entries:
+            childrel = entry if not rel else rel + '/' + entry
+            if childrel in ex:
+                continue
+            child = os.path.join(dirpath, entry)
+            if os.path.isdir(child) and not os.path.islink(child):
+                if add_one(child, childrel):
+                    walk(child, childrel)
+            else:
+                add_one(child, childrel)
+
+    if os.path.isdir(vhost):
+        walk(vhost, "")
+    else:
+        add_one(vhost, os.path.basename(vhost))
+
+
+def _tar_extract_stream(fileobj, dest):
+    """Extract a tar stream from `fileobj` into dest. Returns True when the
+    archive's end-of-record marker was reached cleanly."""
+    try:
+        tf = tarfile.open(fileobj=fileobj, mode='r|*')
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        log("Warning: tar sync could not read the archive stream: {}".format(exc))
+        return False
+    try:
+        try:
+            tf.extractall(dest, filter='tar')
+        except TypeError:
+            # tarfile before the extraction-filter backports (3.8.17,
+            # 3.9.17, 3.10.12, 3.11.4) has no filter= parameter.
+            tf.extractall(dest)
+        tf.close()
+        return True
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        log("Warning: tar sync extraction failed: {}".format(exc))
+        return False
+
+
+# Guests whose default /usr/bin/tar is Sun tar (illumos/Solaris): function
+# letters are documented WITHOUT a leading dash there ("tar xf -", illumos
+# man tar(1)), and the dashless form is also accepted by GNU tar, so it is
+# the safe spelling for these OSes whichever tar ends up first in PATH.
+# Everything else gets the dashed form -- toybox tar (BlissOS) accepts ONLY
+# that one, and GNU/bsdtar/NetBSD pax-tar all take it too.
+SUN_TAR_OSES = ("solaris", "omnios", "openindiana", "tribblix")
+
+
+def _guest_tar_spelling(os_name, extract):
+    if os_name in SUN_TAR_OSES:
+        return "tar xf -" if extract else "tar cf - ."
+    return "tar -xf -" if extract else "tar -cf - ."
+
+
+def _tar_push_ssh(ssh_cmd, vhost, vguest, excludes=None, os_name=None):
+    """Host tar stream -> `ssh guest 'tar -xf -'`. With a host tar on PATH
+    the two processes are piped directly (no Python in the data path)."""
+    remote = "mkdir -p '{0}' && cd '{0}' && {1}".format(
+        vguest, _guest_tar_spelling(os_name, extract=True))
+    tar = find_host_tar()
+    if tar:
+        try:
+            p_tar = subprocess.Popen(_tar_create_cmd(tar, vhost, excludes),
+                                     stdout=subprocess.PIPE)
+            p_ssh = subprocess.Popen(ssh_cmd + [remote], stdin=p_tar.stdout)
+        except OSError as exc:
+            log("Warning: could not start the tar push pipeline: {}".format(exc))
+            return False
+        # Drop our handle so the host tar gets EPIPE if ssh dies early.
+        p_tar.stdout.close()
+        rc_ssh = p_ssh.wait()
+        rc_tar = p_tar.wait()
+        return rc_ssh == 0 and rc_tar == 0
+    try:
+        p = subprocess.Popen(ssh_cmd + [remote], stdin=subprocess.PIPE)
+    except OSError as exc:
+        log("Warning: could not start ssh for the tar push: {}".format(exc))
+        return False
+    ok = True
+    try:
+        tf = tarfile.open(fileobj=p.stdin, mode='w|',
+                          format=tarfile.USTAR_FORMAT)
+        _tar_write_dir(tf, vhost, excludes)
+        tf.close()
+    except (OSError, tarfile.TarError) as exc:
+        # A guest-side failure surfaces here as a broken pipe.
+        log("Warning: tar push stream failed: {}".format(exc))
+        ok = False
+    try:
+        p.stdin.close()
+    except OSError:
+        pass
+    return p.wait() == 0 and ok
+
+
+def _tar_pull_ssh(ssh_cmd, vhost, vguest, os_name=None):
+    """`ssh guest 'tar -cf - .'` -> extract on the host. With a host tar on
+    PATH the two processes are piped directly."""
+    remote = "cd '{0}' && {1}".format(
+        vguest, _guest_tar_spelling(os_name, extract=False))
+    tar = find_host_tar()
+    if tar:
+        try:
+            p_ssh = subprocess.Popen(ssh_cmd + [remote],
+                                     stdout=subprocess.PIPE)
+            p_tar = subprocess.Popen([tar, "-xf", "-", "-C", vhost],
+                                     stdin=p_ssh.stdout)
+        except OSError as exc:
+            log("Warning: could not start the tar pull pipeline: {}".format(exc))
+            return False
+        p_ssh.stdout.close()
+        rc_tar = p_tar.wait()
+        rc_ssh = p_ssh.wait()
+        if rc_ssh != 0 and rc_tar == 0:
+            log("Warning: guest-side tar/ssh exited with rc={} during the "
+                "pull.".format(rc_ssh))
+        return rc_tar == 0
+    try:
+        p = subprocess.Popen(ssh_cmd + [remote], stdout=subprocess.PIPE)
+    except OSError as exc:
+        log("Warning: could not start ssh for the tar pull: {}".format(exc))
+        return False
+    ok = _tar_extract_stream(p.stdout, vhost)
+    try:
+        p.stdout.close()
+    except OSError:
+        pass
+    rc = p.wait()
+    if rc != 0 and ok:
+        # The end-of-archive marker already proved the stream was complete;
+        # a non-zero guest tar rc past that point is advisory (e.g. an
+        # unreadable file it warned about).
+        log("Warning: guest-side tar exited with rc={} during the pull.".format(rc))
+    return ok
+
+
+class _TelnetTarWriter(object):
+    """write()-only file object tarfile streams into: escapes IAC bytes
+    (0xFF -> 0xFF 0xFF) and counts the payload."""
+    def __init__(self, sock):
+        self.sock = sock
+        self.sent = 0
+
+    def write(self, data):
+        data = bytes(data)
+        self.sock.sendall(data.replace(b"\xff", b"\xff\xff"))
+        self.sent += len(data)
+        return len(data)
+
+
+class _StreamTarReader(object):
+    """read()-only file object feeding tarfile from a socket. In telnet mode
+    the bytes pass through _telnet_eat_iac (IAC stripped, BINARY tracked);
+    in raw-tcp mode they are taken verbatim. The first output line (the
+    shell's echo of the tar command) is skipped before archive bytes are
+    handed out. Gives up after `quiet_max` seconds without any data."""
+    def __init__(self, sock, telnet=False, binary=None, quiet_max=120,
+                 skip_echo=True):
+        self.sock = sock
+        self.telnet = telnet
+        self.binary = binary
+        self.quiet_max = quiet_max
+        self.buf = bytearray()
+        self.eof = False
+        # skip_echo=False for channels that do not echo the command line
+        # (anyvmtd on reactos: plain pipes, no pty) -- skipping there would
+        # eat archive bytes up to the first 0x0A.
+        self.echo_skipped = not skip_echo
+        # Optional early-out probe set by the consumer (the host-tar pump
+        # sets it to "has tar exited?"): checked on every idle tick so the
+        # reader stops waiting for stream bytes nobody needs anymore.
+        self.stop_check = None
+
+    def _fill(self):
+        quiet = 0.0
+        self.sock.settimeout(0.5)
+        while not self.eof:
+            try:
+                data = self.sock.recv(65536)
+            except socket.timeout:
+                if self.stop_check is not None and self.stop_check():
+                    self.eof = True
+                    return
+                quiet += 0.5
+                if quiet >= self.quiet_max:
+                    log("Warning: tar pull stream stalled for {}s; giving up.".format(self.quiet_max))
+                    self.eof = True
+                continue
+            except OSError:
+                self.eof = True
+                return
+            if not data:
+                self.eof = True
+                return
+            before = len(self.buf)
+            if self.telnet:
+                _telnet_eat_iac(self.sock, data, self.buf, binary=self.binary)
+            else:
+                self.buf.extend(data)
+            if len(self.buf) > before:
+                return
+
+    def read(self, n):
+        while not self.echo_skipped:
+            nl = self.buf.find(b"\n")
+            if nl >= 0:
+                del self.buf[:nl + 1]
+                self.echo_skipped = True
+                break
+            if self.eof:
+                self.echo_skipped = True
+                break
+            self._fill()
+        # Return whatever is available rather than insisting on n bytes:
+        # both consumers (tarfile's stream reader and the host-tar pump)
+        # handle short reads, and blocking for a full buffer after the
+        # archive has ended just stalls the session.
+        while not self.buf and not self.eof:
+            self._fill()
+        out = bytes(self.buf[:n])
+        del self.buf[:n]
+        return out
+
+
+def _tar_push_telnet(host_port, vhost, vguest, excludes=None, debug=False,
+                     os_name=None):
+    """Push over the guest's telnetd on 127.0.0.1:host_port -- the stream
+    mode for guests with no sshd (plan9/9front rc over its telnetd, reactos
+    cmd.exe over the baked anyvmtd). The extract command runs on the telnet
+    session and the archive bytes follow down the same connection; the
+    success marker is chained onto the command itself (`&& echo ...`) so it
+    only prints when the guest tar exited 0. Telnet is not naturally 8-bit
+    clean: IAC bytes are escaped by doubling and BINARY mode (RFC 856) is
+    requested in both directions up front; a telnetd that refuses BINARY may
+    still cook control bytes in its pty, so the refusal is warned about
+    loudly -- except on reactos, where anyvmtd is pipe-based (no pty), does
+    the IAC IAC unescape itself, and refuses options by design."""
+    IAC, WILL, DO = 255, 251, 253
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(host_port)), 10)
+    except OSError as exc:
+        log("Warning: tar sync could not connect to the guest telnetd: {}".format(exc))
+        return False
+    binary = {'in': False, 'out': False}
+    transcript = bytearray()
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    def drain():
+        sock.settimeout(0.5)
+        while not stop.is_set():
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            if not data:
+                return
+            with lock:
+                _telnet_eat_iac(sock, data, transcript, binary=binary)
+
+    t = threading.Thread(target=drain)
+    t.daemon = True
+    t.start()
+    ok = False
+    try:
+        sock.sendall(bytes([IAC, WILL, 0, IAC, DO, 0]))
+        time.sleep(2.0)  # banner, prompt and option replies settle
+        if not binary['out'] and os_name != "reactos":
+            log("Warning: the guest telnetd did not acknowledge BINARY mode; "
+                "the tar stream may be corrupted by pty processing.")
+        # The whole session is one command line: the shell runs tar, tar
+        # consumes the archive bytes that follow on the same connection,
+        # and the chained echo prints the marker only when tar exited 0.
+        # The marker is split ('' in rc, ^ in cmd.exe) so an echo of the
+        # command line itself cannot match. Leftover archive padding after
+        # tar exits is read by the shell as garbage input -- noise, but the
+        # marker has printed by then.
+        if os_name == "reactos":
+            # cmd.exe via anyvmtd; the baked busybox-w32 provides tar.
+            cmd = ('mkdir "{0}" 2>nul & cd /d "{0}" && '
+                   'C:\\anyvm\\tar.exe -xf - && '
+                   'echo anyvm^-tar-done').format(vguest)
+        else:
+            # rc (the plan9 shell); plan9 tar defaults to stdin for x.
+            cmd = ("mkdir -p '{0}' && cd '{0}' && tar x && "
+                   "echo anyvm''-tar-done").format(vguest)
+        sock.sendall(cmd.encode("utf-8") + b"\r\n")
+        time.sleep(1.0)
+        writer = _TelnetTarWriter(sock)
+        if not _write_archive_to(writer, vhost, excludes):
+            log("Warning: the archive stream was incomplete; the guest may "
+                "be left waiting on its tar.")
+        if os_name == "reactos":
+            # busybox tar does not exit at the end-of-archive blocks -- it
+            # keeps reading until stdin EOF (verified live: files extracted
+            # but the chained echo never ran). anyvmtd understands a
+            # half-close (stdin EOF to the child while its output keeps
+            # flowing back), so send one: tar exits, the chained echo
+            # prints the marker, cmd.exe ends the session. plan9's telnetd
+            # has no known half-close semantics, so that path keeps relying
+            # on plan9 tar exiting at end-of-archive by itself.
+            try:
+                sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+        deadline = time.time() + 60 + writer.sent // 50000
+        while time.time() < deadline:
+            with lock:
+                if b"anyvm-tar-done" in transcript:
+                    ok = True
+                    break
+            time.sleep(0.5)
+        if not ok:
+            log("Warning: no completion marker from the guest after the tar push.")
+        if debug:
+            with lock:
+                debuglog(True, "tar push telnet transcript: {!r}".format(
+                    bytes(transcript[-512:])))
+    except OSError as exc:
+        log("Warning: tar push over telnet failed: {}".format(exc))
+    finally:
+        stop.set()
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return ok
+
+
+def _tar_pull_telnet(host_port, vhost, vguest, debug=False, os_name=None):
+    """Pull over the guest's telnetd: run `tar c` on the telnet session and
+    extract the bytes that come back. Without BINARY mode the guest pty maps
+    NL to CR-NL in output, which is not reversible -- the archive checksum
+    catches it and the pull is reported failed rather than guessed at.
+    reactos is the pty-less exception: anyvmtd moves the child's output
+    through plain pipes and escapes outbound IAC itself, and cmd.exe does
+    not echo commands read from a pipe, so nothing is skipped or warned."""
+    IAC, WILL, DO = 255, 251, 253
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(host_port)), 10)
+    except OSError as exc:
+        log("Warning: tar sync could not connect to the guest telnetd: {}".format(exc))
+        return False
+    binary = {'in': False, 'out': False}
+    ok = False
+    try:
+        sock.sendall(bytes([IAC, WILL, 0, IAC, DO, 0]))
+        # Drain the banner/prompt (and collect option replies) before the
+        # command, so the reader below sees exactly: command echo, archive.
+        pre = bytearray()
+        sock.settimeout(0.5)
+        end = time.time() + 2.0
+        while time.time() < end:
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                data = b""
+            if not data:
+                break
+            _telnet_eat_iac(sock, data, pre, binary=binary)
+        if not binary['in'] and os_name != "reactos":
+            log("Warning: the guest telnetd did not acknowledge BINARY mode; "
+                "the pulled tar stream may be corrupted by pty NL mapping.")
+        if os_name == "reactos":
+            cmd = 'cd /d "{0}" && C:\\anyvm\\tar.exe -cf - .'.format(vguest)
+            skip_echo = False
+        else:
+            cmd = "cd '{0}' && tar c .".format(vguest)
+            skip_echo = True
+        sock.sendall(cmd.encode("utf-8") + b"\r\n")
+        reader = _StreamTarReader(sock, telnet=True, binary=binary,
+                                  skip_echo=skip_echo)
+        ok = _extract_from_reader(reader, vhost)
+    except OSError as exc:
+        log("Warning: tar pull over telnet failed: {}".format(exc))
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return ok
+
+
+def _tar_push_tcp(host_port, vhost, vguest, excludes=None):
+    """Push over a raw TCP shell on 127.0.0.1:host_port (guests with neither
+    sshd nor telnetd, netshell-style): the connection itself is the stream,
+    8-bit clean by definition. Our half-close is the end-of-input signal."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(host_port)), 10)
+    except OSError as exc:
+        log("Warning: tar sync could not connect to the guest TCP shell: {}".format(exc))
+        return False
+    ok = False
+    try:
+        time.sleep(1.0)  # let any banner/prompt pass
+        cmd = "mkdir -p '{0}' && cd '{0}' && tar -xf -\n".format(vguest)
+        sock.sendall(cmd.encode("utf-8"))
+        time.sleep(0.5)
+        wf = sock.makefile("wb")
+        ok = _write_archive_to(wf, vhost, excludes)
+        # Neither tar path closes a caller-supplied fileobj; flush the
+        # makefile buffer (the end-of-archive blocks) before half-closing.
+        wf.flush()
+        wf.close()
+        if not ok:
+            log("Warning: the archive stream was incomplete; the guest may "
+                "be left waiting on its tar.")
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        # Give the guest a moment to finish extracting; drain whatever it
+        # prints until it closes or 30s pass.
+        sock.settimeout(0.5)
+        end = time.time() + 30
+        while time.time() < end:
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not data:
+                break
+        ok = True
+    except OSError as exc:
+        log("Warning: tar push over TCP failed: {}".format(exc))
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return ok
+
+
+def _tar_pull_tcp(host_port, vhost, vguest):
+    """Pull over a raw TCP shell: run `tar -cf - .` and extract the verbatim
+    byte stream that follows the command's echo line."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", int(host_port)), 10)
+    except OSError as exc:
+        log("Warning: tar sync could not connect to the guest TCP shell: {}".format(exc))
+        return False
+    ok = False
+    try:
+        time.sleep(1.0)
+        cmd = "cd '{0}' && tar -cf - .\n".format(vguest)
+        sock.sendall(cmd.encode("utf-8"))
+        reader = _StreamTarReader(sock, telnet=False)
+        ok = _extract_from_reader(reader, vhost)
+    except OSError as exc:
+        log("Warning: tar pull over TCP failed: {}".format(exc))
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+    return ok
+
+
+def split_vpath(vpath_str):
+    """Split a -v host:guest mapping into (vhost, vguest). A plain
+    rsplit(':', 1) breaks when the GUEST side is a Windows-style path
+    (reactos): in "/tmp/x:C:\\work" the last colon is the guest drive
+    colon. Detect the trailing ":<letter>:<path>" shape and reassemble.
+    Raises ValueError on a malformed mapping."""
+    if ':' not in vpath_str:
+        raise ValueError(vpath_str)
+    vhost, vguest = vpath_str.rsplit(':', 1)
+    if (len(vhost) >= 2 and vhost[-2] == ':' and vhost[-1].isalpha()
+            and (vguest.startswith('\\') or vguest.startswith('/'))):
+        vguest = vhost[-1] + ':' + vguest
+        vhost = vhost[:-2]
+    if not vhost or not vguest:
+        raise ValueError(vpath_str)
+    return vhost, vguest
+
+
+def sync_tar(config, ssh_cmd, vhost, vguest, excludes=None):
+    """--sync tar push (host -> guest), dispatched on the guest's remote-exec
+    transport: ssh when the guest has an sshd, else telnet, else raw TCP."""
+    transport = config.get('transport') or "ssh"
+    log("Syncing via tar ({} stream): {} -> {}".format(transport, vhost, vguest))
+    if not os.path.exists(vhost):
+        log("Warning: Host path {} does not exist; skipping.".format(vhost))
+        return
+    if transport == "ssh":
+        ok = _tar_push_ssh(ssh_cmd, vhost, vguest, excludes,
+                           os_name=config.get('os'))
+    elif transport == "telnet":
+        ok = _tar_push_telnet(config['sshport'], vhost, vguest, excludes,
+                              config.get('debug'), os_name=config.get('os'))
+    else:
+        ok = _tar_push_tcp(config['sshport'], vhost, vguest, excludes)
+    if not ok:
+        log("Warning: tar sync push failed for {}.".format(vhost))
+
+
+def sync_tar_pull(config, ssh_cmd, vhost, vguest):
+    """--sync tar pull (guest -> host), same transport dispatch as the push."""
+    transport = config.get('transport') or "ssh"
+    log("Syncing back via tar ({} stream): {} -> {}".format(transport, vguest, vhost))
+    if transport == "ssh":
+        ok = _tar_pull_ssh(ssh_cmd, vhost, vguest,
+                           os_name=config.get('os'))
+    elif transport == "telnet":
+        ok = _tar_pull_telnet(config['sshport'], vhost, vguest,
+                              config.get('debug'), os_name=config.get('os'))
+    else:
+        ok = _tar_pull_tcp(config['sshport'], vhost, vguest)
+    if not ok:
+        log("Warning: tar sync pull failed for {}.".format(vguest))
+
 
 def version_tokens(text):
     if not text:
@@ -6185,8 +6901,8 @@ def main():
             if val == "mynfs":
                 # Alias: nfs already means the bundled user-space nfsd.
                 val = "nfs"
-            if val not in ["sshfs", "nfs", "sys-nfs", "rsync", "scp", "9p", "no"]:
-                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, sys-nfs, scp, 9p, no/off.".format(val))
+            if val not in ["sshfs", "nfs", "sys-nfs", "rsync", "scp", "tar", "9p", "no"]:
+                 fatal("Invalid --sync mode: {}. Supported: rsync, sshfs, nfs, sys-nfs, scp, tar, 9p, no/off.".format(val))
             config['sync'] = val
             i += 1
         elif arg == "--disktype":
@@ -6393,12 +7109,33 @@ def main():
         config['sync'] = "9p"
         debuglog(config['debug'], "plan9: defaulting sync mode to 9p (override with --sync)")
 
+    # reactos: the only working folder-sync backend is tar over the anyvmtd
+    # telnet channel (busybox-w32 baked at C:\anyvm\tar.exe). Everything
+    # else was surveyed in a running guest and is out: no sshd and no ssh
+    # client (so rsync/sshfs/scp), no 9P, no SMB redirector, and the shipped
+    # NFSv4.1 client's daemon service (`pnfs`) hangs in START_PENDING --
+    # see reactos-builder's conf for the full survey. Defaulting to the
+    # ssh-based rsync would make every `-v` run fail with a confusing ssh
+    # error, so default to tar.
+    if config['os'] == "reactos" and not sync_user_specified:
+        config['sync'] = "tar"
+        debuglog(config['debug'],
+                 "reactos: defaulting sync mode to tar (override with --sync)")
+
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
             config['vga'] = "std"
         elif config['os'] == "haiku":
             config['vga'] = "std"
         elif config['os'] == "blissos":
+            config['vga'] = "std"
+        elif config['os'] == "reactos":
+            # ReactOS has no virtio-gpu driver; it drives QEMU's std VGA
+            # through its VBE/Bochs miniport, which is what reactos-builder
+            # builds and verifies on (conf VM_VGA=std). NOTE: the guest
+            # profile's "vga" field is never consulted by this file -- this
+            # chain is the only source -- so an OS missing from it silently
+            # gets virtio no matter what its builder recorded.
             config['vga'] = "std"
         elif config['os'] == "openbsd" and config['arch'] != "aarch64" and config['release'] and any(
             config['release'].endswith(s)
@@ -6994,11 +7731,14 @@ def main():
             else:
                 debuglog(config['debug'], "No guest profile at {} (release predates it); using built-in launch logic".format(profile_url))
 
-    # Remote-exec transport: profile "transport" key wins; otherwise plan9
-    # always means telnet (no sshd exists in 9front). Everything else = ssh.
+    # Remote-exec transport: profile "transport" key wins; otherwise plan9 and
+    # reactos always mean telnet -- 9front has no sshd, and ReactOS ships no
+    # remote-access server at all, so its images carry a baked telnet daemon
+    # instead. Everything else = ssh. The per-OS fallback matters for a local
+    # --qcow2 file, which has no profile sidecar to read.
     if guest_profile and guest_profile.get('transport'):
         config['transport'] = guest_profile['transport']
-    elif config['os'] == "plan9":
+    elif config['os'] in ("plan9", "reactos"):
         config['transport'] = "telnet"
 
     # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
@@ -7398,6 +8138,14 @@ def main():
     elif guest_profile and guest_profile.get('disk_if'):
         disk_if = guest_profile['disk_if']
         debuglog(config['debug'], "Disk bus from guest profile: {}".format(disk_if))
+    elif config['os'] == "reactos":
+        # ReactOS has no virtio-blk driver at all, so the x86 virtio default
+        # gives a guest that cannot see its own boot disk: it loads the boot
+        # drivers, finds nothing, and bugchecks 0x7B INACCESSIBLE_BOOT_DEVICE
+        # straight into kdb. reactos-builder installs on IDE (conf
+        # VM_DISK=ide) and the published profile says so; this fallback is
+        # what saves the profile-less --qcow2 path.
+        disk_if = "ide"
     elif config['os'] == "dragonflybsd":
         disk_if = "ide"
     elif config['os'] == "ghostbsd":
@@ -7556,7 +8304,9 @@ def main():
         ])
 
     rtc_base = "utc"
-    if config['os'] in ["windows", "haiku"]:
+    # ReactOS is an NT reimplementation and follows the Windows convention of
+    # reading the CMOS clock as local time. Mirrors build.py's rtc_base.
+    if config['os'] in ["windows", "reactos", "haiku"]:
         rtc_base = "localtime"
     args_qemu.extend(["-rtc", "base={},clock=host,driftfix=slew".format(rtc_base)])
 
@@ -7576,6 +8326,18 @@ def main():
         net_card = config['nc']
     elif guest_profile and guest_profile.get('net_card'):
         net_card = guest_profile['net_card']
+        if (guest_profile.get('virtio_transport') == "mmio"
+                and net_card.startswith("virtio-net-pci")):
+            # The profile records the MODEL (+option flags); the bus lives
+            # in virtio_transport. netbsd riscv64 is the live case: its
+            # profile says net_card=virtio-net-pci,ctrl_vq=off with
+            # virtio_transport=mmio, and NetBSD/riscv GENERIC64 has no PCI
+            # virtio driver -- taking the pci name verbatim boots a guest
+            # with NO NIC at all (dhcpcd: "no valid interfaces found",
+            # sshd unreachable, netbsd-vm run 30776357735). Translate to
+            # the MMIO transport device, keeping the flags.
+            net_card = net_card.replace("virtio-net-pci",
+                                        "virtio-net-device", 1)
         debuglog(config['debug'], "Network card from guest profile: {}".format(net_card))
     else:
         if config['arch'] == "aarch64":
@@ -7625,6 +8387,12 @@ def main():
             # ether0). The published profile already carries this; the
             # built-in default matters only for the profile-less --qcow2 path.
             net_card = "virtio-net-pci"
+        elif config['os'] == "reactos":
+            # ReactOS ships netkvm, but reactos-builder builds and verifies on
+            # e1000 (conf VM_NIC=e1000) -- the better-worn path, and the NIC
+            # the installed guest already has bound with a DHCP lease on it.
+            # Same profile-less --qcow2 reasoning as plan9 above.
+            net_card = "e1000"
         elif config['os'] == "ubuntu":
             # The ubuntu-builder image is built and validated on a virtio NIC
             # (conf VM_NIC=virtio / libvirt <model type='virtio'>). The baked
@@ -8260,9 +9028,13 @@ def main():
             "-machine", machine_opts,
             "-cpu", cpu_opts,
             "-device", "{},netdev=net0".format(net_card),
-            "-device", "virtio-balloon-pci",
-            "-vga", vga_type
         ])
+        # ReactOS has no virtio-balloon driver, and an unclaimed PCI device
+        # makes it raise a modal "New Hardware Wizard" over the desktop.
+        # Mirrors build.py's balloon gating.
+        if config['os'] != "reactos":
+            args_qemu.extend(["-device", "virtio-balloon-pci"])
+        args_qemu.extend(["-vga", vga_type])
 
         if accel == "kvm":
             args_qemu.extend(["-global", "kvm-pit.lost_tick_policy=delay"])
@@ -8443,7 +9215,9 @@ def main():
     # Skipped on sparc64: the sun4u machine has no free PCI slot for virtio-rng
     # (and NetBSD has no virtio bus there), so QEMU would abort at launch.
     # s390x has no PCI by default -- its rng is a CCW device.
-    if config['os'] != "solaris" and config['arch'] != "sparc64":
+    # ReactOS has no virtio-rng driver either, and an unclaimed PCI device
+    # makes it raise a modal "New Hardware Wizard" over the desktop.
+    if config['os'] not in ("solaris", "reactos") and config['arch'] != "sparc64":
         rng_dev = "virtio-rng-ccw" if config['arch'] == "s390x" else "virtio-rng-pci"
         args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "{},rng=rng0,max-bytes=1024,period=1000".format(rng_dev)])
 
@@ -9449,13 +10223,16 @@ Host host
                 config['vpaths'], config.get('sync'),
                 bool(config['vpaths']) and config['sync'] != 'no'))
             if (config['vpaths'] and config['sync'] != 'no'
-                    and config['os'] == 'blissos' and config['sync'] != 'scp'):
-                # Android/toybox has no rsync, sshfs, or NFS client. The only
-                # working backend is scp (a static scp from the dropbear tree
-                # is baked into /system/bin as the legacy-protocol receiver,
-                # builder release >= v2.0.1). Skip other modes instead of
-                # failing one by one.
-                log("Warning: only --sync scp works on BlissOS/Android guests; skipping {} sync.".format(config['sync']))
+                    and config['os'] == 'blissos'
+                    and config['sync'] not in ('scp', 'tar')):
+                # Android/toybox has no rsync, sshfs, or NFS client. The
+                # working backends are scp (a static scp from the dropbear
+                # tree is baked into /system/bin as the legacy-protocol
+                # receiver, builder release >= v2.0.1) and tar (toybox tar
+                # reads/writes ustar fine -- the vmactions copyback already
+                # relies on it). Skip other modes instead of failing one by
+                # one.
+                log("Warning: only --sync scp or tar works on BlissOS/Android guests; skipping {} sync.".format(config['sync']))
             elif config['vpaths'] and config['sync'] != 'no':
                 sudo_cmd = []
                 # sudo is only needed by the kernel-NFS path (sys-nfs).
@@ -9471,13 +10248,9 @@ Host host
 
                 for vpath_str in config['vpaths']:
                     try:
-                        if ':' not in vpath_str:
-                            raise ValueError
                         debuglog(config['debug'], "Processing -v argument: {}".format(vpath_str))
-                        vhost, vguest = vpath_str.rsplit(':', 1)
+                        vhost, vguest = split_vpath(vpath_str)
                         vhost = os.path.abspath(vhost)
-                        if not vhost or not vguest:
-                            raise ValueError
                         
                         excludes = []
                         for ex_dir in [working_dir, config.get('cachedir')]:
@@ -9510,6 +10283,8 @@ Host host
                             sync_rsync(ssh_base_cmd, vhost, vguest, config['os'], output_dir, vm_name, excludes=excludes)
                         elif config['sync'] == 'scp':
                             sync_scp(ssh_base_cmd, vhost, vguest, config['sshport'], hostid_file, vm_user, excludes=excludes)
+                        elif config['sync'] == 'tar':
+                            sync_tar(config, ssh_base_cmd, vhost, vguest, excludes=excludes)
                         elif config['sync'] == '9p':
                             p9_port = config.get('p9_host_port')
                             if p9_port:
@@ -9559,6 +10334,9 @@ Host host
 
             debuglog(config['debug'], "[trace] reached final-SSH gate, detach={} console={}".format(
                 config['detach'], config['console']))
+            # Tracks whether anything actually ran in the guest this session;
+            # the tar-sync pull-back below is pointless otherwise.
+            guest_cmd_ran = False
             if not config['detach'] and config.get('transport') == "telnet":
                 # plan9/9front: no ssh. A passthrough `-- cmd ...` runs over
                 # telnet and prints the transcript. With no command, drop into
@@ -9569,6 +10347,7 @@ Host host
                 if ssh_passthrough:
                     p9_cmd = " ".join(ssh_passthrough)
                     ok, text = telnet_exec(config['sshport'], [p9_cmd], settle=4.0)
+                    guest_cmd_ran = True
                     sys.stdout.write(text)
                     if not text.endswith("\n"):
                         sys.stdout.write("\n")
@@ -9576,6 +10355,7 @@ Host host
                         log("Warning: telnet session to the guest closed early.")
                 elif stdin_is_tty:
                     interactive_telnet(config['sshport'])
+                    guest_cmd_ran = True
                 else:
                     debuglog(config['debug'], "plan9: no passthrough command and no TTY; leaving VM running (use the VNC console).")
             elif not config['detach']:
@@ -9597,9 +10377,25 @@ Host host
                 else:
                     debuglog(config['debug'], "[trace] final-SSH calling subprocess.call ...")
                     rc = subprocess.call(ssh_cmd)
+                    guest_cmd_ran = True
                     debuglog(config['debug'], "[trace] final-SSH returned rc={}".format(rc))
             else:
                 debuglog(config['debug'], "[trace] detach mode -- skipping final SSH")
+            # --sync tar is a one-shot copy, not a live mount: pull each -v
+            # tree back after the guest command/session so files created in
+            # the VM reach the host (the vmactions copyback semantics).
+            # Nothing to pull when no guest command ran, and in --detach
+            # mode the VM keeps running for later commands, so the pull is
+            # skipped there too.
+            if (config['sync'] == 'tar' and config['vpaths']
+                    and not config['detach'] and guest_cmd_ran):
+                for vpath_str in config['vpaths']:
+                    try:
+                        vhost, vguest = split_vpath(vpath_str)
+                    except ValueError:
+                        continue
+                    vhost = os.path.abspath(vhost)
+                    sync_tar_pull(config, ssh_base_cmd, vhost, vguest)
             # Avoid noisy banner when running as PID 1 inside a container or if QEMU already exited
             if os.getpid() != 1:
                 if not config['detach']:
