@@ -133,7 +133,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "openindiana": "2.1.1",
     "ubuntu": "2.0.7",
     "openeuler": "2.0.1",
-    "ghostbsd": "2.0.5",
+    "ghostbsd": "2.0.7",
     "blissos": "2.0.2",
     "hurd": "2.0.0",
     "plan9": "2.0.0",
