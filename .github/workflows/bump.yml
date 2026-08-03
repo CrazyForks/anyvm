@@ -53,7 +53,19 @@ jobs:
           if git diff --cached --quiet; then
             echo "Nothing to commit, skipping push"
           else
-            git commit -m "Bump builder versions"
+            # [testos=<os>] markers: this commit edits anyvm.py, whose
+            # path triggers EVERY per-OS test workflow -- unmarked, one
+            # bump would light up the full fleet matrix (hundreds of
+            # jobs). Each workflow's own gate reads the markers and only
+            # the bumped OSes run.
+            msg="Bump builder versions"
+            if [ -s "${RUNNER_TEMP}/landed.txt" ]; then
+              while read -r os _; do
+                msg="${msg} [testos=${os}]"
+              done < "${RUNNER_TEMP}/landed.txt"
+            fi
+            echo "commit message: ${msg}"
+            git commit -m "$msg"
             pushed=""
             for attempt in 1 2 3 4 5; do
               git pull --rebase --autostash
