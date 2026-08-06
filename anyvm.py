@@ -75,6 +75,14 @@ except ImportError:
 
 IS_WINDOWS = (os.name == 'nt')
 
+# Set to True by the entry points that packaging installs (see main_installed()
+# and [project.scripts] in pyproject.toml, plus the Homebrew formula's wrapper).
+# The packager knows it packaged this; anyvm deliberately does NOT try to work
+# it out from its own path. Matching "site-packages" in __file__ misclassifies a
+# vendored copy or a checkout that merely lives under such a path, and the only
+# symptom is that images quietly appear somewhere the user did not expect.
+INSTALLED = bool(os.environ.get("ANYVM_INSTALLED"))
+
 # Handle SSL certificate verification on Windows (especially Arm64/minimal installs).
 if IS_WINDOWS:
     try:
@@ -232,6 +240,43 @@ def log(msg):
     else:
         print(line)
         sys.stdout.flush()
+
+def user_cache_dir():
+    """Per-user cache directory, following each platform's convention."""
+    if IS_WINDOWS:
+        base = os.environ.get("LOCALAPPDATA")
+        if not base:
+            base = os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(base, "anyvm")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Caches", "anyvm")
+    base = os.environ.get("XDG_CACHE_HOME")
+    if not base:
+        base = os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "anyvm")
+
+def default_data_dir(script_home):
+    """Pick the default --data-dir.
+
+    A source checkout keeps the historical <checkout>/output, so nothing
+    changes for anyone working in the tree.  An installed copy goes to the
+    per-user cache instead, which is what these files are -- every image can be
+    fetched again from its builder's release.
+    """
+    if INSTALLED:
+        return os.path.join(user_cache_dir(), "images")
+    return os.path.join(script_home, "output")
+
+def default_cache_dir(script_home):
+    """Pick the default --cache-dir.
+
+    Only set for an installed copy, and for the same reason as the data dir:
+    give it somewhere of its own outside the package.  A checkout keeps the
+    historical behaviour of no cache unless one is asked for.
+    """
+    if INSTALLED:
+        return os.path.join(user_cache_dir(), "cache")
+    return ""
 
 def supports_ansi_color(stream=sys.stdout):
     """Checks if the stream supports ANSI color sequences."""
@@ -2707,8 +2752,17 @@ Options:
                          not available on macOS/Windows hosts).
                          Note: sshfs not supported on Windows hosts; rsync
                          requires rsync.exe.
-  --data-dir <dir>       Directory to store images and metadata (Default: ./output).
-  --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids re-download and re-extract).
+  --data-dir <dir>       Directory to store images and metadata. Default is
+                         <anyvm.py dir>/output when running from a source
+                         checkout, otherwise a per-user cache: %LOCALAPPDATA%\\
+                         anyvm\\images on Windows, ~/Library/Caches/anyvm/images
+                         on macOS, $XDG_CACHE_HOME/anyvm/images (~/.cache/anyvm/
+                         images) elsewhere. An installed copy never writes into
+                         its own package directory.
+  --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids
+                         re-download and re-extract). Unset by default when
+                         running from a source checkout; an installed copy
+                         defaults to <cache>/cache alongside the images.
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
@@ -6086,8 +6140,9 @@ def main():
 
 
     script_home = os.path.dirname(os.path.abspath(__file__))
-    working_dir = os.path.join(script_home, "output")
-    
+    working_dir = default_data_dir(script_home)
+    config['cachedir'] = default_cache_dir(script_home)
+
     if os.environ.get("GOOGLE_CLOUD_SHELL") == "true":
         working_dir = "/tmp/anyvm.org"
         if not os.path.exists(working_dir):
@@ -9699,6 +9754,17 @@ def is_pid_alive_main(pid):
                 return e.errno == errno.EPERM
             except: return False
     except: return False
+
+def main_installed():
+    """Entry point for packaged installs (pipx/pip console scripts, Homebrew).
+
+    Flips INSTALLED before main() runs so the defaults land in the per-user
+    cache instead of beside the installed file. Running anyvm.py from a
+    checkout goes through __main__ below and is unaffected.
+    """
+    global INSTALLED
+    INSTALLED = True
+    main()
 
 if __name__ == '__main__':
     main()

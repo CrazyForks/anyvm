@@ -42,9 +42,14 @@ Homepage = "https://github.com/anyvm-org/anyvm"
 Repository = "https://github.com/anyvm-org/anyvm"
 Issues = "https://github.com/anyvm-org/anyvm/issues"
 
+# main_installed() rather than main(): it sets anyvm_py.INSTALLED before
+# running, which is how anyvm knows this copy was installed by a packager and
+# must keep its images in the per-user cache rather than beside itself in
+# site-packages. anyvm does not infer that from its own path -- a vendored copy
+# or a checkout under such a path would be misread.
 [project.scripts]
-"anyvm.py" = "anyvm_py:main"
-anyvm = "anyvm_py:main"
+"anyvm.py" = "anyvm_py:main_installed"
+anyvm = "anyvm_py:main_installed"
 
 [tool.hatch.version]
 source = "vcs"
