@@ -267,17 +267,6 @@ def default_data_dir(script_home):
         return os.path.join(user_cache_dir(), "images")
     return os.path.join(script_home, "output")
 
-def default_cache_dir(script_home):
-    """Pick the default --cache-dir.
-
-    Only set for an installed copy, and for the same reason as the data dir:
-    give it somewhere of its own outside the package.  A checkout keeps the
-    historical behaviour of no cache unless one is asked for.
-    """
-    if INSTALLED:
-        return os.path.join(user_cache_dir(), "cache")
-    return ""
-
 def supports_ansi_color(stream=sys.stdout):
     """Checks if the stream supports ANSI color sequences."""
     try:
@@ -2759,10 +2748,7 @@ Options:
                          on macOS, $XDG_CACHE_HOME/anyvm/images (~/.cache/anyvm/
                          images) elsewhere. An installed copy never writes into
                          its own package directory.
-  --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids
-                         re-download and re-extract). Unset by default when
-                         running from a source checkout; an installed copy
-                         defaults to <cache>/cache alongside the images.
+  --cache-dir <dir>      Directory to cache extracted qcow2 files (avoids re-download and re-extract).
   --disktype <type>      Disk interface type (e.g., virtio, ide).
                          Default: virtio (ide for dragonflybsd).
   --uefi                 Enable UEFI boot (Implicit for FreeBSD).
@@ -6141,7 +6127,6 @@ def main():
 
     script_home = os.path.dirname(os.path.abspath(__file__))
     working_dir = default_data_dir(script_home)
-    config['cachedir'] = default_cache_dir(script_home)
 
     if os.environ.get("GOOGLE_CLOUD_SHELL") == "true":
         working_dir = "/tmp/anyvm.org"
