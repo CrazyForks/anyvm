@@ -303,7 +303,7 @@ def is_browser_available():
         pass
     return False
 
-def open_vnc_page(web_port):
+def open_vnc_page(web_port, debug=False):
     """Automatically open the VNC web page in the browser based on environment."""
     if not web_port or not is_browser_available():
         return
@@ -312,16 +312,28 @@ def open_vnc_page(web_port):
         # Give VNC proxy/QEMU a moment to initialize ports properly
         time.sleep(1)
         url = "http://localhost:{}".format(web_port)
+        launcher = None
         try:
             if IS_WINDOWS or (platform.system() == 'Linux' and 'microsoft' in open('/proc/version').read().lower()):
                 # Windows or WSL
-                subprocess.Popen(['explorer.exe', url], shell=IS_WINDOWS)
+                launcher = 'explorer.exe'
+                subprocess.Popen([launcher, url], shell=IS_WINDOWS)
             elif platform.system() == 'Darwin':
-                subprocess.Popen(['open', url], stdout=DEVNULL, stderr=DEVNULL)
+                launcher = 'open'
+                subprocess.Popen([launcher, url], stdout=DEVNULL, stderr=DEVNULL)
             elif platform.system() == 'Linux':
-                subprocess.Popen(['xdg-open', url], stdout=DEVNULL, stderr=DEVNULL)
-        except Exception:
-            pass
+                launcher = 'xdg-open'
+                subprocess.Popen([launcher, url], stdout=DEVNULL, stderr=DEVNULL)
+        except Exception as e:
+            # Never fatal -- the URL is printed anyway. But stay visible under
+            # --debug: on WSL a missing WSLInterop binfmt entry makes every
+            # Windows .exe fail with "Exec format error", and a silent pass
+            # here makes that look like anyvm simply chose not to open a
+            # browser. Re-register with:
+            #   sudo sh -c 'echo ":WSLInterop:M::MZ::/init:PF" \
+            #       > /proc/sys/fs/binfmt_misc/register'
+            debuglog(debug, "Failed to open browser via {}: {}: {}".format(
+                launcher or "(no launcher)", type(e).__name__, e))
 
     t = threading.Thread(target=_open_in_background)
     t.daemon = True
@@ -8490,7 +8502,7 @@ def main():
             
             try:
                 p = subprocess.Popen(proxy_args, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, **popen_kwargs)
-                open_vnc_page(web_port)
+                open_vnc_page(web_port, config['debug'])
                 local_url = "http://localhost:{}".format(web_port)
                 display_local_url = local_url
                 if supports_ansi_color():
