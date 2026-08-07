@@ -66,13 +66,22 @@ brew install anyvm-org/tap/anyvm
 anyvm --os freebsd
 ```
 
-On Windows, install with winget. This one is a self-contained build, so it
-does not need Python on the machine at all (QEMU is still separate, see 6.3):
+On Windows, install with winget. This one is a self-contained build that does
+not need Python on the machine at all, and it pulls in `qemu` as a package
+dependency, so you can skip 6.3 entirely:
 
 ```bash
 winget install anyvm-org.anyvm
 
 anyvm --os freebsd
+```
+
+anyvm itself installs per-user without elevation, but the QEMU package is a
+machine-wide installer, so the command above prompts for UAC. For unattended
+or CI installs, skip the dependency and provide QEMU yourself:
+
+```bash
+winget install anyvm-org.anyvm --skip-dependencies
 ```
 
 Or download the single file and run it directly:
