@@ -126,14 +126,17 @@ jobs:
           fi
 
       # version defaults to the release tag minus its leading v, which is
-      # exactly the PackageVersion the manifests use (v0.5.6 -> 0.5.6).
-      # The token must be a CLASSIC PAT with the public_repo scope; a
-      # fine-grained token cannot push to the winget-pkgs fork.
+      # exactly the PackageVersion the manifests use (v0.5.7 -> 0.5.7).
+      #
+      # fork-user is the account holding the winget-pkgs fork the PR branch is
+      # pushed to -- anyvm-org/winget-pkgs, not a personal fork. WINGET_TOKEN
+      # must therefore be able to push there, and must be a CLASSIC PAT with
+      # the public_repo scope: a fine-grained token cannot push to the fork.
       - name: Submit to winget-pkgs
         if: steps.gate.outputs.go == 'yes'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           identifier: anyvm-org.anyvm
           installers-regex: 'anyvm-windows-.*\.exe$'
-          fork-user: neilpang
+          fork-user: anyvm-org
           token: ${{ secrets.WINGET_TOKEN }}
