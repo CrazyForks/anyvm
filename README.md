@@ -66,6 +66,15 @@ brew install anyvm-org/tap/anyvm
 anyvm --os freebsd
 ```
 
+On Windows, install with winget. This one is a self-contained build, so it
+does not need Python on the machine at all (QEMU is still separate, see 6.3):
+
+```bash
+winget install anyvm-org.anyvm
+
+anyvm --os freebsd
+```
+
 Or download the single file and run it directly:
 
 ```bash
@@ -211,6 +220,12 @@ and `zstd` as dependencies.
 ### 6.3 Windows [![Windows](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/testwindows.yml)
 
 - Download QEMU for Windows: https://www.qemu.org/download/#windows or https://qemu.weilnetz.de/w64/
+- Or install with winget:
+
+```bash
+winget install SoftwareFreedomConservancy.QEMU
+```
+
 - Or install with MSYS2 pacman:
 
 ```bash

@@ -75,13 +75,24 @@ except ImportError:
 
 IS_WINDOWS = (os.name == 'nt')
 
+# True when this copy is a frozen single-file executable -- the PyInstaller
+# build published as anyvm-windows-x64.exe and packaged for winget. The
+# bootloader sets sys.frozen, so this is still the packager telling us rather
+# than a guess about our own path (same principle as INSTALLED below). Two
+# things differ when frozen: sys.executable is anyvm.exe itself instead of a
+# Python interpreter, and __file__ points into the bootloader's throwaway
+# extraction directory instead of at a real script.
+FROZEN = bool(getattr(sys, "frozen", False))
+
 # Set to True by the entry points that packaging installs (see main_installed()
 # and [project.scripts] in pyproject.toml, plus the Homebrew formula's wrapper).
 # The packager knows it packaged this; anyvm deliberately does NOT try to work
 # it out from its own path. Matching "site-packages" in __file__ misclassifies a
 # vendored copy or a checkout that merely lives under such a path, and the only
 # symptom is that images quietly appear somewhere the user did not expect.
-INSTALLED = bool(os.environ.get("ANYVM_INSTALLED"))
+# A frozen build is packaged by definition and has no wrapper script to set the
+# environment variable, so it counts as installed on its own.
+INSTALLED = FROZEN or bool(os.environ.get("ANYVM_INSTALLED"))
 
 # Handle SSL certificate verification on Windows (especially Arm64/minimal installs).
 if IS_WINDOWS:
@@ -254,6 +265,53 @@ def user_cache_dir():
     if not base:
         base = os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "anyvm")
+
+def self_argv():
+    """The argv prefix that re-runs this same program.
+
+    anyvm re-execs itself for its two detached helpers (--internal-nfsd and
+    --internal-vnc-proxy). As a script that is "<python> <this file>"; frozen
+    it is just the executable, because sys.executable IS anyvm and __file__
+    then points into the bootloader's extraction directory -- passing it on
+    would hand the child a bogus first argument, and that directory is deleted
+    when the parent exits anyway.
+    """
+    if FROZEN:
+        return [sys.executable]
+    return [sys.executable, os.path.abspath(__file__)]
+
+def self_home():
+    """The directory this program was started from (its own file, or the
+    frozen executable -- never the bootloader's extraction directory)."""
+    if FROZEN:
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+def python_argv(script_path):
+    """The argv prefix that runs a SEPARATE Python script (nfsd.py).
+
+    Not plain sys.executable when frozen: there sys.executable is anyvm.exe,
+    which would swallow the script path as its own first argument. The frozen
+    build carries a whole CPython, so it re-enters itself and runs the script
+    in-process instead -- which keeps that build's "no Python on the machine"
+    promise true for --sync nfs as well. The PyInstaller build therefore has
+    to bundle the stdlib modules nfsd.py needs but anyvm.py does not import
+    itself; they are listed as --hidden-import in .github/workflows/winget.yml.
+    """
+    if FROZEN:
+        return [sys.executable, "--internal-run-python", script_path]
+    return [sys.executable, script_path]
+
+def run_internal_python(script_path, script_args):
+    """--internal-run-python: execute another Python script in this process.
+
+    Only the frozen build ever takes this path (see python_argv). runpy gives
+    the script the __main__ name and a sys.argv that starts at its own path,
+    which is what a script invoked as "python script.py ..." sees.
+    """
+    import runpy
+    sys.argv = [script_path] + list(script_args)
+    runpy.run_path(script_path, run_name="__main__")
 
 def default_data_dir(script_home):
     """Pick the default --data-dir.
@@ -4766,8 +4824,8 @@ def run_internal_nfsd(nfsd_path, export_dir, port, qemu_pid, log_path,
     only the v3-only BSD guests (NFSV4LESS_GUESTS) need. When 111 is taken
     (system rpcbind on Linux, or a second -v mount's nfsd instance), nfsd
     logs a warning and keeps serving."""
-    cmd = [sys.executable, nfsd_path, "-dir", export_dir,
-           "-port", str(port), "-bind", "127.0.0.1"]
+    cmd = python_argv(nfsd_path) + [
+        "-dir", export_dir, "-port", str(port), "-bind", "127.0.0.1"]
     if vers:
         cmd.extend(["-vers", vers])
     if pmap:
@@ -4844,9 +4902,9 @@ def start_mynfsd(nfsd_path, vhost, port, log_path, qemu_pid, debug=False,
     passwordless sudo, so the -pmap portmapper can bind privileged port 111.
     The sudo must wrap the WATCHDOG, not just the inner nfsd: an
     unprivileged watchdog cannot signal a root child to stop it."""
-    args = [sys.executable, os.path.abspath(__file__), "--internal-nfsd",
-            nfsd_path, vhost, str(port), str(qemu_pid), log_path,
-            "1" if debug else "0", vers, "1" if pmap else "0"]
+    args = self_argv() + [
+        "--internal-nfsd", nfsd_path, vhost, str(port), str(qemu_pid),
+        log_path, "1" if debug else "0", vers, "1" if pmap else "0"]
     if use_sudo:
         args = ["sudo", "-n"] + args
     popen_kwargs = {}
@@ -6060,6 +6118,12 @@ def main():
                 pass
         return
 
+    # Handle internal "run this other Python script" mode. Only the frozen
+    # build ever spawns it -- see python_argv().
+    if len(sys.argv) > 1 and sys.argv[1] == '--internal-run-python':
+        run_internal_python(sys.argv[2], sys.argv[3:])
+        return
+
     # Default configuration
     default_cpu = str(max(1, os.cpu_count() or 1))
     config = {
@@ -6125,7 +6189,7 @@ def main():
     boot_timeout_user_specified = False
 
 
-    script_home = os.path.dirname(os.path.abspath(__file__))
+    script_home = self_home()
     working_dir = default_data_dir(script_home)
 
     if os.environ.get("GOOGLE_CLOUD_SHELL") == "true":
@@ -8515,10 +8579,8 @@ def main():
     def start_vnc_proxy_for_pid(qemu_pid):
         if config['vnc'] != "off" and web_port:
             is_audio_enabled = check_qemu_audio_backend(qemu_bin, "vnc")
-            proxy_args = [
-                sys.executable, 
-                os.path.abspath(__file__), 
-                '--internal-vnc-proxy', 
+            proxy_args = self_argv() + [
+                '--internal-vnc-proxy',
                 str(config['serialport'] if is_vnc_console else port), 
                 str(web_port), 
                 vm_info, 
