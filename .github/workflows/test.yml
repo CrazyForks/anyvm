@@ -331,8 +331,10 @@ jobs:
         # No --arch on purpose: ReactOS is i386-only and anyvm defaults to it,
         # so this leg is what proves a bare `--os reactos` resolves an image
         # instead of dying in "Cannot find the image link" on an x86_64 host.
+        # 600 s (the default) is not enough even with KVM: this image was
+        # measured at ~705 s from launch to a reachable telnet.
         python anyvm.py --debug --data-dir ../test_output --os reactos \
-          --ssh-port 10023 -d \
+          --ssh-port 10023 -d --boot-timeout-sec 1500 \
           --sync tar -v "${mountdir}:C:\work"
         echo "===============verify telnet exec + tar-synced marker"
         python3 - <<'PY'

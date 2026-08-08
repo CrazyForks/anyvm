@@ -73,9 +73,12 @@ jobs:
         # --arch comes from the matrix rather than anyvm's reactos i386
         # default, because the coverage checker reads the release/arch pair
         # off this matrix; test.yml's reactos job exercises the default.
+        # --boot-timeout-sec: measured on a fast bare-metal host WITH KVM,
+        # this image needs ~705 s from launch to a reachable telnet, so the
+        # 600 s default times out even when acceleration is working.
         python anyvm.py --debug --data-dir ../test_output --os reactos \
           --release "${{ matrix.release }}" --arch "${{ matrix.arch }}" \
-          --ssh-port 10023 -d \
+          --ssh-port 10023 -d --boot-timeout-sec 1500 \
           --sync tar -v "${mountdir}:C:\work"
         echo "===============verify telnet exec + tar-synced marker"
         python3 - <<'PY'

@@ -191,8 +191,12 @@ jobs:
         mkdir -p ${mountdir}
         echo "anyvm" > ${mountdir}/justcheck.txt
         mkdir -p ../test_output
+        # WHPX reaches this guest only through the 64-bit QEMU binary (the
+        # i386 one is built without it); anyvm switches binaries itself and
+        # says so in its output. The boot is slow regardless -- ~705 s
+        # measured with acceleration -- hence the raised timeout.
         python anyvm.py --debug --data-dir ../test_output --os reactos \
-          --arch i386 --ssh-port 10023 -d \
+          --arch i386 --ssh-port 10023 -d --boot-timeout-sec 1500 \
           --sync tar -v "${mountdir}:C:\work"
         echo "===============verify telnet exec + tar-synced marker"
         python - <<'PY'

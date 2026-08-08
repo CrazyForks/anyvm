@@ -4230,6 +4230,33 @@ def deps_install_hint():
             " distribution's package manager\n"
             "(on Debian/Ubuntu: {}).".format(apt_cmd))
 
+_accel_help_cache = {}
+
+
+def qemu_has_accel(qemu_bin, accel_name):
+    """True if this QEMU binary was BUILT with the named accelerator.
+
+    Accelerator support is per-target and per-build, not per-host: Windows
+    QEMU ships WHPX in qemu-system-x86_64.exe only, while
+    qemu-system-i386.exe lists tcg alone. Passing an accelerator the binary
+    lacks is a hard startup error ("invalid accelerator whpx"), so this is
+    asked before the machine string is built. Cached: one probe per binary.
+    """
+    if not qemu_bin:
+        return False
+    if qemu_bin not in _accel_help_cache:
+        try:
+            proc = subprocess.Popen([qemu_bin, "-accel", "help"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, stderr = proc.communicate()
+            output = (stdout.decode('utf-8', errors='ignore') +
+                      stderr.decode('utf-8', errors='ignore'))
+        except Exception:
+            output = ""
+        _accel_help_cache[qemu_bin] = output.split()
+    return accel_name in _accel_help_cache[qemu_bin]
+
+
 def check_qemu_audio_backend(qemu_bin, backend_name):
     """Checks if the QEMU binary supports the specified audio backend."""
     try:
@@ -8188,6 +8215,32 @@ def main():
     if config['tcg'] and accel != "tcg":
         debuglog(config['debug'], "Forcing TCG software emulation (--tcg); ignoring KVM/HVF/WHPX")
         accel = "tcg"
+
+    # An accelerator the chosen binary was not BUILT with is a hard QEMU
+    # startup error, not a slow fallback: "invalid accelerator whpx", exit
+    # code 1, before the guest ever runs. Windows QEMU ships WHPX in
+    # qemu-system-x86_64.exe ONLY -- qemu-system-i386.exe answers
+    # `-accel help` with tcg alone -- so every i386 guest (ReactOS, Hurd's
+    # 32-bit image) died at launch on a Windows host.
+    #
+    # For i386 the fix is to run the guest on the 64-bit binary instead of
+    # dropping it to TCG. The two are built from the same QEMU target
+    # (target/i386) and expose the same `pc` machine and the same devices;
+    # a 32-bit guest simply never enters long mode, exactly as it would not
+    # on real 64-bit hardware. TCG is not an acceptable alternative here:
+    # an NT kernel under software emulation does not even finish early
+    # kernel init inside the 600s boot window (CI run 31238792386).
+    # The substitution is logged, never silent.
+    if accel != "tcg" and not qemu_has_accel(qemu_bin, accel):
+        alt_bin = find_qemu("qemu-system-x86_64") if config['arch'] == "i386" else None
+        if alt_bin and alt_bin != qemu_bin and qemu_has_accel(alt_bin, accel):
+            log("QEMU {} has no {} accelerator; running this i386 guest on {} instead (same target, 64-bit binary).".format(
+                os.path.basename(qemu_bin), accel, os.path.basename(alt_bin)))
+            qemu_bin = alt_bin
+        else:
+            log("Warning: QEMU {} was built without the {} accelerator; falling back to TCG.".format(
+                os.path.basename(qemu_bin), accel))
+            accel = "tcg"
 
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":
