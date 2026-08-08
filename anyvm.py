@@ -157,7 +157,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "blissos": "2.0.2",
     "hurd": "2.0.0",
     "plan9": "2.0.1",
-    "nextbsd": "2.0.0"
+    "nextbsd": "2.0.0",
+    "reactos": "2.0.0"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
@@ -2762,11 +2763,11 @@ Options:
   --os <name>            Operating System name (Required).
                          Supported: freebsd, ghostbsd, midnightbsd, nextbsd, openbsd, netbsd,
                                     dragonflybsd, solaris, omnios, openindiana, tribblix, haiku,
-                                    ubuntu, openeuler, blissos, hurd, plan9
-  --release <ver>        OS Release version (e.g., 15.0, 7.4). 
+                                    ubuntu, openeuler, blissos, hurd, plan9, reactos
+  --release <ver>        OS Release version (e.g., 15.0, 7.4).
                          If invalid or omitted, tries to detect from available releases.
-  --arch <arch>          Architecture: x86_64, aarch64, riscv64, sparc64, powerpc64, s390x
-                         or powerpc64. Default: Host architecture.
+  --arch <arch>          Architecture: x86_64, i386, aarch64, riscv64, sparc64, powerpc64,
+                         s390x or loongarch64. Default: Host architecture.
   --mem <MB>             Memory size in MB (Default: 4096 when the host
                          has more than 4 GB of RAM, else 2048).
   --cpu <num>            Number of CPU cores (Default: host cores, capped at
@@ -2786,7 +2787,7 @@ Options:
                          Format: /host/path:/guest/path
                          Example: -v /home/user/data:/mnt/data
   --sync <mode>          Synchronization mode for -v folders.
-                         Supported: rsync (default), sshfs, nfs, sys-nfs, scp, tar, no/off (disable sync).
+                         Supported: rsync (default), sshfs, nfs, sys-nfs, scp, tar, 9p, no/off (disable sync).
                          nfs runs the bundled user-space NFS server
                          (anyvm-org/nfsd, v3/v4 + portmapper) on the host:
                          no kernel nfsd, no root needed, works on
@@ -7159,6 +7160,18 @@ def main():
         config['arch'] = ""
     if config['arch'] in ["arm", "arm64", "ARM64"]:
         config['arch'] = "aarch64"
+
+    # ReactOS is published for 32-bit x86 only, so the host-arch default just
+    # above sends an x86_64 host looking for reactos-<rel>.qcow2.zst, which no
+    # release carries -- the lookup then dies in "Cannot find the image link".
+    # The only existing rescue goes the other way (aarch64 -> x86_64), so
+    # without this a bare `--os reactos` can never work. An explicit --arch
+    # still wins, so a future 64-bit ReactOS needs no change here. Nothing
+    # else is lost: the accel chain treats i386 as x86, so an i386 guest still
+    # gets KVM/WHPX on an x86_64 host, exactly as `--arch i386` does today.
+    if config['os'] == "reactos" and not arch_specified:
+        config['arch'] = "i386"
+        debuglog(config['debug'], "reactos: defaulting arch to i386 (only arch published)")
 
     # Fail fast when host dependencies are missing: this runs BEFORE any
     # image download (images are multi-GB), so the user gets the install

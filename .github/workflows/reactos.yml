@@ -1,0 +1,120 @@
+name: ReactOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/reactos.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ReactOS ships no remote-access server at all, so reactos-builder bakes its
+# own small Win32 telnet server (anyvmtd) into the image and anyvm drives the
+# guest over it -- the same telnet transport plan9 uses, and the same reason
+# neither can reuse the ssh-based testrun.yml.
+#
+# Unlike plan9's 9P share, the ReactOS folder sync (--sync tar) is a ustar
+# stream over that very telnet channel, so it needs nothing from the host
+# kernel and is exercised on all three hosts (macOS/Windows legs live in
+# testmacos.yml / testwindows.yml). This job verifies BOTH channels:
+#   1. exec: run `echo` in the guest (cmd.exe) and read the marker back
+#   2. tar sync: a host file placed via `--sync tar -v` shows up in the guest
+jobs:
+  test:
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=reactos]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["0.4.15"]
+        arch: ["i386"]
+        runs: ["ubuntu-24.04"]
+    runs-on: ${{ matrix.runs }}
+    name: Test ${{ matrix.release }} ${{ matrix.arch }}
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get --no-install-recommends -y install \
+          zstd qemu-utils qemu-system-x86 ca-certificates
+    - name: Boot ReactOS and verify telnet exec + tar sync
+      shell: bash
+      run: |
+        set -e
+        mountdir=test
+        mkdir -p ${mountdir}
+        echo "anyvm" > ${mountdir}/justcheck.txt
+        mkdir -p ../test_output
+        # Boot detached: anyvm returns leaving QEMU running, after wiring the
+        # telnet control forward (host 10023 -> guest 23) and pushing the
+        # shared folder into the guest as a ustar stream over that channel.
+        # --arch comes from the matrix rather than anyvm's reactos i386
+        # default, because the coverage checker reads the release/arch pair
+        # off this matrix; test.yml's reactos job exercises the default.
+        python anyvm.py --debug --data-dir ../test_output --os reactos \
+          --release "${{ matrix.release }}" --arch "${{ matrix.arch }}" \
+          --ssh-port 10023 -d \
+          --sync tar -v "${mountdir}:C:\work"
+        echo "===============verify telnet exec + tar-synced marker"
+        python3 - <<'PY'
+        import socket, sys, time
+        def telnet_exec(port, cmds, settle=4.0):
+            IAC=255; SE=240; SB=250; WILL,WONT,DO,DONT=251,252,253,254
+            out=bytearray()
+            s=socket.create_connection(("127.0.0.1",port),15)
+            def eat(data):
+                i=0;n=len(data)
+                while i<n:
+                    b=data[i]
+                    if b!=IAC: out.append(b); i+=1; continue
+                    if i+1>=n: break
+                    c=data[i+1]
+                    if c in (DO,DONT,WILL,WONT) and i+2<n:
+                        o=data[i+2]
+                        if c==DO: s.sendall(bytes([IAC,WONT,o]))
+                        elif c==WILL: s.sendall(bytes([IAC,DONT,o]))
+                        i+=3
+                    elif c==SB:
+                        j=i+2
+                        while j+1<n and not (data[j]==IAC and data[j+1]==SE): j+=1
+                        i=j+2
+                    else: i+=2
+            def rd(sec):
+                end=time.time()+sec; s.settimeout(0.5)
+                while time.time()<end:
+                    try: d=s.recv(4096)
+                    except socket.timeout: continue
+                    if not d: return
+                    eat(d)
+            rd(min(settle,2))
+            for c in cmds:
+                s.sendall(c.encode()+b"\r\n"); rd(settle)
+            s.close(); return out.decode("utf-8","replace")
+        # The far side is cmd.exe: "^" escapes the next character, so the
+        # command line echoed back reads EXEC^-OK while its OUTPUT is the
+        # bare marker -- the assert cannot pass on the echo alone.
+        txt=""
+        for _ in range(20):
+            try:
+                txt=telnet_exec(10023, ["echo EXEC^-OK", "dir C:\\work"])
+                if "EXEC-OK" in txt: break
+            except OSError: time.sleep(3)
+        print(txt)
+        assert "EXEC-OK" in txt, "telnet exec failed"
+        assert "justcheck.txt" in txt, "tar-synced file not visible in guest"
+        print("reactos verify OK: telnet exec + tar sync")
+        PY

@@ -51,6 +51,17 @@ plan9 * test.yml
 plan9 * testmacos.yml
 plan9 * testwindows.yml
 
+# reactos: ReactOS ships no remote-access server at all, so reactos-builder
+# bakes its own Win32 telnet server into the image; with no sshd it cannot
+# reuse the ssh-based testrun.yml that testsync/testnfs/testsysnfs (and the
+# macos/windows jobs) all route through, and its only sync backend is tar
+# (releases.json sync=tar). test.yml/testmacos.yml/testwindows.yml each
+# carry a dedicated "reactos" job instead, verifying boot + telnet exec +
+# tar sync on that host -- see the comment above each of those jobs.
+reactos * test.yml
+reactos * testmacos.yml
+reactos * testwindows.yml
+
 # solaris: solaris.yml's own comment -- "Solaris has no FUSE sshfs
 # (VM_SSHFS_PKG is unset), so sshfs is omitted" (releases.json
 # sync=rsync,scp,nfs). solaris stays in testnfs/testsysnfs; only testsync
