@@ -8059,12 +8059,26 @@ def main():
     auto_reason = None
     
     if not vnc_val and not is_vnc_console:
-        if config['os'] == "openindiana":
+        if config['os'] == "reactos":
+            # ReactOS is a desktop-only guest: the GUI is the whole point, and
+            # its COM1 carries kernel debug only -- there is no serial shell to
+            # fall back to, so a console-mode web UI shows the user nothing.
+            # Pin graphical VNC here so no generic rule below can take it away.
+            debuglog(config['debug'],
+                     "reactos: keeping graphical VNC (COM1 has no shell, only kernel debug)")
+        elif config['os'] == "openindiana":
             if "202510" in config['release']:
                 # Rule for OpenIndiana: Default to 'console' if not specified.
                 auto_reason = "OpenIndiana (requires console for login display)"
-        elif "x86_64" not in bin_name:
-            # Rule for non-x86 architectures: Default to 'console' if not specified.
+        elif config['arch'] not in ("", "i386"):
+            # Rule for non-x86 architectures: Default to 'console' if not
+            # specified. Tested on the ARCH, not on bin_name: the old
+            # `"x86_64" not in bin_name` spelling also caught
+            # qemu-system-i386, so every i386 guest (ReactOS, and Hurd's
+            # 32-bit image) silently got the serial console in the web UI
+            # instead of its framebuffer -- and ReactOS puts nothing but
+            # kernel debug on COM1, so its desktop was simply never shown.
+            # "" is x86_64 here (see the normalize block above).
             # Exception: OpenBSD on aarch64 starting at 7.4 has a working
             # graphical framebuffer via virtio-gpu-pci, so prefer regular VNC
             # there. 7.3 and earlier lack this and still need console.

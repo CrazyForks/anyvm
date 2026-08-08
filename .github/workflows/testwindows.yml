@@ -167,6 +167,9 @@ jobs:
              ) }}
     runs-on: windows-latest
     name: Test reactos tar
+    # WHPX carries this leg (an i386 guest is accelerated on an x86_64 host
+    # exactly like an x86_64 one); the bound is only a wedge backstop.
+    timeout-minutes: 40
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:

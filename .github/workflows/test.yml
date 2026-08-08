@@ -306,6 +306,7 @@ jobs:
              ) }}
     runs-on: ubuntu-24.04
     name: Test reactos tar
+    timeout-minutes: 40
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
@@ -315,6 +316,10 @@ jobs:
         sudo apt-get update
         sudo apt-get --no-install-recommends -y install \
           zstd qemu-utils qemu-system-x86 ca-certificates
+        # /dev/kvm exists on the runner but is not writable, which drops
+        # anyvm to TCG -- too slow for an NT kernel to finish booting inside
+        # the 600 s window. testrun.yml does the same thing.
+        sudo chmod 666 /dev/kvm || true
     - name: Boot ReactOS and verify telnet exec + tar sync
       shell: bash
       run: |

@@ -55,9 +55,15 @@ plan9 * testwindows.yml
 # bakes its own Win32 telnet server into the image; with no sshd it cannot
 # reuse the ssh-based testrun.yml that testsync/testnfs/testsysnfs (and the
 # macos/windows jobs) all route through, and its only sync backend is tar
-# (releases.json sync=tar). test.yml/testmacos.yml/testwindows.yml each
-# carry a dedicated "reactos" job instead, verifying boot + telnet exec +
-# tar sync on that host -- see the comment above each of those jobs.
+# (releases.json sync=tar). test.yml and testwindows.yml carry a dedicated
+# "reactos" job instead, verifying boot + telnet exec + tar sync on that
+# host -- see the comment above each of those jobs.
+# testmacos.yml carries NO reactos leg at all, deliberately: HVF on the
+# arm64 runner accelerates arm64 guests only, so an i386 guest is pure
+# x86-on-ARM TCG there. Measured evidence that this cannot pass: on the
+# FASTER x86 Linux runner, TCG (before /dev/kvm was made writable) did not
+# get ReactOS past early kernel init in 600 s -- run 31238792386, serial
+# log stuck at 3188 bytes.
 reactos * test.yml
 reactos * testmacos.yml
 reactos * testwindows.yml
