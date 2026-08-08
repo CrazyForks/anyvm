@@ -206,7 +206,9 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Windows x86_64 Native | ✅ | — | — | — | — | — | — |
 | Windows x86_64 WSL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-i386 guests (ReactOS, and Hurd's i386 image) follow the `x86_64 guests` column: they run `qemu-system-i386`, which ships in the same QEMU package as the x86_64 emulator, so any host that runs x86_64 guests runs i386 guests too.
+i386 guests (ReactOS, and Hurd's i386 image) follow the `x86_64 guests` column: they run `qemu-system-i386`, which ships in the same QEMU package as the x86_64 emulator, so any host that runs x86_64 guests runs i386 guests too. On a Windows host anyvm launches them on `qemu-system-x86_64.exe` instead and says so, because Windows QEMU builds WHPX into that binary only.
+
+**ReactOS is Linux-host-only in practice** (measured, not assumed): under real KVM it boots in ~20 seconds, but under Windows' WHPX it never got past early kernel init in 40 minutes of CI, and TCG on any host is slower still. WSL's nested KVM does work, at roughly 40x the bare-KVM boot time.
 
 ## 6. Install dependencies
 

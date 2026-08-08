@@ -8242,6 +8242,18 @@ def main():
                 os.path.basename(qemu_bin), accel))
             accel = "tcg"
 
+    # ReactOS on a Windows host is a measured dead end, so say so up front
+    # instead of letting the user watch a 25-minute boot window expire.
+    # Real KVM boots this image in 18 s (CI run 31243646034). WHPX never got
+    # it past early kernel init -- 1500 s boot window exhausted, job killed
+    # at its 40 min cap, serial frozen at the PCI resource assignment line
+    # (CI run 31243646210) -- and TCG is slower still. WSL's nested KVM does
+    # work, at roughly 40x the bare-KVM boot time.
+    if config['os'] == "reactos" and IS_WINDOWS:
+        log("Warning: ReactOS on a Windows host has never been seen to finish booting "
+            "(WHPX stalls in early kernel init, TCG is slower still). Run it from a Linux "
+            "host for a ~20s boot, or from WSL, where nested KVM works but is much slower.")
+
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":
         try:

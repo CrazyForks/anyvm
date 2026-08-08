@@ -55,15 +55,24 @@ plan9 * testwindows.yml
 # bakes its own Win32 telnet server into the image; with no sshd it cannot
 # reuse the ssh-based testrun.yml that testsync/testnfs/testsysnfs (and the
 # macos/windows jobs) all route through, and its only sync backend is tar
-# (releases.json sync=tar). test.yml and testwindows.yml carry a dedicated
-# "reactos" job instead, verifying boot + telnet exec + tar sync on that
-# host -- see the comment above each of those jobs.
-# testmacos.yml carries NO reactos leg at all, deliberately: HVF on the
-# arm64 runner accelerates arm64 guests only, so an i386 guest is pure
-# x86-on-ARM TCG there. Measured evidence that this cannot pass: on the
-# FASTER x86 Linux runner, TCG (before /dev/kvm was made writable) did not
-# get ReactOS past early kernel init in 600 s -- run 31238792386, serial
-# log stuck at 3188 bytes.
+# (releases.json sync=tar). test.yml carries a dedicated "reactos" job
+# instead, verifying boot + telnet exec + tar sync -- see the comment above
+# it and reactos.yml.
+#
+# ReactOS is a LINUX-HOST-ONLY guest in CI, and that is measured, not
+# assumed. With real KVM it boots in 18 s (run 31243646034). Every other
+# host has been tried and cannot run it:
+#   * testwindows.yml -- WHPX (reached via the 64-bit QEMU binary; the i386
+#     one is built without it) never got past early kernel init: the boot
+#     window ran its full 1500 s and the job died on its 40 min cap with the
+#     serial log frozen at "PCI Slot Resource Assignment is FOOBAR"
+#     (run 31243646210). TCG on the same host is slower still.
+#   * testmacos.yml -- HVF on the arm64 runner accelerates arm64 guests
+#     only, so an i386 guest is pure x86-on-ARM TCG; on the FASTER x86
+#     Linux runner that same TCG path did not clear early kernel init in
+#     600 s (run 31238792386, serial log stuck at 3188 bytes).
+# Neither file carries a reactos job. Restoring one means re-measuring
+# first, not just raising a timeout.
 reactos * test.yml
 reactos * testmacos.yml
 reactos * testwindows.yml
