@@ -20,10 +20,16 @@ concurrency:
 #
 # Unlike plan9's 9P share, the ReactOS folder sync (--sync tar) is a ustar
 # stream over that very telnet channel, so it needs nothing from the host
-# kernel and is exercised on all three hosts (macOS/Windows legs live in
-# testmacos.yml / testwindows.yml). This job verifies BOTH channels:
+# kernel. This job verifies BOTH channels:
 #   1. exec: run `echo` in the guest (cmd.exe) and read the marker back
 #   2. tar sync: a host file placed via `--sync tar -v` shows up in the guest
+#
+# Measured boot-to-telnet, same image: 18 s with KVM here, 35 s under WHPX on
+# a Windows host, 68 s under pure TCG. The macOS and Windows legs live in
+# testmacos.yml / testwindows.yml. (They were briefly deleted as impossible
+# when both timed out -- the cause turned out to be anyvm passing
+# -rtc driftfix=slew, which zeroes this guest's HAL stall calibration on any
+# host without full hardware virtualisation.)
 jobs:
   test:
     if: >-
@@ -73,9 +79,9 @@ jobs:
         # --arch comes from the matrix rather than anyvm's reactos i386
         # default, because the coverage checker reads the release/arch pair
         # off this matrix; test.yml's reactos job exercises the default.
-        # --boot-timeout-sec: measured on a fast bare-metal host WITH KVM,
-        # this image needs ~705 s from launch to a reachable telnet, so the
-        # 600 s default times out even when acceleration is working.
+        # --boot-timeout-sec: pure headroom. With KVM this boots in ~18 s;
+        # the raised bound only keeps a slow or contended runner from
+        # tripping the 600 s default.
         python anyvm.py --debug --data-dir ../test_output --os reactos \
           --release "${{ matrix.release }}" --arch "${{ matrix.arch }}" \
           --ssh-port 10023 -d --boot-timeout-sec 1500 \

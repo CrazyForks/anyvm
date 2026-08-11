@@ -8242,18 +8242,6 @@ def main():
                 os.path.basename(qemu_bin), accel))
             accel = "tcg"
 
-    # ReactOS on a Windows host is a measured dead end, so say so up front
-    # instead of letting the user watch a 25-minute boot window expire.
-    # Real KVM boots this image in 18 s (CI run 31243646034). WHPX never got
-    # it past early kernel init -- 1500 s boot window exhausted, job killed
-    # at its 40 min cap, serial frozen at the PCI resource assignment line
-    # (CI run 31243646210) -- and TCG is slower still. WSL's nested KVM does
-    # work, at roughly 40x the bare-KVM boot time.
-    if config['os'] == "reactos" and IS_WINDOWS:
-        log("Warning: ReactOS on a Windows host has never been seen to finish booting "
-            "(WHPX stalls in early kernel init, TCG is slower still). Run it from a Linux "
-            "host for a ~20s boot, or from WSL, where nested KVM works but is much slower.")
-
     # CPU optimization for TCG
     if not cpu_specified and accel == "tcg":
         try:
@@ -8516,7 +8504,28 @@ def main():
     # reading the CMOS clock as local time. Mirrors build.py's rtc_base.
     if config['os'] in ["windows", "reactos", "haiku"]:
         rtc_base = "localtime"
-    args_qemu.extend(["-rtc", "base={},clock=host,driftfix=slew".format(rtc_base)])
+    rtc_opts = "base={},clock=host,driftfix=slew".format(rtc_base)
+    if config['os'] == "reactos":
+        # NO driftfix for ReactOS: it is the difference between booting and
+        # not. HalpCalibrateStallExecution (hal/halx86/generic/systimer.S)
+        # sizes every busy-wait by counting loop iterations between two RTC
+        # (IRQ8) periodic interrupts and dividing by 125000 us. driftfix=slew
+        # replays interrupts that the guest was too slow to take, so on any
+        # host without full hardware virtualisation the two calibration
+        # interrupts arrive back to back, the count is ~0, and the division
+        # stores StallScaleFactor = 0. KeStallExecutionProcessor then does
+        # `mov eax, factor; mul us; sub eax,1; jnz` -- starting from 0, which
+        # wraps to 2^32 iterations, so EVERY stall (even a 1 us one) burns
+        # ~8.7 s and the boot never finishes.
+        # Measured on this image, pure TCG, identical otherwise:
+        #   driftfix=slew  -> factor 0,    never booted (25 min+)
+        #   no driftfix    -> factor 1011, booted in 68 s
+        #   clock=vm       -> factor 1063, booted in 72 s
+        # Under KVM the guest keeps up, no ticks are replayed, and the factor
+        # comes out ~3899 either way -- which is why this only ever showed up
+        # on WHPX/TCG hosts.
+        rtc_opts = "base={},clock=host".format(rtc_base)
+    args_qemu.extend(["-rtc", rtc_opts])
 
     if config['snapshot']:
         args_qemu.append("-snapshot")
