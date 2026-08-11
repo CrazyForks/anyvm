@@ -36,7 +36,7 @@ jobs:
         release: ["2.2.8", "3.2.4", "4.0.4", "4.0.6", "4.0.7"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "scp", "rsync", "tar"]
 
 
     uses: ./.github/workflows/testrun.yml

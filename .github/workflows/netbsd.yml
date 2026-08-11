@@ -47,7 +47,7 @@ jobs:
         release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1", "11.0"]
         arch: ["aarch64", ""]
         runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync", "tar"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -82,7 +82,7 @@ jobs:
         release: ["9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1", "11.0"]
         arch: ["aarch64"]
         runs: ["ubuntu-24.04-arm"]
-        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync", "tar"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -110,7 +110,7 @@ jobs:
         release: ["11.0"]
         arch: ["riscv64"]
         runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync", "tar"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
@@ -145,7 +145,7 @@ jobs:
         release: ["10.0", "10.1", "11.0"]
         arch: ["sparc64"]
         runs: ["ubuntu-24.04"]
-        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync"]
+        sync: ["sshfs", "nfs", "sys-nfs", "scp", "rsync", "tar"]
         exclude:
           - release: "11.0"
             sync: "rsync"

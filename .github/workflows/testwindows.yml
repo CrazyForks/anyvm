@@ -29,7 +29,7 @@ jobs:
         os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
         arch: [""]
         runs: ["windows-latest"]
-        sync: ["scp", "rsync", "nfs"]
+        sync: ["scp", "rsync", "nfs", "tar"]
         exclude:
           - os: solaris
             arch: aarch64

@@ -42,7 +42,7 @@ jobs:
         release: ["continuous"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["scp", "rsync", "nfs"]
+        sync: ["scp", "rsync", "nfs", "tar"]
 
 
     uses: ./.github/workflows/testrun.yml

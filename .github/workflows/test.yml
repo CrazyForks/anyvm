@@ -144,6 +144,79 @@ jobs:
       vmpath: ${{ matrix.vmpath }}
 
 
+  # --sync tar is the one folder-sync backend that needs NOTHING in the guest
+  # beyond a tar binary (in base on every guest listed here) and the
+  # remote-exec channel that is already there: no rsync/sshfs package, no
+  # /dev/fuse, no nfsd on the host. That is why every builder declares it, and
+  # why this job gets testnfs's wide guest list rather than testsync's
+  # narrower one -- the guests that cannot do rsync/sshfs can all do tar.
+  #
+  # It is also the only backend that is a one-shot COPY instead of a live
+  # mount: anyvm pushes the tree in before the guest command and pulls it back
+  # out after (sync_tar / sync_tar_pull), so this leg is the only thing that
+  # exercises the copy-back half.
+  #
+  # The excludes are image-availability facts -- those guests ship x86_64
+  # images only -- identical to testnfs's, and say nothing about tar.
+  #
+  # Deliberately absent: blissos and reactos both already exercise tar in
+  # their own matrices (blissos.yml over 3 releases x 3 host platforms, and
+  # the reactos job at the bottom of this file, over the telnet transport
+  # rather than ssh). plan9 has no tar path in anyvm at all -- its guest tar
+  # takes a different invocation and it syncs over 9P instead.
+  testtar:
+    if: >-
+      ${{ github.event_name != 'push'
+          || !contains(github.event.head_commit.message, '[testhost=')
+          || contains(github.event.head_commit.message, '[testhost=linux') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["freebsd", "ghostbsd", "haiku", "midnightbsd", "nextbsd", "netbsd", "openbsd", "solaris", "dragonflybsd", "omnios", "openindiana", "tribblix", "ubuntu", "openeuler", "hurd"]
+        arch: ["aarch64", ""]
+        runs: ["ubuntu-24.04"]
+        exclude:
+          # x86_64-only images.
+          - os: nextbsd
+            arch: aarch64
+          - os: solaris
+            arch: aarch64
+          - os: dragonflybsd
+            arch: aarch64
+          - os: omnios
+            arch: aarch64
+          - os: openindiana
+            arch: aarch64
+          - os: tribblix
+            arch: aarch64
+          - os: midnightbsd
+            arch: aarch64
+          - os: ghostbsd
+            arch: aarch64
+          - os: hurd
+            arch: aarch64
+          - os: haiku
+            arch: aarch64
+        include:
+          # The same haiku overrides the other jobs in this file carry: its "/"
+          # holds directories and symlinks but no regular files, so the share
+          # has to land on the real BFS volume, and the guest account is
+          # `user` -- the default root cannot log in at all.
+          - os: haiku
+            user: user
+            vmpath: /boot/home/host
+
+    uses: ./.github/workflows/testrun.yml
+    secrets: inherit
+    with:
+      runs: ${{ matrix.runs }}
+      os: ${{ matrix.os }}
+      arch: ${{ matrix.arch }}
+      sync: tar
+      user: ${{ matrix.user }}
+      vmpath: ${{ matrix.vmpath }}
+
+
   # Kept: the host kernel NFS server path (--sync sys-nfs), which is what
   # `sync: nfs` used to exercise before nfs switched to the bundled
   # user-space nfsd. hurd: /hurd/nfs is UDP-only; anyvm force-enables the

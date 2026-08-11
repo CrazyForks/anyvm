@@ -36,7 +36,7 @@ jobs:
         release: ["11.4", "11.4-gcc"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["nfs", "scp", "rsync"]
+        sync: ["nfs", "scp", "rsync", "tar"]
 
 
     uses: ./.github/workflows/testrun.yml

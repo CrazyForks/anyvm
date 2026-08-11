@@ -32,7 +32,7 @@ jobs:
         release: ["202510", "202604"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: [ "sshfs", "scp", "nfs", "rsync" ]
+        sync: [ "sshfs", "scp", "nfs", "rsync", "tar"]
 
 
     uses: ./.github/workflows/testrun.yml

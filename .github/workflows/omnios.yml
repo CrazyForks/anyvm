@@ -37,7 +37,7 @@ jobs:
         release: ["r151046", "r151048", "r151050", "r151052", "r151054", "r151056", "r151058"]
         arch: [""]
         runs: ["ubuntu-24.04"]
-        sync: ["nfs", "scp", "rsync"]
+        sync: ["nfs", "scp", "rsync", "tar"]
 
 
     uses: ./.github/workflows/testrun.yml

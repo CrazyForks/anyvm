@@ -46,7 +46,7 @@ jobs:
         release: ["14", "15", "16"]
         arch: [""]
         runs: ["ubuntu-24.04", "windows-latest", "macos-latest"]
-        sync: ["scp"]
+        sync: ["scp", "tar"]
 
     uses: ./.github/workflows/testrun.yml
     secrets: inherit
