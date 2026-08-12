@@ -114,6 +114,8 @@ python3 anyvm.py --os plan9                           # Plan 9 (9front, amd64)
 
 python3 anyvm.py --os reactos                         # ReactOS (i386 only, tech preview)
 
+python3 anyvm.py --os riscos                          # RISC OS (32-bit armv7 only)
+
 python3 anyvm.py --os nextbsd                         # NextBSD (launchd/Mach, amd64)
 
 python3 anyvm.py --os freebsd --release 14.4 --arch riscv64
@@ -197,8 +199,9 @@ More examples and tags: https://github.com/anyvm-org/docker
 | GNU Hurd (Debian)<br>[![Test Hurd](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/hurd.yml) | ✅ (+i386) | — | — | — | — | — | — | [![Build Hurd](https://github.com/anyvm-org/hurd-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/hurd-builder) |
 | Plan 9 (9front)<br>[![Test Plan 9](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml) | ✅ | — | — | — | — | — | — | [![Build Plan 9](https://github.com/anyvm-org/plan9-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/plan9-builder) |
 | ReactOS<br>[![Test ReactOS](https://github.com/anyvm-org/anyvm/actions/workflows/reactos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/reactos.yml) | ✅ (i386 only) | — | — | — | — | — | — | [![Build ReactOS](https://github.com/anyvm-org/reactos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/reactos-builder) |
+| RISC OS<br>[![Test RISC OS](https://github.com/anyvm-org/anyvm/actions/workflows/riscos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/riscos.yml) | — | ✅ (armv7 only) | — | — | — | — | — | [![Build RISC OS](https://github.com/anyvm-org/riscos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/riscos-builder) |
 
-The `x86_64` column also covers the 32-bit `i386` images, marked in the cell where they exist: they run `qemu-system-i386`, which ships in the same QEMU package as the x86_64 emulator, so any host that runs x86_64 guests runs them too. ReactOS is published for `i386` only (`--os reactos` resolves to it on its own); Hurd ships both, and its 32-bit image needs `--arch i386` spelled out.
+Each column also covers the 32-bit member of its own family, marked in the cell where one exists, rather than earning the table an extra axis. The `x86_64` column covers `i386`: those images run `qemu-system-i386`, which ships in the same QEMU package as the x86_64 emulator, so any host that runs x86_64 guests runs them too. ReactOS is published for `i386` only (`--os reactos` resolves to it on its own); Hurd ships both, and its 32-bit image needs `--arch i386` spelled out. The `aarch64` column likewise covers 32-bit `armv7`, which today means RISC OS and only RISC OS: it is a Raspberry Pi 2 guest running on `qemu-system-arm -M raspi2b`, so unlike the i386 case it is a *different* QEMU binary and a fixed board rather than a configurable machine. `--os riscos` resolves to `armv7` by itself.
 
 ## 5. Host support
 
@@ -300,7 +303,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `nextbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9` / `reactos`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `nextbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9` / `reactos` / `riscos`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
@@ -312,12 +315,17 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
     openEuler's `24.03-LTS-SP4`; the published spelling is used from then on.
 
 - `--arch <arch>`: Guest architecture.
-  - Common values: `x86_64` / `i386` / `aarch64` / `riscv64` / `s390x` / `powerpc64` /
-    `ppc64le` / `sparc64` / `loongarch64`
+  - Common values: `x86_64` / `i386` / `aarch64` / `armv7` / `riscv64` / `s390x` /
+    `powerpc64` / `ppc64le` / `sparc64` / `loongarch64`
   - `i386` is the 32-bit x86 target (`qemu-system-i386`): ReactOS ships only
     this arch, and Hurd offers it alongside amd64. A `reactos` guest defaults
     to `i386` because that is all it has; every other guest defaults to the
     host architecture, so Hurd's 32-bit image needs `--arch i386` spelled out.
+  - `armv7` is the 32-bit ARM target (`qemu-system-arm`) and today only RISC OS
+    uses it. `--os riscos` resolves to it on its own, so the flag is never
+    needed. Note the spelling: `arm` is an alias that rewrites to `aarch64`,
+    which is a different guest entirely, so `--arch armv7` is the only form
+    that reaches a RISC OS image.
   - Example: `python3 anyvm.py --os openbsd --release 7.5 --arch aarch64`
   - Notes for ubuntu guests on emulated arches (always TCG, slow):
     - `aarch64` defaults to `-cpu cortex-a72` (distro QEMU 8.2 aborts with a
@@ -418,7 +426,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 - `--sync <mode>`: Sync mechanism used for `-v`. Strictly validated.
   - Supported: `rsync` (default), `sshfs`, `nfs`, `sys-nfs`, `scp`, `tar`, `9p`. Empty string also defaults to `rsync`. Any other value will cause an error.
   - `9p` is the Plan 9 (9front) folder-sync backend and its default: the host mounts the guest's exportfs 9P share over the Linux kernel v9fs client (`mount -t 9p`, needs root/sudo), so it works on a **Linux host only**. On Windows/macOS hosts a plan9 guest still boots and runs commands, but `-v` folder sync is skipped.
-  - `tar` streams each `-v` tree as a ustar archive over the guest's own remote-exec channel (ssh where there is an sshd, otherwise the guest's telnetd): host -> guest at boot, then guest -> host once the passthrough command finishes. It is a one-shot copy in each direction, not a live mount, so it needs no mount privileges and no host kernel support and works from a Linux, macOS or Windows host. The pull-back is skipped in `--detach` mode (the VM stays up for later commands) and when no guest command ran. It is the ReactOS default and the only backend that guest has: ReactOS ships no sshd, no 9P client and no working NFS client, so `rsync` / `sshfs` / `scp` / `nfs` are all unavailable there.
+  - `tar` streams each `-v` tree as a ustar archive over the guest's own remote-exec channel (ssh where there is an sshd, otherwise the guest's telnetd): host -> guest at boot, then guest -> host once the passthrough command finishes. It is a one-shot copy in each direction, not a live mount, so it needs no mount privileges and no host kernel support and works from a Linux, macOS or Windows host. The pull-back is skipped in `--detach` mode (the VM stays up for later commands) and when no guest command ran. It is the default, and the only backend, for the two guests with no sshd at all: ReactOS ships no sshd, no 9P client and no working NFS client, and RISC OS ships no remote-access server of any kind (its whole networking stack is clients plus SMB and Acorn Access), so `rsync` / `sshfs` / `scp` / `nfs` are unavailable on both. On RISC OS the far side of the telnet channel is not even a shell -- it is riscos-builder's own Python agent, which parses the tar command itself -- so guest paths there are RISC OS paths (`$.work`, not `/work`).
   - `nfs` runs the bundled user-space NFS server ([anyvm-org/nfsd](https://github.com/anyvm-org/nfsd), a single pure-Python file downloaded on demand, serving NFSv3/v4 plus a portmapper): no kernel nfsd, no root needed, works on Linux/macOS/Windows hosts (`mynfs` is an accepted alias). Most guests mount it with their NFSv4 client (FreeBSD family, illumos family, Linux). OpenBSD/NetBSD/DragonFlyBSD guests are NFSv3-only and mount it through its portmapper on port 111 -- free and unprivileged on Windows/macOS hosts, but usually owned by the system rpcbind (or root-only) on Linux hosts: use `sys-nfs` for these three guests on a Linux host. There is no automatic fallback between the two backends.
   - `sys-nfs` forces the host kernel NFS server for every guest. Needs a Linux host with root/sudo and the kernel NFS server installed; not available on macOS/Windows hosts.
   - Examples:

@@ -1,0 +1,146 @@
+name: RISC OS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/riscos.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# RISC OS ships no remote-access server of any kind -- its module list carries
+# the TCP/IP stack and clients (LanManFS, ShareFS) but no sshd, telnetd or
+# ftpd -- so riscos-builder bakes its own agent into the image and anyvm
+# drives the guest over it. The agent speaks real telnet, so this is the same
+# transport plan9 and reactos use, and the same reason none of the three can
+# reuse the ssh-based testrun.yml.
+#
+# Folder sync (--sync tar) is a ustar stream over that very channel, needing
+# nothing from the host kernel. This job verifies BOTH:
+#   1. exec: run a command in the guest and read the marker back
+#   2. tar sync: a host file placed via `--sync tar -v` shows up in the guest
+#
+# Two things are specific to this guest and easy to get wrong:
+#
+#   * NO KVM, ever. The machine is raspi2b -- a 32-bit ARM board model, which
+#     QEMU only implements under TCG. There is nothing to accelerate on an
+#     x86_64 runner and no /dev/kvm chmod to do, unlike every other job here.
+#     Boot is around 90 s as a result.
+#   * anyvm downloads a PATCHED qemu-system-arm from the builder release.
+#     No released QEMU can boot RISC OS on a raspi machine at all, so the
+#     qemu-system-arm installed below is only there to satisfy the dependency
+#     probe; the binary that actually runs the guest is the pinned one.
+jobs:
+  test:
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=riscos]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["5.30"]
+        arch: ["armv7"]
+        runs: ["ubuntu-24.04"]
+    runs-on: ${{ matrix.runs }}
+    name: Test ${{ matrix.release }} ${{ matrix.arch }}
+    # TCG only, so this is slower than the accelerated guests: the pinned QEMU
+    # and the image both have to come down before a ~90 s boot. The bound only
+    # stops a wedged boot from burning the 6 h default.
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get --no-install-recommends -y install \
+          zstd qemu-utils qemu-system-arm ca-certificates
+    - name: Boot RISC OS and verify telnet exec + tar sync
+      shell: bash
+      run: |
+        set -e
+        mountdir=test
+        mkdir -p ${mountdir}
+        echo "anyvm" > ${mountdir}/justcheck.txt
+        mkdir -p ../test_output
+        # Boot detached: anyvm returns leaving QEMU running, after wiring the
+        # telnet control forward (host 10024 -> guest 23) and pushing the
+        # shared folder into the guest as a ustar stream over that channel.
+        # --arch comes from the matrix rather than anyvm's riscos armv7
+        # default, because the coverage checker reads the release/arch pair
+        # off this matrix; test.yml's riscos job exercises the default.
+        # The guest path is Unix-style: UnixLib maps /work onto $.work, and
+        # RISC OS swaps '.' and '/' in names on the way through, so the file
+        # lands as justcheck/txt -- which is what the assert below looks for.
+        python anyvm.py --debug --data-dir ../test_output --os riscos \
+          --release "${{ matrix.release }}" --arch "${{ matrix.arch }}" \
+          --ssh-port 10024 -d --boot-timeout-sec 2400 \
+          --sync tar -v "${mountdir}:/work"
+        echo "===============verify telnet exec + tar-synced marker"
+        python3 - <<'PY'
+        import socket, sys, time
+        def telnet_exec(port, cmds, settle=6.0):
+            IAC=255; SE=240; SB=250; WILL,WONT,DO,DONT=251,252,253,254
+            out=bytearray()
+            s=socket.create_connection(("127.0.0.1",port),15)
+            def eat(data):
+                i=0;n=len(data)
+                while i<n:
+                    b=data[i]
+                    if b!=IAC: out.append(b); i+=1; continue
+                    if i+1>=n: break
+                    c=data[i+1]
+                    if c in (DO,DONT,WILL,WONT) and i+2<n:
+                        o=data[i+2]
+                        if c==DO: s.sendall(bytes([IAC,WONT,o]))
+                        elif c==WILL: s.sendall(bytes([IAC,DONT,o]))
+                        i+=3
+                    elif c==SB:
+                        j=i+2
+                        while j+1<n and not (data[j]==IAC and data[j+1]==SE): j+=1
+                        i=j+2
+                    else: i+=2
+            def rd(sec):
+                end=time.time()+sec; s.settimeout(0.5)
+                while time.time()<end:
+                    try: d=s.recv(4096)
+                    except socket.timeout: continue
+                    if not d: return
+                    eat(d)
+            rd(min(settle,2))
+            for c in cmds:
+                s.sendall(c.encode()+b"\r\n"); rd(settle)
+            s.close(); return out.decode("utf-8","replace")
+        # No escaping trick here, unlike plan9's '' split and reactos's cmd.exe
+        # caret. The far side is not a shell: it is riscos-builder's agent,
+        # which reads a command line, runs it through the RISC OS command line
+        # interpreter and returns only that command's output -- it never echoes
+        # what it was sent, so a bare marker cannot match its own command.
+        #
+        # `Cat` is RISC OS's directory listing. The second assert is the strong
+        # one: the filename can only come from the guest's own listing.
+        txt=""
+        for _ in range(20):
+            try:
+                txt=telnet_exec(10024, ["Echo EXEC-OK", "Cat $.work"])
+                if "EXEC-OK" in txt: break
+            except OSError: time.sleep(3)
+        print(txt)
+        assert "EXEC-OK" in txt, "telnet exec failed"
+        # justcheck.txt on the host, justcheck/txt in the guest -- RISC OS uses
+        # '.' as its path separator, so it swaps '.' and '/' in the leafname.
+        # Match the stem so the test does not depend on which side spells it.
+        assert "justcheck" in txt, "tar-synced file not visible in guest"
+        print("riscos verify OK: telnet exec + tar sync")
+        PY
