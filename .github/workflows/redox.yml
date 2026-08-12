@@ -1,0 +1,134 @@
+name: Redox
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '*'
+    paths:
+      - '**.py'
+      - '.github/workflows/redox.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Redox is the fourth guest with no remote-access server of its own: 0.9.0
+# ships no sshd, no telnetd and no ftpd, so redox-builder injects its own
+# agent into the image offline and anyvm drives the guest over it. The agent
+# speaks real telnet, the same transport plan9, reactos and riscos use, and
+# the same reason none of the four can reuse the ssh-based testrun.yml.
+#
+# Folder sync (--sync tar) is a ustar stream over that very channel. This job
+# verifies BOTH:
+#   1. exec: run a command in the guest and read the marker back
+#   2. tar sync: a host file placed via `--sync tar -v` shows up in the guest
+#
+# Unlike riscos, this guest is ordinary in every host-facing way: it is
+# x86_64, so KVM applies and the stock qemu-system-x86 runs it -- there is no
+# pinned QEMU to download. The builder's own CI reaches the agent 9 s after
+# power-on, so the timeout below is headroom, not an estimate.
+#
+# What IS specific to this guest: the agent is not a shell. It parses the
+# command line itself and never echoes it, which is why the tar-pull path in
+# anyvm.py needs skip_echo=False here (the plan9 default would eat the
+# archive's first header block).
+jobs:
+  test:
+    if: >-
+      ${{ github.event_name != 'push'
+          || (
+               ( !contains(github.event.head_commit.message, '[testos=')
+                 || contains(github.event.head_commit.message, '[testos=redox]') )
+            && ( !contains(github.event.head_commit.message, '[testhost=')
+                 || contains(github.event.head_commit.message, '[testhost=linux') )
+             ) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["0.9.0"]
+        arch: ["x86_64"]
+        runs: ["ubuntu-24.04"]
+    runs-on: ${{ matrix.runs }}
+    name: Test ${{ matrix.release }} ${{ matrix.arch }}
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get --no-install-recommends -y install \
+          zstd qemu-utils qemu-system-x86 ca-certificates
+        # /dev/kvm exists on the runner but is not writable, which drops anyvm
+        # to TCG. testrun.yml does the same thing.
+        sudo chmod 666 /dev/kvm || true
+    - name: Boot Redox and verify telnet exec + tar sync
+      shell: bash
+      run: |
+        set -e
+        mountdir=test
+        mkdir -p ${mountdir}
+        echo "anyvm" > ${mountdir}/justcheck.txt
+        mkdir -p ../test_output
+        # Boot detached: anyvm returns leaving QEMU running, after wiring the
+        # telnet control forward (host 10025 -> guest 23) and pushing the
+        # shared folder into the guest as a ustar stream over that channel.
+        # --arch comes from the matrix rather than anyvm's redox x86_64
+        # default, because the coverage checker reads the release/arch pair
+        # off this matrix; test.yml's redox job exercises the default.
+        python anyvm.py --debug --data-dir ../test_output --os redox \
+          --release "${{ matrix.release }}" --arch "${{ matrix.arch }}" \
+          --ssh-port 10025 -d --boot-timeout-sec 900 \
+          --sync tar -v "${mountdir}:/work"
+        echo "===============verify telnet exec + tar-synced marker"
+        python3 - <<'PY'
+        import socket, sys, time
+        def telnet_exec(port, cmds, settle=5.0):
+            IAC=255; SE=240; SB=250; WILL,WONT,DO,DONT=251,252,253,254
+            out=bytearray()
+            s=socket.create_connection(("127.0.0.1",port),15)
+            def eat(data):
+                i=0;n=len(data)
+                while i<n:
+                    b=data[i]
+                    if b!=IAC: out.append(b); i+=1; continue
+                    if i+1>=n: break
+                    c=data[i+1]
+                    if c in (DO,DONT,WILL,WONT) and i+2<n:
+                        o=data[i+2]
+                        if c==DO: s.sendall(bytes([IAC,WONT,o]))
+                        elif c==WILL: s.sendall(bytes([IAC,DONT,o]))
+                        i+=3
+                    elif c==SB:
+                        j=i+2
+                        while j+1<n and not (data[j]==IAC and data[j+1]==SE): j+=1
+                        i=j+2
+                    else: i+=2
+            def rd(sec):
+                end=time.time()+sec; s.settimeout(0.5)
+                while time.time()<end:
+                    try: d=s.recv(4096)
+                    except socket.timeout: continue
+                    if not d: return
+                    eat(d)
+            rd(min(settle,2))
+            for c in cmds:
+                s.sendall(c.encode()+b"\r\n"); rd(settle)
+            s.close(); return out.decode("utf-8","replace")
+        # ion is the shell behind the agent, and it collapses '' exactly like
+        # rc and sh -- so the split marker reassembles in the OUTPUT while the
+        # command line itself reads EXEC''-OK. (The agent never echoes what it
+        # was sent either, so this is belt and braces.)
+        txt=""
+        for _ in range(20):
+            try:
+                txt=telnet_exec(10025, ["echo EXEC''-OK", "ls /work"])
+                if "EXEC-OK" in txt: break
+            except OSError: time.sleep(3)
+        print(txt)
+        assert "EXEC-OK" in txt, "telnet exec failed"
+        assert "justcheck.txt" in txt, "tar-synced file not visible in guest"
+        print("redox verify OK: telnet exec + tar sync")
+        PY
