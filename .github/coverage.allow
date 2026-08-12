@@ -68,6 +68,27 @@ reactos * test.yml
 reactos * testmacos.yml
 reactos * testwindows.yml
 
+# riscos: two independent reasons, and neither is a hole worth filling.
+#
+# (1) No sshd. RISC OS ships no remote-access server of ANY kind -- its whole
+# networking stack is clients plus LanManFS and ShareFS/Freeway -- so
+# riscos-builder bakes in its own Python agent and anyvm drives it over
+# telnet. With no sshd it cannot reuse the ssh-based testrun.yml that
+# testsync/testnfs/testsysnfs all route through, and its only sync backend is
+# tar (releases.json sync=tar). test.yml carries a dedicated "Test riscos tar"
+# job instead (the comment above it says so), which verifies boot + telnet
+# exec + tar sync on the Linux host.
+#
+# (2) Linux x86_64 only, so the macOS and Windows jobs are not skipped
+# coverage -- the guest cannot run there at all. anyvm.py says it in its own
+# words: "RISC OS is Linux x86_64 only ... no released QEMU can boot RISC OS
+# on a raspi machine, so the guest depends on the patched build that
+# ensure_pinned_qemu() downloads -- and that only exists for Linux x86_64."
+# The pinned asset is literally named for it: qemu-10.2.3-riscos-arm-noble.
+riscos * test.yml
+riscos * testmacos.yml
+riscos * testwindows.yml
+
 # solaris: solaris.yml's own comment -- "Solaris has no FUSE sshfs
 # (VM_SSHFS_PKG is unset), so sshfs is omitted" (releases.json
 # sync=rsync,scp,nfs). solaris stays in testnfs/testsysnfs; only testsync
