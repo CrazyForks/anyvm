@@ -158,7 +158,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "hurd": "2.0.0",
     "plan9": "2.0.1",
     "nextbsd": "2.0.0",
-    "reactos": "2.0.0"
+    "reactos": "2.0.0",
+    "riscos": "2.0.0"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
@@ -180,6 +181,15 @@ PINNED_QEMU_ASSETS = {
     # clobber bug (see the sparc64 branch at the ensure_pinned_qemu call
     # site), so this pin is preferred REGARDLESS of the system version.
     "sparc64": "qemu-10.2.3-sparc64-noble.tar.zst",
+    # 10.2.3 PLUS riscos-builder's files/qemu-riscos-raspi.patch. Unlike the
+    # pins above this is not "newer than the distro build" -- NO released QEMU
+    # can boot RISC OS on any raspi machine, so this one is mandatory rather
+    # than preferred. Eight fixes plus a new usb-net-smsc95xx device model
+    # (the SMSC LAN9512 is the Pi 2's real NIC and the only one RISC OS can
+    # drive); four of the eight are generic QEMU defects, three in dwc2 and
+    # one in bcm2835_dma where a non-multiple-of-four length wraps a uint32_t
+    # and spins ~2^30 times over guest memory.
+    "armv7": "qemu-10.2.3-riscos-arm-noble.tar.zst",
 }
 # There is deliberately NO table mapping an arch to the repo that publishes
 # its pinned QEMU. The asset is always fetched from the guest's OWN builder,
@@ -202,6 +212,15 @@ PINNED_QEMU_ASSETS = {
 # other pinned asset it is fetched from the image's own builder_repo at the
 # image's own release, so only the file name is a constant here.
 OPENBIOS_SPARC64_ASSET = "openbios-sparc64.elf"
+
+# The RISC OS ROM, published as a release asset by riscos-builder. The raspi
+# machines have no firmware of their own for QEMU to fall back on, so this is
+# mandatory rather than a patched replacement. It cannot be read out of the
+# qcow2 at run time even though a copy lives in the image's FAT boot
+# partition: that would mean parsing a partition table and a FAT volume on
+# every start. Fetched from the image's own builder at the image's own
+# release, like every other pinned asset.
+RISCOS_ROM_ASSET = "RISCOS.IMG"
 
 # Pinned user-space NFS server (github.com/anyvm-org/nfsd): one pure-Python
 # stdlib-only file serving NFSv3/v4.0/v4.1 plus a portmapper (-pmap), runs
@@ -4183,6 +4202,11 @@ def qemu_binary_name(arch):
         return "qemu-system-loongarch64"
     if arch == "aarch64":
         return "qemu-system-aarch64"
+    if arch in ("armv7", "arm"):
+        # 32-bit ARM (RISC OS on raspi2b). QEMU spells the binary "arm", not
+        # after the profile; ships in qemu-system-arm on Debian/Ubuntu, which
+        # APT_ALL_DEPS already installs for the aarch64 guests.
+        return "qemu-system-arm"
     if arch == "sparc64":
         return "qemu-system-sparc64"
     if arch in ("powerpc64", "powerpc64le", "ppc64", "ppc64le"):
@@ -6253,6 +6277,13 @@ def _tar_push_telnet(host_port, vhost, vguest, excludes=None, debug=False,
             cmd = ('mkdir "{0}" 2>nul & cd /d "{0}" && '
                    'C:\\anyvm\\tar.exe -xf - && '
                    'echo anyvm^-tar-done').format(vguest)
+        elif os_name == "riscos":
+            # anyvmd.py, not a shell: RISC OS has no `&&` and no tar, so the
+            # agent parses this whole line itself, extracts with Python's
+            # tarfile, and prints the marker when that returned cleanly. The
+            # marker needs no split here because the agent never echoes what
+            # it was sent, so an echo cannot match it.
+            cmd = "mkdir -p '{0}' && cd '{0}' && tar -xf -".format(vguest)
         else:
             # rc (the plan9 shell); plan9 tar defaults to stdin for x.
             cmd = ("mkdir -p '{0}' && cd '{0}' && tar x && "
@@ -6338,6 +6369,12 @@ def _tar_pull_telnet(host_port, vhost, vguest, debug=False, os_name=None):
                 "the pulled tar stream may be corrupted by pty NL mapping.")
         if os_name == "reactos":
             cmd = 'cd /d "{0}" && C:\\anyvm\\tar.exe -cf - .'.format(vguest)
+            skip_echo = False
+        elif os_name == "riscos":
+            # As on the push: anyvmd.py parses the line and streams the
+            # archive back itself. skip_echo is False because the agent is
+            # not a shell and never echoes the command.
+            cmd = "cd '{0}' && tar -cf - .".format(vguest)
             skip_echo = False
         else:
             cmd = "cd '{0}' && tar c .".format(vguest)
@@ -7200,6 +7237,33 @@ def main():
         config['arch'] = "i386"
         debuglog(config['debug'], "reactos: defaulting arch to i386 (only arch published)")
 
+    # RISC OS is the same situation for the same reason: it is a 32-bit ARM
+    # system with no 64-bit port, so the host-arch default sends an x86_64 (or
+    # aarch64) host looking for an image no release carries. Note that armv7
+    # is the only spelling that reaches here intact -- "arm" is rewritten to
+    # aarch64 by the alias map just above, which is exactly why the builder
+    # names the arch armv7 rather than arm.
+    if config['os'] == "riscos" and not arch_specified:
+        config['arch'] = "armv7"
+        debuglog(config['debug'], "riscos: defaulting arch to armv7 (only arch published)")
+
+    # RISC OS is Linux x86_64 only, and it is worth saying so HERE rather than
+    # letting the generic path discover it: no released QEMU can boot RISC OS
+    # on a raspi machine, so the guest depends on the patched build that
+    # ensure_pinned_qemu() downloads -- and that only exists for Linux x86_64.
+    # On any other host ensure_pinned_qemu() shrugs ("no pinned build exists
+    # for this host platform; the guest may misbehave") and hands back the
+    # system qemu-system-arm, which then fails much later in a way that looks
+    # like a broken image rather than an unsupported host. This check runs
+    # before the image download, so nobody pulls a multi-GB qcow2 first.
+    if config['os'] == "riscos" and not config['qcow2']:
+        if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
+            fatal("RISC OS needs a patched QEMU that is only published for "
+                  "Linux x86_64 hosts (this host is {} {}). No released QEMU "
+                  "can boot RISC OS on a Raspberry Pi machine, so there is no "
+                  "system fallback. See https://anyvm.org/docs/guests.html#riscos"
+                  .format(platform.system(), platform.machine()))
+
     # Fail fast when host dependencies are missing: this runs BEFORE any
     # image download (images are multi-GB), so the user gets the install
     # command instead of a wasted download. The qemu-system check is skipped
@@ -7208,7 +7272,7 @@ def main():
     # after that substitution still covers them.
     missing_deps = []
     if config['arch'] not in ("riscv64", "s390x", "powerpc64", "powerpc64le",
-                              "ppc64", "ppc64le", "loongarch64"):
+                              "ppc64", "ppc64le", "loongarch64", "armv7"):
         early_bin_name = qemu_binary_name(config['arch'])
         if not find_qemu(early_bin_name):
             missing_deps.append(early_bin_name)
@@ -7887,14 +7951,15 @@ def main():
             else:
                 debuglog(config['debug'], "No guest profile at {} (release predates it); using built-in launch logic".format(profile_url))
 
-    # Remote-exec transport: profile "transport" key wins; otherwise plan9 and
-    # reactos always mean telnet -- 9front has no sshd, and ReactOS ships no
-    # remote-access server at all, so its images carry a baked telnet daemon
-    # instead. Everything else = ssh. The per-OS fallback matters for a local
-    # --qcow2 file, which has no profile sidecar to read.
+    # Remote-exec transport: profile "transport" key wins; otherwise plan9,
+    # reactos and riscos always mean telnet -- 9front has no sshd, and neither
+    # ReactOS nor RISC OS ships a remote-access server of any kind, so their
+    # images carry a baked agent instead. Everything else = ssh. The per-OS
+    # fallback matters for a local --qcow2 file, which has no profile sidecar
+    # to read.
     if guest_profile and guest_profile.get('transport'):
         config['transport'] = guest_profile['transport']
-    elif config['os'] in ("plan9", "reactos"):
+    elif config['os'] in ("plan9", "reactos", "riscos"):
         config['transport'] = "telnet"
 
     # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
@@ -7904,6 +7969,36 @@ def main():
     # No releases/latest fallback: that is a moving target which can hand a
     # guest firmware built for a different image (and it races a freshly-cut
     # tag, whose assets appear only after its upload jobs finish).
+    # RISC OS: the ROM the raspi machine boots, from the builder release.
+    riscos_rom_file = None
+    if config['arch'] == "armv7":
+        riscos_rom_file = os.path.join(output_dir, RISCOS_ROM_ASSET)
+        if not os.path.exists(riscos_rom_file):
+            if not config['builder']:
+                fatal("RISC OS needs {} from its builder release, but no "
+                      "builder version was resolved (pass --builder).".format(
+                          RISCOS_ROM_ASSET))
+            rom_url = "https://github.com/{}/releases/download/v{}/{}".format(
+                builder_repo, str(config['builder']).lstrip("v"),
+                RISCOS_ROM_ASSET)
+            if config.get('cachedir'):
+                rel_path = os.path.relpath(output_dir, working_dir)
+                cache_output_dir = os.path.join(config['cachedir'], rel_path)
+                if not os.path.exists(cache_output_dir):
+                    os.makedirs(cache_output_dir)
+                cached_rom = os.path.join(cache_output_dir, RISCOS_ROM_ASSET)
+                if not os.path.exists(cached_rom):
+                    debuglog(config['debug'], "RISC OS ROM not in cache, downloading to: {}".format(cached_rom))
+                    download_file(rom_url, cached_rom, config['debug'])
+                if os.path.exists(cached_rom):
+                    shutil.copy2(cached_rom, riscos_rom_file)
+            else:
+                download_file(rom_url, riscos_rom_file, config['debug'])
+        if not os.path.exists(riscos_rom_file):
+            fatal("Could not obtain {} -- RISC OS cannot boot without its "
+                  "ROM (the raspi machine has no built-in firmware).".format(
+                      RISCOS_ROM_ASSET))
+
     sparc64_bios_file = None
     if config['os'] == "openbsd" and config['arch'] == "sparc64":
         sparc64_bios_file = os.path.join(output_dir, OPENBIOS_SPARC64_ASSET)
@@ -8059,6 +8154,18 @@ def main():
         # absorbs it.
         qemu_bin = ensure_pinned_qemu("sparc64", qemu_bin, (0, 0),
                                       working_dir, config['debug'], force=True,
+                                      repo=builder_repo,
+                                      builder_tag=config.get('builder'))
+    elif config['arch'] == "armv7":
+        # Forced, and for a stronger reason than any pin above: no released
+        # QEMU can boot RISC OS on a raspi machine at all, so a newer stock
+        # build is not "good enough" -- there is nothing to fall back to. The
+        # patched tarball comes from the image's own builder release.
+        # bin_name is explicit because QEMU spells the binary after the
+        # family ("arm"), not after the arch profile.
+        qemu_bin = ensure_pinned_qemu("armv7", qemu_bin, (0, 0),
+                                      working_dir, config['debug'], force=True,
+                                      bin_name="qemu-system-arm",
                                       repo=builder_repo,
                                       builder_tag=config.get('builder'))
 
@@ -8479,6 +8586,15 @@ def main():
             "-drive", "file={},format=qcow2,if=none,id=disk0,discard=unmap,detect-zeroes=unmap".format(qcow_name),
             "-device", "virtio-blk-device,drive=disk0"
         ])
+    elif config['arch'] == "armv7":
+        # RISC OS on raspi2b boots off the SD interface -- the board has no
+        # disk controller and no PCI bus to put one on, and SDFS is what the
+        # guest reads. No discard/detect-zeroes: QEMU's SD model is not a
+        # TRIM-capable transport, and every verified boot of this guest ran
+        # without them.
+        args_qemu.extend([
+            "-drive", "file={},format=qcow2,if=sd".format(qcow_name)
+        ])
     elif config['arch'] == "sparc64":
         # QEMU sun4u's CMD646 PCI IDE under TCG loses completion interrupts on
         # TRIM/UNMAP: discard=unmap + detect-zeroes=unmap turn zero-writes into
@@ -8505,6 +8621,13 @@ def main():
     if config['os'] in ["windows", "reactos", "haiku"]:
         rtc_base = "localtime"
     rtc_opts = "base={},clock=host,driftfix=slew".format(rtc_base)
+    if config['os'] == "riscos":
+        # Same class of hazard as ReactOS below, for a simpler reason: the
+        # Raspberry Pi has no mc146818 RTC for driftfix to act on, and RISC OS
+        # calibrates its own delay loops from timer interrupts. Every verified
+        # boot of this guest ran without driftfix; do not add it back on the
+        # strength of it "probably being a no-op".
+        rtc_opts = "base={},clock=host".format(rtc_base)
     if config['os'] == "reactos":
         # NO driftfix for ReactOS: it is the difference between booting and
         # not. HalpCalibrateStallExecution (hal/halx86/generic/systimer.S)
@@ -8559,6 +8682,12 @@ def main():
     else:
         if config['arch'] == "aarch64":
             net_card = "virtio-net-pci"
+        elif config['arch'] == "armv7":
+            # raspi2b has no PCI bus, so the e1000 default would abort QEMU at
+            # launch. The board's real NIC is an SMSC LAN9512 behind the
+            # on-chip USB hub, and it is also the only model RISC OS can
+            # drive -- there is no choice to make here.
+            net_card = "usb-net-smsc95xx"
         else:
             net_card = "e1000"
         if config['os'] == "openbsd" and config['arch'] == "sparc64":
@@ -9050,6 +9179,26 @@ def main():
             "-cpu", cpu_opts,
             "-device", "{},netdev=net0".format(net_card),
         ])
+    elif config['arch'] == "armv7":
+        # RISC OS on a Raspberry Pi 2 -- a real board, not QEMU's `virt`. The
+        # guest drives BCM2835 peripherals directly and knows nothing about
+        # PCI, virtio or UEFI, so this branch adds almost nothing: no -cpu
+        # (raspi2b fixes it at Cortex-A7), no accel option (the board models
+        # are TCG-only), no VGA (video is the BCM2835 framebuffer through the
+        # mailbox), no pflash. The ROM is supplied through -bios further down.
+        #
+        # Needs the patched QEMU riscos-builder publishes; stock QEMU cannot
+        # boot RISC OS on any raspi machine. ensure_pinned_qemu() fetches it.
+        #
+        # The NIC is a USB device on the on-chip hub: a real Pi 2 carries an
+        # SMSC LAN9512 and RISC OS has a driver for that and nothing else QEMU
+        # offers, so without it the guest has no networking at all.
+        args_qemu.extend([
+            "-machine", "raspi2b",
+            "-device", "{},netdev=net0".format(net_card),
+        ])
+        if riscos_rom_file:
+            args_qemu.extend(["-bios", riscos_rom_file])
     else:
         # x86_64
         machine_opts = "pc,accel={},hpet=off,smm=off,graphics=on,vmport=off,usb=on".format(accel)
@@ -9434,7 +9583,11 @@ def main():
     # s390x has no PCI by default -- its rng is a CCW device.
     # ReactOS has no virtio-rng driver either, and an unclaimed PCI device
     # makes it raise a modal "New Hardware Wizard" over the desktop.
-    if config['os'] not in ("solaris", "reactos") and config['arch'] != "sparc64":
+    # armv7 is raspi2b, which has no PCI bus at all -- a blunter version of
+    # the sparc64 case: QEMU aborts at launch rather than merely confusing
+    # the guest.
+    if (config['os'] not in ("solaris", "reactos")
+            and config['arch'] not in ("sparc64", "armv7")):
         rng_dev = "virtio-rng-ccw" if config['arch'] == "s390x" else "virtio-rng-pci"
         args_qemu.extend(["-object", "rng-builtin,id=rng0", "-device", "{},rng=rng0,max-bytes=1024,period=1000".format(rng_dev)])
 
