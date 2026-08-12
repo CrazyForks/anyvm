@@ -5547,19 +5547,33 @@ def telnet_exec(host_port, cmds, settle=2.0, connect_timeout=10):
     return alive, out.decode("utf-8", "replace")
 
 
-def telnet_ready(host_port):
-    """One telnet marker probe: connect, echo a split marker (so the guest's
-    own echo of the command can't match), look for the reassembled marker.
+def telnet_ready(host_port, os_name=None):
+    """One telnet marker probe: connect, echo a marker, look for it coming back.
 
-    The shell on the far side is not universal. plan9/9front answers with rc,
-    where '' splits the word; ReactOS answers with cmd.exe, where '' is not a
-    quote at all and the caret is the escape character instead. Both forms go
-    out in one session and either marker counts -- the wrong form for a given
-    shell just prints itself and fails to match, which is harmless."""
-    ok, text = telnet_exec(host_port,
-                           ["echo anyvm''-ready",     # rc (plan9/9front)
-                            "echo anyvm^-ready"],     # cmd.exe (reactos)
-                           settle=2.0, connect_timeout=5)
+    Neither the shell on the far side nor the trick that keeps the guest's own
+    echo of the command line from matching is universal:
+      * plan9/9front answers with rc, where '' splits the word;
+      * ReactOS answers with cmd.exe, where '' is not a quote at all and the
+        caret is the escape character instead;
+      * RISC OS answers with riscos-builder's anyvmd.py, which is NOT a shell.
+        It collapses neither '' nor ^, so both of those come back with the
+        separator still embedded -- verified against a live guest, which
+        answered the two shell forms with the literal "anyvm''-ready" and
+        "anyvm^-ready" and therefore could never match. Its `Echo` is a plain
+        command, and the agent never echoes the line it was sent, so a BARE
+        marker is both necessary and safe there.
+
+    Sending the wrong form to a shell-backed guest is harmless -- it just
+    prints itself and fails to match. A bare marker is NOT harmless on
+    cmd.exe, which echoes the command line and would then match its own echo,
+    reporting ready before anything has actually run. So riscos gets its own
+    probe instead of one more entry in the shared list."""
+    if os_name == "riscos":
+        cmds = ["Echo anyvm-ready"]
+    else:
+        cmds = ["echo anyvm''-ready",     # rc (plan9/9front)
+                "echo anyvm^-ready"]      # cmd.exe (reactos)
+    ok, text = telnet_exec(host_port, cmds, settle=2.0, connect_timeout=5)
     return ok and ("anyvm-ready" in text)
 
 
@@ -8200,6 +8214,16 @@ def main():
             # Pin graphical VNC here so no generic rule below can take it away.
             debuglog(config['debug'],
                      "reactos: keeping graphical VNC (COM1 has no shell, only kernel debug)")
+        elif config['os'] == "riscos":
+            # Same trap as reactos, one step worse. RISC OS is a desktop system
+            # -- the Wimp desktop on the BCM2835 framebuffer is the display --
+            # and it writes NOTHING to the serial port: <osname>.serial.log
+            # stays at 0 bytes for an entire run. (That is the same fact that
+            # makes its shutdown end on a timeout instead of a halt banner.)
+            # The generic non-x86 rule below would therefore replace the one
+            # surface that has content with one that is permanently blank.
+            debuglog(config['debug'],
+                     "riscos: keeping graphical VNC (serial is never written to)")
         elif config['os'] == "openindiana":
             if "202510" in config['release']:
                 # Rule for OpenIndiana: Default to 'console' if not specified.
@@ -8413,6 +8437,33 @@ def main():
     if (config['arch'] in ("powerpc64", "powerpc64le", "ppc64", "ppc64le")
             and accel == "tcg"):
         config['cpu'] = "1"
+
+    # RISC OS runs on raspi2b, which models one specific board rather than a
+    # configurable machine, so -smp and -m are not preferences here -- QEMU
+    # refuses to start on either mismatch and the guest never runs:
+    #
+    #   hw/arm/raspi.c, raspi_machine_class_init():
+    #       mc->default_cpus = mc->min_cpus = mc->max_cpus = cores_count(board_rev);
+    #   so -smp must be EXACTLY 4 for a Pi 2 (min == max; not "at least 4"),
+    #   and the error is
+    #       "Invalid SMP CPUs 2. The min CPUs supported by machine 'raspi2b' is 4"
+    #
+    #   raspi_machine_init() rejects any other size with
+    #       "Invalid RAM size, should be %s"
+    #   against board_ram_size(board_rev) = 256 MiB << MEMORY_SIZE. raspi2b is
+    #   board rev 0xa21041, whose MEMORY_SIZE field is 2, so 256 MiB << 2 =
+    #   1024 MB.
+    #
+    # Both defaults were wrong: TCG had already clamped the vCPUs to 2 above,
+    # and memory came in at 4096. This is pinned rather than capped, because a
+    # cap cannot raise 2 up to 4, and it deliberately overrides an explicit
+    # --cpu/--mem too -- there is no working value other than these. It mirrors
+    # riscos-builder's conf, which pins VM_CPU=4 / VM_MEMORY=1024 for exactly
+    # the same reason. (RISC OS then reports 960MB; the GPU split takes the
+    # rest.)
+    if config['os'] == "riscos":
+        config['cpu'] = "4"
+        config['mem'] = "1024"
 
     # KVM-accelerated x86_64-on-x86_64 guests reach the ssh probe in well
     # under a minute; when slirp has seen no guest packet for minutes the
@@ -10132,7 +10183,7 @@ def main():
                     # plan9/9front: no sshd -- readiness is the guest's telnetd
                     # answering the marker probe through the hostfwd.
                     timed_out = False
-                    if telnet_ready(config['sshport']):
+                    if telnet_ready(config['sshport'], config['os']):
                         last_probe_result = "telnet ready"
                         success = True
                         break
@@ -10419,7 +10470,7 @@ def main():
                         # timeout and failed even with the guest up
                         # (Windows CI run 30001634758).
                         timed_out = False
-                        if telnet_ready(config['sshport']):
+                        if telnet_ready(config['sshport'], config['os']):
                             last_probe_result = "telnet ready"
                             success = True
                             break
