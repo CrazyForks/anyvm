@@ -508,6 +508,19 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
   - Examples:
     - `python3 anyvm.py --os freebsd -- uname -a`
     - `python3 anyvm.py --os freebsd -- sh -lc "id; uname -a"`
+  - **anyvm exits with the guest command's status**, so it fails a shell script
+    or a CI step exactly the way running the command locally would. Every other
+    path exits 0: `--detach`, `--console`, and an interactive session with no
+    `--` command are not command failures.
+  - Quoting is the guest shell's, not anyvm's. As with plain `ssh`, the
+    arguments are joined with spaces and re-parsed on the far side, so
+    `-- sh -c 'exit 42'` arrives as `sh -c exit 42` and exits 0. Wrap the whole
+    snippet in one argument -- `-- "sh -c 'exit 42'"` -- or use `sh -lc "..."`
+    as in the examples above.
+  - The four guests reached over telnet rather than ssh (Plan 9, ReactOS,
+    RISC OS, Redox) have no exit-status channel in that protocol, so they
+    report `0` for a command that ran and `255` only if the session itself
+    failed -- never the command's own status.
 
 
 

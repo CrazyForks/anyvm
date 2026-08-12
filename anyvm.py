@@ -2892,6 +2892,8 @@ Options:
   --sync-time [off]      Synchronize VM time using NTP inside the guest after boot.
                          (Default: enabled for DragonFlyBSD/Solaris family, disabled otherwise).
   --                     Send all following args to the final ssh command (executes inside the VM).
+                         anyvm exits with that command's status, so it fails a
+                         script or a CI step the way the command itself would.
   --help, -h             Show this help message.
 
 Examples:
@@ -10825,6 +10827,13 @@ Host host
             # Tracks whether anything actually ran in the guest this session;
             # the tar-sync pull-back below is pointless otherwise.
             guest_cmd_ran = False
+            # The status anyvm itself exits with. It mirrors the guest command
+            # (or interactive shell), so `anyvm ... -- make test` fails a shell
+            # script or a CI step exactly the way running the command locally
+            # would. It stays 0 whenever nothing ran in the guest -- --detach,
+            # a skipped final ssh, console mode -- because "no command" is not
+            # a failed command.
+            guest_rc = 0
             if not config['detach'] and config.get('transport') == "telnet":
                 # plan9/9front: no ssh. A passthrough `-- cmd ...` runs over
                 # telnet and prints the transcript. With no command, drop into
@@ -10841,6 +10850,13 @@ Host host
                         sys.stdout.write("\n")
                     if not ok:
                         log("Warning: telnet session to the guest closed early.")
+                        # telnet_exec has no exit-status channel (see its
+                        # docstring), so a telnet guest can report only that
+                        # the session itself failed, never what the command
+                        # returned. 255 is ssh's own "transport failed, the
+                        # command may not have run" code, reused here so both
+                        # paths signal that condition the same way.
+                        guest_rc = 255
                 elif stdin_is_tty:
                     interactive_telnet(config['sshport'])
                     guest_cmd_ran = True
@@ -10866,6 +10882,7 @@ Host host
                     debuglog(config['debug'], "[trace] final-SSH calling subprocess.call ...")
                     rc = subprocess.call(ssh_cmd)
                     guest_cmd_ran = True
+                    guest_rc = rc
                     debuglog(config['debug'], "[trace] final-SSH returned rc={}".format(rc))
             else:
                 debuglog(config['debug'], "[trace] detach mode -- skipping final SSH")
@@ -10930,6 +10947,7 @@ Host host
                     log("======================================")
                 else:
                     log("VM has exited")
+            return guest_rc
         except KeyboardInterrupt:
             if not config['detach']:
                 terminate_process(proc, "QEMU")
@@ -10978,11 +10996,18 @@ def main_installed():
     Flips INSTALLED before main() runs so the defaults land in the per-user
     cache instead of beside the installed file. Running anyvm.py from a
     checkout goes through __main__ below and is unaffected.
+
+    Returns main()'s status so the guest command's exit code survives: the
+    console script packaging generates a `sys.exit(main_installed())` wrapper,
+    so a value returned here becomes the process exit code.
     """
     global INSTALLED
     INSTALLED = True
-    main()
+    return main()
 
 if __name__ == '__main__':
-    main()
+    # sys.exit() rather than a bare call: main() returns the guest command's
+    # exit code, and a plain `main()` would discard it and always exit 0.
+    # A None return (every path that runs no guest command) exits 0.
+    sys.exit(main())
 
