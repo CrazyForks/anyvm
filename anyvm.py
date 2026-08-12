@@ -159,7 +159,8 @@ DEFAULT_BUILDER_VERSIONS = {
     "plan9": "2.0.1",
     "nextbsd": "2.0.0",
     "reactos": "2.0.0",
-    "riscos": "2.0.0"
+    "riscos": "2.0.0",
+    "redox": "2.0.0"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
@@ -2782,11 +2783,14 @@ Options:
   --os <name>            Operating System name (Required).
                          Supported: freebsd, ghostbsd, midnightbsd, nextbsd, openbsd, netbsd,
                                     dragonflybsd, solaris, omnios, openindiana, tribblix, haiku,
-                                    ubuntu, openeuler, blissos, hurd, plan9, reactos
+                                    ubuntu, openeuler, blissos, hurd, plan9, reactos, riscos,
+                                    redox
   --release <ver>        OS Release version (e.g., 15.0, 7.4).
                          If invalid or omitted, tries to detect from available releases.
   --arch <arch>          Architecture: x86_64, i386, aarch64, riscv64, sparc64, powerpc64,
-                         s390x or loongarch64. Default: Host architecture.
+                         s390x, armv7 or loongarch64. Default: Host architecture.
+                         Single-arch guests override the host default: reactos
+                         is i386, riscos is armv7, redox is x86_64.
   --mem <MB>             Memory size in MB (Default: 4096 when the host
                          has more than 4 GB of RAM, else 2048).
   --cpu <num>            Number of CPU cores (Default: host cores, capped at
@@ -6390,6 +6394,20 @@ def _tar_pull_telnet(host_port, vhost, vguest, debug=False, os_name=None):
             # not a shell and never echoes the command.
             cmd = "cd '{0}' && tar -cf - .".format(vguest)
             skip_echo = False
+        elif os_name == "redox":
+            # Same command as the plan9 arm below, but skip_echo=False: the
+            # far side is redox-builder's anyvmd, which parses the line and
+            # streams the archive itself, exactly like riscos and reactos.
+            # Only plan9 needs the skip -- there a real rc runs on a pty and
+            # echoes the command line back before the archive starts.
+            #
+            # Taking the plan9 default here ate the archive's FIRST HEADER
+            # BLOCK (the reader discards up to the first newline) and the host
+            # tar reported "Skipping to next header / Exiting with failure
+            # status". The push leg is unaffected and looks perfectly healthy,
+            # so the symptom is a one-directional sync that nothing else flags.
+            cmd = "cd '{0}' && tar c .".format(vguest)
+            skip_echo = False
         else:
             cmd = "cd '{0}' && tar c .".format(vguest)
             skip_echo = True
@@ -7261,6 +7279,16 @@ def main():
         config['arch'] = "armv7"
         debuglog(config['debug'], "riscos: defaulting arch to armv7 (only arch published)")
 
+    # Redox is the third guest published for exactly one arch: 0.9.0 is the
+    # only release upstream ever cut and it is x86_64-only (there is no aarch64
+    # port). So an aarch64 host's arch default sends it looking for
+    # redox-<rel>-aarch64.qcow2.zst, which no release carries. Note the empty
+    # string: "" is how this file spells x86_64 after the normalization above,
+    # NOT "unset", so on an x86_64 host this is already a no-op.
+    if config['os'] == "redox" and not arch_specified:
+        config['arch'] = ""
+        debuglog(config['debug'], "redox: defaulting arch to x86_64 (only arch published)")
+
     # RISC OS is Linux x86_64 only, and it is worth saying so HERE rather than
     # letting the generic path discover it: no released QEMU can boot RISC OS
     # on a raspi machine, so the guest depends on the patched build that
@@ -7356,6 +7384,17 @@ def main():
         debuglog(config['debug'],
                  "reactos: defaulting sync mode to tar (override with --sync)")
 
+    # redox: same reasoning, different missing pieces. Redox 0.9.0 ships no
+    # sshd and no ssh client (out: rsync/sshfs/scp), no 9P and no NFS client,
+    # so tar over the injected anyvmd telnet agent is the only backend that
+    # works -- and it needs nothing baked in, because /bin/tar is already on
+    # the stock image. Without this the ssh-based rsync default would make
+    # every `-v` run fail with a confusing ssh error.
+    if config['os'] == "redox" and not sync_user_specified:
+        config['sync'] = "tar"
+        debuglog(config['debug'],
+                 "redox: defaulting sync mode to tar (override with --sync)")
+
     if not config['vga']:
         if config['os'] == "netbsd" and config['arch'] != "aarch64":
             config['vga'] = "std"
@@ -7370,6 +7409,15 @@ def main():
             # profile's "vga" field is never consulted by this file -- this
             # chain is the only source -- so an OS missing from it silently
             # gets virtio no matter what its builder recorded.
+            config['vga'] = "std"
+        elif config['os'] == "redox":
+            # Redox has no virtio-gpu driver: vesad draws on the framebuffer
+            # the BOOTLOADER hands it, which on QEMU means the std VGA one
+            # ("Framebuffer 1280x800 stride 1280 at FD000000" in its boot log).
+            # redox-builder builds and verifies on VM_VGA=std, and its
+            # profile.json records "vga": "std" -- but per the note just above
+            # that field is never read here, so the guest would silently get
+            # virtio-gpu and come up with no console at all.
             config['vga'] = "std"
         elif config['os'] == "openbsd" and config['arch'] != "aarch64" and config['release'] and any(
             config['release'].endswith(s)
@@ -7966,14 +8014,14 @@ def main():
                 debuglog(config['debug'], "No guest profile at {} (release predates it); using built-in launch logic".format(profile_url))
 
     # Remote-exec transport: profile "transport" key wins; otherwise plan9,
-    # reactos and riscos always mean telnet -- 9front has no sshd, and neither
-    # ReactOS nor RISC OS ships a remote-access server of any kind, so their
-    # images carry a baked agent instead. Everything else = ssh. The per-OS
-    # fallback matters for a local --qcow2 file, which has no profile sidecar
-    # to read.
+    # reactos, riscos and redox always mean telnet -- 9front has no sshd, and
+    # none of ReactOS, RISC OS or Redox ships a remote-access server of any
+    # kind, so their images carry a baked agent instead. Everything else = ssh.
+    # The per-OS fallback matters for a local --qcow2 file, which has no
+    # profile sidecar to read.
     if guest_profile and guest_profile.get('transport'):
         config['transport'] = guest_profile['transport']
-    elif config['os'] in ("plan9", "reactos", "riscos"):
+    elif config['os'] in ("plan9", "reactos", "riscos", "redox"):
         config['transport'] = "telnet"
 
     # openbsd/sparc64 cannot cold-boot on the OpenBIOS bundled with QEMU
@@ -10178,6 +10226,27 @@ def main():
                         debuglog(config['debug'],
                                  "Dead-VM check: serial still empty but the monitor answers; "
                                  "the guest is merely slow, continuing to wait.")
+
+                # Redox's bootloader stops on an interactive video-mode list
+                # ("Arrow keys and enter select mode") and waits for a
+                # keypress. It does NOT time out on its own: one run sat there
+                # for the whole 180 s window while an otherwise identical run
+                # got past it in ~30 s, so it is INTERMITTENT -- and a guest
+                # stuck there looks exactly like a broken image from here, all
+                # probes simply never answer.
+                #
+                # redox-builder's waitForLoginTag hook taps Enter for this
+                # reason, which is why the builder's CI is reliably green;
+                # anyvm had nothing equivalent, so the released image could
+                # hang on a user's machine with nothing in either project
+                # showing a fault. Enter accepts the highlighted (best) mode.
+                # Redox runs on a normal PC with a PS/2 keyboard, so the
+                # monitor's sendkey reaches it -- unlike RISC OS, where no
+                # keypress can. Once the guest is up nothing reads the
+                # console, so a late tap is harmless.
+                if (config['os'] == "redox" and config.get('qmon')
+                        and elapsed < 120):
+                    _qmon_send(config['qmon'], "sendkey ret", timeout=2.0)
 
                 if config.get('transport') == "telnet":
                     # plan9/9front: no sshd -- readiness is the guest's telnetd

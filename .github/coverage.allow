@@ -89,6 +89,26 @@ riscos * test.yml
 riscos * testmacos.yml
 riscos * testwindows.yml
 
+# redox: Redox 0.9.0 ships no remote-access server of any kind -- no sshd, no
+# telnetd, no ftpd -- so redox-builder injects its own no_std agent into the
+# image offline and anyvm drives it over telnet. With no sshd it cannot reuse
+# the ssh-based testrun.yml that testsync/testnfs/testsysnfs (and the
+# macos/windows jobs) all route through, and its only sync backend is tar
+# (releases.json sync=tar). test.yml carries a dedicated "Test redox tar" job
+# instead, and redox.yml repeats it standalone with an explicit release/arch.
+#
+# Unlike riscos this guest is NOT host-restricted: it is a plain x86_64 guest
+# on stock QEMU, so macOS and Windows hosts should work the way they do for
+# reactos. They are exempt here only because that has not been RUN yet --
+# every verification so far (builder CI, and a local anyvm.py boot + exec +
+# tar push against the published v2.0.0 image) was on a Linux x86_64 host.
+# This is a deferred gap, not a determination: the fix is dedicated redox jobs
+# in testmacos.yml and testwindows.yml mirroring the reactos ones, and these
+# two lines should be deleted the day those land (maintainer note 2026-08-12).
+redox * test.yml
+redox * testmacos.yml
+redox * testwindows.yml
+
 # solaris: solaris.yml's own comment -- "Solaris has no FUSE sshfs
 # (VM_SSHFS_PKG is unset), so sshfs is omitted" (releases.json
 # sync=rsync,scp,nfs). solaris stays in testnfs/testsysnfs; only testsync
