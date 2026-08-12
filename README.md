@@ -6,7 +6,7 @@
 per-guest notes, the full CLI reference and troubleshooting, in English and
 Chinese.
 
-anyvm is a single-file tool for bootstrapping BSD, Illumos, Linux, Haiku, GNU Hurd, Plan 9 and ReactOS guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
+anyvm is a single-file tool for bootstrapping BSD, Illumos, Linux, Haiku, GNU Hurd, Plan 9, ReactOS, RISC OS and Redox OS guests with QEMU on Linux, macOS, and Windows. It downloads cloud images, sets up firmware, and starts the VM with sane defaults so you can focus on the guest.
 
 ## 1. Quick launch
 
@@ -116,6 +116,8 @@ python3 anyvm.py --os reactos                         # ReactOS (i386 only, tech
 
 python3 anyvm.py --os riscos                          # RISC OS (32-bit armv7 only)
 
+python3 anyvm.py --os redox                           # Redox OS (Rust microkernel, x86_64)
+
 python3 anyvm.py --os nextbsd                         # NextBSD (launchd/Mach, amd64)
 
 python3 anyvm.py --os freebsd --release 14.4 --arch riscv64
@@ -200,6 +202,7 @@ More examples and tags: https://github.com/anyvm-org/docker
 | Plan 9 (9front)<br>[![Test Plan 9](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/plan9.yml) | ✅ | — | — | — | — | — | — | [![Build Plan 9](https://github.com/anyvm-org/plan9-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/plan9-builder) |
 | ReactOS<br>[![Test ReactOS](https://github.com/anyvm-org/anyvm/actions/workflows/reactos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/reactos.yml) | ✅ (i386 only) | — | — | — | — | — | — | [![Build ReactOS](https://github.com/anyvm-org/reactos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/reactos-builder) |
 | RISC OS<br>[![Test RISC OS](https://github.com/anyvm-org/anyvm/actions/workflows/riscos.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/riscos.yml) | — | ✅ (armv7 only) | — | — | — | — | — | [![Build RISC OS](https://github.com/anyvm-org/riscos-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/riscos-builder) |
+| Redox OS<br>[![Test Redox](https://github.com/anyvm-org/anyvm/actions/workflows/redox.yml/badge.svg)](https://github.com/anyvm-org/anyvm/actions/workflows/redox.yml) | ✅ | — | — | — | — | — | — | [![Build Redox](https://github.com/anyvm-org/redox-builder/actions/workflows/build.yml/badge.svg)](https://github.com/anyvm-org/redox-builder) |
 
 Each column also covers the 32-bit member of its own family, marked in the cell where one exists, rather than earning the table an extra axis. The `x86_64` column covers `i386`: those images run `qemu-system-i386`, which ships in the same QEMU package as the x86_64 emulator, so any host that runs x86_64 guests runs them too. ReactOS is published for `i386` only (`--os reactos` resolves to it on its own); Hurd ships both, and its 32-bit image needs `--arch i386` spelled out. The `aarch64` column likewise covers 32-bit `armv7`, which today means RISC OS and only RISC OS: it is a Raspberry Pi 2 guest running on `qemu-system-arm -M raspi2b`, so unlike the i386 case it is a *different* QEMU binary and a fixed board rather than a configurable machine. `--os riscos` resolves to `armv7` by itself.
 
@@ -303,7 +306,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 ### Required
 
 - `--os <name>`: Target guest OS (required).
-  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `nextbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9` / `reactos` / `riscos`
+  - Supported: `freebsd` / `ghostbsd` / `openbsd` / `netbsd` / `dragonflybsd` / `midnightbsd` / `nextbsd` / `solaris` / `omnios` / `openindiana` / `tribblix` / `haiku` / `ubuntu` / `openeuler` / `blissos` / `hurd` / `plan9` / `reactos` / `riscos` / `redox`
   - Example:
     - `python3 anyvm.py --os freebsd`
 
@@ -426,7 +429,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
 - `--sync <mode>`: Sync mechanism used for `-v`. Strictly validated.
   - Supported: `rsync` (default), `sshfs`, `nfs`, `sys-nfs`, `scp`, `tar`, `9p`. Empty string also defaults to `rsync`. Any other value will cause an error.
   - `9p` is the Plan 9 (9front) folder-sync backend and its default: the host mounts the guest's exportfs 9P share over the Linux kernel v9fs client (`mount -t 9p`, needs root/sudo), so it works on a **Linux host only**. On Windows/macOS hosts a plan9 guest still boots and runs commands, but `-v` folder sync is skipped.
-  - `tar` streams each `-v` tree as a ustar archive over the guest's own remote-exec channel (ssh where there is an sshd, otherwise the guest's telnetd): host -> guest at boot, then guest -> host once the passthrough command finishes. It is a one-shot copy in each direction, not a live mount, so it needs no mount privileges and no host kernel support and works from a Linux, macOS or Windows host. The pull-back is skipped in `--detach` mode (the VM stays up for later commands) and when no guest command ran. It is the default, and the only backend, for the two guests with no sshd at all: ReactOS ships no sshd, no 9P client and no working NFS client, and RISC OS ships no remote-access server of any kind (its whole networking stack is clients plus SMB and Acorn Access), so `rsync` / `sshfs` / `scp` / `nfs` are unavailable on both. On RISC OS the far side of the telnet channel is not even a shell -- it is riscos-builder's own Python agent, which parses the tar command itself -- so guest paths there are RISC OS paths (`$.work`, not `/work`).
+  - `tar` streams each `-v` tree as a ustar archive over the guest's own remote-exec channel (ssh where there is an sshd, otherwise the guest's telnetd): host -> guest at boot, then guest -> host once the passthrough command finishes. It is a one-shot copy in each direction, not a live mount, so it needs no mount privileges and no host kernel support and works from a Linux, macOS or Windows host. The pull-back is skipped in `--detach` mode (the VM stays up for later commands) and when no guest command ran. It is the default, and the only backend, for the three guests with no sshd at all: ReactOS ships no sshd, no 9P client and no working NFS client; RISC OS ships no remote-access server of any kind (its whole networking stack is clients plus SMB and Acorn Access); and Redox OS ships none either. So `rsync` / `sshfs` / `scp` / `nfs` are unavailable on all three. On RISC OS and Redox the far side of the telnet channel is not a stock telnetd but the builder's own agent, which parses the tar command itself rather than handing it to a shell. Guest paths follow the guest: RISC OS paths on RISC OS (`$.work`, not `/work`), ordinary Unix paths on Redox (`/work`).
   - `nfs` runs the bundled user-space NFS server ([anyvm-org/nfsd](https://github.com/anyvm-org/nfsd), a single pure-Python file downloaded on demand, serving NFSv3/v4 plus a portmapper): no kernel nfsd, no root needed, works on Linux/macOS/Windows hosts (`mynfs` is an accepted alias). Most guests mount it with their NFSv4 client (FreeBSD family, illumos family, Linux). OpenBSD/NetBSD/DragonFlyBSD guests are NFSv3-only and mount it through its portmapper on port 111 -- free and unprivileged on Windows/macOS hosts, but usually owned by the system rpcbind (or root-only) on Linux hosts: use `sys-nfs` for these three guests on a Linux host. There is no automatic fallback between the two backends.
   - `sys-nfs` forces the host kernel NFS server for every guest. Needs a Linux host with root/sudo and the kernel NFS server installed; not available on macOS/Windows hosts.
   - Examples:
@@ -435,6 +438,7 @@ All examples below use `python3 anyvm.py ...`. You can also run `python3 anyvm.p
     - `python3 anyvm.py --os freebsd --sync nfs -v D:\\data:/data`
     - `python3 anyvm.py --os plan9 --sync 9p -v $(pwd):/usr/glenda/work` (Linux host)
     - `python3 anyvm.py --os reactos --sync tar -v $(pwd):C:\work` (the ReactOS default; the guest side is a Windows-style path)
+    - `python3 anyvm.py --os redox --sync tar -v $(pwd):/work` (the Redox default; ordinary Unix paths)
 
 ### Console / display / debugging
 

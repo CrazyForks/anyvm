@@ -160,7 +160,7 @@ DEFAULT_BUILDER_VERSIONS = {
     "nextbsd": "2.0.0",
     "reactos": "2.0.0",
     "riscos": "2.0.0",
-    "redox": "2.0.0"
+    "redox": "2.0.1"
 }
 
 # Pinned, self-contained QEMU builds published as release assets by
