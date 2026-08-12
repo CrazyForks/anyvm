@@ -2894,6 +2894,9 @@ Options:
   --                     Send all following args to the final ssh command (executes inside the VM).
                          anyvm exits with that command's status, so it fails a
                          script or a CI step the way the command itself would.
+                         Quoting is the guest shell's, as with plain ssh: the
+                         args are joined and re-parsed there, so wrap a snippet
+                         in one argument -- "sh -c 'exit 42'" -- to keep it.
   --help, -h             Show this help message.
 
 Examples:
@@ -10880,10 +10883,9 @@ Host host
                     debuglog(config['debug'], "Skipping final interactive SSH: non-TTY stdin and no passthrough command.")
                 else:
                     debuglog(config['debug'], "[trace] final-SSH calling subprocess.call ...")
-                    rc = subprocess.call(ssh_cmd)
+                    guest_rc = subprocess.call(ssh_cmd)
                     guest_cmd_ran = True
-                    guest_rc = rc
-                    debuglog(config['debug'], "[trace] final-SSH returned rc={}".format(rc))
+                    debuglog(config['debug'], "[trace] final-SSH returned rc={}".format(guest_rc))
             else:
                 debuglog(config['debug'], "[trace] detach mode -- skipping final SSH")
             # --sync tar is a one-shot copy, not a live mount: pull each -v
